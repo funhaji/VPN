@@ -7,6 +7,30 @@ import { serverInputSchema } from "@/lib/validation";
 
 export const dynamic = "force-dynamic";
 
+const normalizeEndpoint = (
+  input: { host?: string; port?: number; rawConfig: string },
+): { host: string; port: number } => {
+  if (input.host && input.port) {
+    return { host: input.host, port: input.port };
+  }
+  const raw = input.rawConfig.trim();
+  try {
+    const url = new URL(raw);
+    const host = input.host ?? url.hostname;
+    const port = input.port ?? (url.port ? Number(url.port) : 443);
+    if (host && Number.isFinite(port) && port > 0) {
+      return { host, port };
+    }
+  } catch {}
+
+  const hostMatch = raw.match(/@([^:/?#\s]+)|host["']?\s*[:=]\s*["']([^"']+)["']/i);
+  const portMatch = raw.match(/:(\d{2,5})|port["']?\s*[:=]\s*(\d{2,5})/i);
+  const host = input.host ?? hostMatch?.[1] ?? hostMatch?.[2] ?? "embedded-config";
+  const portValue = input.port ?? Number(portMatch?.[1] ?? portMatch?.[2] ?? 443);
+  const port = Number.isFinite(portValue) && portValue > 0 ? portValue : 443;
+  return { host, port };
+};
+
 export async function GET(request: NextRequest) {
   if (!limitRequest(request)) {
     return NextResponse.json({ error: "Too many requests" }, { status: 429 });
@@ -44,12 +68,13 @@ export async function POST(request: NextRequest) {
       }
       await createServers(
         validServers.map((data) => {
+          const endpoint = normalizeEndpoint(data);
           return {
             id: randomUUID(),
             name: data.name,
             protocol: data.protocol,
-            host: data.host,
-            port: data.port,
+            host: endpoint.host,
+            port: endpoint.port,
             country: data.country,
             isEnabled: data.isEnabled,
             options: data.options,
@@ -65,12 +90,13 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
     }
     const encryptedConfig = encryptConfig(parsed.data.rawConfig);
+    const endpoint = normalizeEndpoint(parsed.data);
     await createServer({
       id: randomUUID(),
       name: parsed.data.name,
       protocol: parsed.data.protocol,
-      host: parsed.data.host,
-      port: parsed.data.port,
+      host: endpoint.host,
+      port: endpoint.port,
       country: parsed.data.country,
       isEnabled: parsed.data.isEnabled,
       options: parsed.data.options,

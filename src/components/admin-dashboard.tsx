@@ -1,16 +1,16 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ServerRecord } from "@/types/server";
 
-type FormState = {
+type TabId = "v2ray" | "ssh" | "openvpn" | "wireguard" | "custom" | "bulk";
+
+type BaseState = {
   name: string;
-  family: string;
-  variant: string;
-  host: string;
-  port: string;
   country: string;
   rawConfig: string;
+  host: string;
+  port: string;
   extraJson: string;
   mux: boolean;
   fragment: boolean;
@@ -18,14 +18,12 @@ type FormState = {
   allowInsecure: boolean;
 };
 
-const baseForm: FormState = {
+const defaultState: BaseState = {
   name: "",
-  family: "v2ray",
-  variant: "vless",
-  host: "",
-  port: "443",
   country: "",
   rawConfig: "",
+  host: "",
+  port: "",
   extraJson: "{}",
   mux: false,
   fragment: false,
@@ -33,35 +31,25 @@ const baseForm: FormState = {
   allowInsecure: false,
 };
 
-const protocolFamilies = [
-  "v2ray",
-  "ssh",
-  "openvpn",
-  "wireguard",
-  "sing-box",
-  "custom",
-];
-
-const optionItems: Array<{ key: "mux" | "fragment" | "sniffing" | "allowInsecure"; label: string }> = [
-  { key: "mux", label: "Mux" },
-  { key: "fragment", label: "Fragment" },
-  { key: "sniffing", label: "Sniffing" },
-  { key: "allowInsecure", label: "AllowInsecure" },
+const tabList: Array<{ id: TabId; label: string }> = [
+  { id: "v2ray", label: "V2Ray" },
+  { id: "ssh", label: "SSH" },
+  { id: "openvpn", label: "OpenVPN" },
+  { id: "wireguard", label: "WireGuard" },
+  { id: "custom", label: "Custom" },
+  { id: "bulk", label: "Bulk Add" },
 ];
 
 export function AdminDashboard() {
-  const [form, setForm] = useState<FormState>(baseForm);
+  const [tab, setTab] = useState<TabId>("v2ray");
+  const [state, setState] = useState<BaseState>(defaultState);
+  const [variant, setVariant] = useState("vless");
   const [bulkPayload, setBulkPayload] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [servers, setServers] = useState<ServerRecord[]>([]);
-  const [mode, setMode] = useState<"single" | "bulk">("single");
-
-  const protocol = useMemo(() => {
-    const family = form.family.trim().toLowerCase();
-    const variant = form.variant.trim().toLowerCase();
-    return variant.length > 0 ? `${family}:${variant}` : family;
-  }, [form.family, form.variant]);
+  const [customProtocol, setCustomProtocol] = useState("custom:tcp");
+  const protocol = useMemo(() => (tab === "custom" ? customProtocol : `${tab}:${variant}`), [tab, variant, customProtocol]);
 
   const apiCall = useCallback(
     async <T,>(path: string, init?: RequestInit): Promise<T> => {
@@ -81,6 +69,12 @@ export function AdminDashboard() {
     [],
   );
 
+  const resetForm = () => {
+    setState(defaultState);
+    setVariant("vless");
+    setCustomProtocol("custom:tcp");
+  };
+
   const refreshServers = useCallback(async () => {
     setBusy(true);
     try {
@@ -94,30 +88,34 @@ export function AdminDashboard() {
     }
   }, [apiCall]);
 
+  useEffect(() => {
+    void refreshServers();
+  }, [refreshServers]);
+
   const submitServer = useCallback(async () => {
     setBusy(true);
     try {
-      const extra = JSON.parse(form.extraJson) as Record<string, string | number | boolean>;
+      const extra = JSON.parse(state.extraJson) as Record<string, string | number | boolean>;
       await apiCall<{ ok: boolean }>("/api/admin/servers", {
         method: "POST",
         body: JSON.stringify({
-          name: form.name.trim(),
+          name: state.name.trim(),
           protocol,
-          host: form.host.trim(),
-          port: Number(form.port),
-          country: form.country.trim(),
-          rawConfig: form.rawConfig.trim(),
+          host: tab === "v2ray" ? undefined : state.host.trim() || undefined,
+          port: tab === "v2ray" ? undefined : (state.port.trim() ? Number(state.port) : undefined),
+          country: state.country.trim(),
+          rawConfig: state.rawConfig.trim(),
           isEnabled: true,
           options: {
-            mux: form.mux,
-            fragment: form.fragment,
-            sniffing: form.sniffing,
-            allowInsecure: form.allowInsecure,
+            mux: state.mux,
+            fragment: state.fragment,
+            sniffing: state.sniffing,
+            allowInsecure: state.allowInsecure,
             extra,
           },
         }),
       });
-      setForm(baseForm);
+      resetForm();
       setMessage("Server created");
       await refreshServers();
     } catch (error) {
@@ -125,7 +123,7 @@ export function AdminDashboard() {
     } finally {
       setBusy(false);
     }
-  }, [apiCall, form, protocol, refreshServers]);
+  }, [apiCall, protocol, refreshServers, state, tab]);
 
   const submitBulk = useCallback(async () => {
     setBusy(true);
@@ -155,8 +153,8 @@ export function AdminDashboard() {
         protocol:
           item.protocol ??
           `${(item.family ?? "custom").trim().toLowerCase()}:${(item.variant ?? "").trim().toLowerCase()}`,
-        host: item.host,
-        port: Number(item.port),
+        host: item.host ?? undefined,
+        port: item.port ? Number(item.port) : undefined,
         country: item.country,
         rawConfig: item.rawConfig,
         isEnabled: true,
@@ -217,25 +215,13 @@ export function AdminDashboard() {
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-6 py-10 md:px-8">
-      <section className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-6 shadow-lg shadow-black/25">
-        <div className="flex flex-wrap items-center justify-between gap-3">
+      <section className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-5 shadow-lg shadow-black/25">
+        <div className="flex flex-wrap items-center justify-between gap-3 md:flex-nowrap">
           <div>
             <h2 className="text-xl font-semibold text-zinc-50">Astro VPN Server Control</h2>
             <p className="mt-1 text-sm text-zinc-400">Telegram: AstroVPN_Official</p>
           </div>
           <div className="flex gap-2">
-            <button
-              onClick={() => setMode("single")}
-              className={`rounded-lg px-3 py-2 text-xs font-semibold ${mode === "single" ? "bg-cyan-400 text-cyan-950" : "border border-zinc-700 text-zinc-200"}`}
-            >
-              Single Add
-            </button>
-            <button
-              onClick={() => setMode("bulk")}
-              className={`rounded-lg px-3 py-2 text-xs font-semibold ${mode === "bulk" ? "bg-cyan-400 text-cyan-950" : "border border-zinc-700 text-zinc-200"}`}
-            >
-              Bulk Add
-            </button>
             <button
               onClick={() => void refreshServers()}
               disabled={busy}
@@ -256,137 +242,140 @@ export function AdminDashboard() {
         </div>
       </section>
 
-      {mode === "single" ? (
-        <section className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-6 shadow-lg shadow-black/25">
-          <h3 className="text-lg font-semibold text-zinc-100">Add VPN Server</h3>
-          <p className="mt-1 text-xs text-zinc-500">
-            Protocol builds as family:variant. Current value: {protocol}
-          </p>
-          <div className="mt-4 grid gap-3 md:grid-cols-3">
-            <input
-              value={form.name}
-              onChange={(event) => setForm((prev) => ({ ...prev, name: event.target.value }))}
-              placeholder="Server name"
-              className="rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-sm text-zinc-100 outline-none focus:border-zinc-500"
-            />
-            <input
-              value={form.country}
-              onChange={(event) => setForm((prev) => ({ ...prev, country: event.target.value }))}
-              placeholder="Country"
-              className="rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-sm text-zinc-100 outline-none focus:border-zinc-500"
-            />
-            <input
-              value={form.host}
-              onChange={(event) => setForm((prev) => ({ ...prev, host: event.target.value }))}
-              placeholder="Host / IP"
-              className="rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-sm text-zinc-100 outline-none focus:border-zinc-500"
-            />
-            <select
-              value={form.family}
-              onChange={(event) => setForm((prev) => ({ ...prev, family: event.target.value }))}
-              className="rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-sm text-zinc-100 outline-none focus:border-zinc-500"
+      <section className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-6 shadow-lg shadow-black/25">
+        <div className="flex flex-wrap gap-2">
+          {tabList.map((item) => (
+            <button
+              key={item.id}
+              onClick={() => setTab(item.id)}
+              className={`rounded-lg px-3 py-2 text-xs font-semibold ${tab === item.id ? "bg-cyan-400 text-cyan-950" : "border border-zinc-700 text-zinc-200"}`}
             >
-              {protocolFamilies.map((family) => (
-                <option key={family} value={family}>
-                  {family}
-                </option>
-              ))}
-            </select>
-            <input
-              value={form.variant}
-              onChange={(event) => setForm((prev) => ({ ...prev, variant: event.target.value }))}
-              placeholder="Variant (vless, vmess, dnstt, tcp...)"
-              className="rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-sm text-zinc-100 outline-none focus:border-zinc-500"
-            />
-            <input
-              value={form.port}
-              onChange={(event) => setForm((prev) => ({ ...prev, port: event.target.value }))}
-              placeholder="Port"
-              className="rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-sm text-zinc-100 outline-none focus:border-zinc-500"
-            />
-          </div>
-          <textarea
-            value={form.rawConfig}
-            onChange={(event) => setForm((prev) => ({ ...prev, rawConfig: event.target.value }))}
-            placeholder="Raw config / URI / JSON"
-            className="mt-3 h-36 w-full rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-sm text-zinc-100 outline-none focus:border-zinc-500"
-          />
-          <textarea
-            value={form.extraJson}
-            onChange={(event) => setForm((prev) => ({ ...prev, extraJson: event.target.value }))}
-            placeholder='Extra JSON for protocol-specific options, example: {"packetEncoding":"xudp"}'
-            className="mt-3 h-28 w-full rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-sm text-zinc-100 outline-none focus:border-zinc-500"
-          />
-          <div className="mt-4 grid gap-3 text-sm text-zinc-300 md:grid-cols-4">
-            {optionItems.map((item) => (
-              <label key={item.key} className="flex items-center gap-2 rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2">
+              {item.label}
+            </button>
+          ))}
+        </div>
+
+        {tab !== "bulk" ? (
+          <>
+            <h3 className="mt-5 text-lg font-semibold text-zinc-100">Add {tab.toUpperCase()} Server</h3>
+            <p className="mt-1 text-xs text-zinc-500">Protocol value: {protocol}</p>
+            <div className="mt-4 grid gap-3 md:grid-cols-3">
+              <input
+                value={state.name}
+                onChange={(event) => setState((prev) => ({ ...prev, name: event.target.value }))}
+                placeholder="Server name"
+                className="rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-sm text-zinc-100 outline-none focus:border-zinc-500"
+              />
+              <input
+                value={state.country}
+                onChange={(event) => setState((prev) => ({ ...prev, country: event.target.value }))}
+                placeholder="Country"
+                className="rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-sm text-zinc-100 outline-none focus:border-zinc-500"
+              />
+              {tab === "custom" ? (
                 <input
-                  type="checkbox"
-                  checked={form[item.key]}
-                  onChange={(event) =>
-                    setForm((prev) => ({ ...prev, [item.key]: event.target.checked }))
-                  }
+                  value={customProtocol}
+                  onChange={(event) => setCustomProtocol(event.target.value)}
+                  placeholder="custom:proto"
+                  className="rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-sm text-zinc-100 outline-none focus:border-zinc-500"
                 />
-                {item.label}
-              </label>
-            ))}
-          </div>
-          <button
-            onClick={() => void submitServer()}
-            disabled={busy}
-            className="mt-4 rounded-xl bg-cyan-400 px-5 py-3 text-sm font-semibold text-cyan-950 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            Add and Encrypt
-          </button>
-          {message ? <p className="mt-3 text-sm text-zinc-300">{message}</p> : null}
-        </section>
-      ) : (
-        <section className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-6 shadow-lg shadow-black/25">
-          <h3 className="text-lg font-semibold text-zinc-100">Bulk Add</h3>
-          <p className="mt-1 text-xs text-zinc-500">
-            Paste JSON array. Supports protocol or family+variant per item.
-          </p>
-          <textarea
-            value={bulkPayload}
-            onChange={(event) => setBulkPayload(event.target.value)}
-            className="mt-4 h-72 w-full rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 font-mono text-xs text-zinc-100 outline-none focus:border-zinc-500"
-            placeholder={`[
+              ) : (
+                <input
+                  value={variant}
+                  onChange={(event) => setVariant(event.target.value)}
+                  placeholder="Variant (vless, vmess, dnstt...)"
+                  className="rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-sm text-zinc-100 outline-none focus:border-zinc-500"
+                />
+              )}
+            </div>
+
+            {tab !== "v2ray" ? (
+              <div className="mt-3 grid gap-3 md:grid-cols-2">
+                <input
+                  value={state.host}
+                  onChange={(event) => setState((prev) => ({ ...prev, host: event.target.value }))}
+                  placeholder="Host / IP"
+                  className="rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-sm text-zinc-100 outline-none focus:border-zinc-500"
+                />
+                <input
+                  value={state.port}
+                  onChange={(event) => setState((prev) => ({ ...prev, port: event.target.value }))}
+                  placeholder="Port"
+                  className="rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-sm text-zinc-100 outline-none focus:border-zinc-500"
+                />
+              </div>
+            ) : null}
+
+            <textarea
+              value={state.rawConfig}
+              onChange={(event) => setState((prev) => ({ ...prev, rawConfig: event.target.value }))}
+              placeholder={tab === "v2ray" ? "Paste full V2Ray URI/JSON (host/port auto-extracted)" : "Raw config / URI / JSON"}
+              className="mt-3 h-36 w-full rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-sm text-zinc-100 outline-none focus:border-zinc-500"
+            />
+            <textarea
+              value={state.extraJson}
+              onChange={(event) => setState((prev) => ({ ...prev, extraJson: event.target.value }))}
+              placeholder='Extra JSON for this protocol, example: {"packetEncoding":"xudp"}'
+              className="mt-3 h-24 w-full rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-sm text-zinc-100 outline-none focus:border-zinc-500"
+            />
+            <div className="mt-4 grid gap-3 text-sm text-zinc-300 md:grid-cols-4">
+              {[
+                { key: "mux", label: "Mux" },
+                { key: "fragment", label: "Fragment" },
+                { key: "sniffing", label: "Sniffing" },
+                { key: "allowInsecure", label: "AllowInsecure" },
+              ].map((item) => (
+                <label key={item.key} className="flex items-center gap-2 rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2">
+                  <input
+                    type="checkbox"
+                    checked={state[item.key as keyof BaseState] as boolean}
+                    onChange={(event) => setState((prev) => ({ ...prev, [item.key]: event.target.checked }))}
+                  />
+                  {item.label}
+                </label>
+              ))}
+            </div>
+            <button
+              onClick={() => void submitServer()}
+              disabled={busy}
+              className="mt-4 rounded-xl bg-cyan-400 px-5 py-3 text-sm font-semibold text-cyan-950 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Add and Encrypt
+            </button>
+            {message ? <p className="mt-3 text-sm text-zinc-300">{message}</p> : null}
+          </>
+        ) : (
+          <>
+            <h3 className="mt-5 text-lg font-semibold text-zinc-100">Bulk Add</h3>
+            <p className="mt-1 text-xs text-zinc-500">
+              Paste JSON array. Supports protocol or family+variant per item.
+            </p>
+            <textarea
+              value={bulkPayload}
+              onChange={(event) => setBulkPayload(event.target.value)}
+              className="mt-4 h-72 w-full rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 font-mono text-xs text-zinc-100 outline-none focus:border-zinc-500"
+              placeholder={`[
   {
     "name": "Germany VLESS",
     "family": "v2ray",
     "variant": "vless",
-    "host": "1.2.3.4",
-    "port": 443,
     "country": "Germany",
     "rawConfig": "vless://...",
-    "options": {
-      "mux": true,
-      "fragment": false,
-      "sniffing": true,
-      "allowInsecure": false,
-      "extra": {"security":"reality"}
-    }
-  },
-  {
-    "name": "SSH DNS Tunnel",
-    "protocol": "ssh:dnstt",
-    "host": "8.8.8.8",
-    "port": 53,
-    "country": "US",
-    "rawConfig": "ssh://..."
+    "options": {"mux": true}
   }
 ]`}
-          />
-          <button
-            onClick={() => void submitBulk()}
-            disabled={busy || bulkPayload.trim().length === 0}
-            className="mt-4 rounded-xl bg-cyan-400 px-5 py-3 text-sm font-semibold text-cyan-950 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            Import Bulk
-          </button>
-          {message ? <p className="mt-3 text-sm text-zinc-300">{message}</p> : null}
-        </section>
-      )}
+            />
+            <button
+              onClick={() => void submitBulk()}
+              disabled={busy || bulkPayload.trim().length === 0}
+              className="mt-4 rounded-xl bg-cyan-400 px-5 py-3 text-sm font-semibold text-cyan-950 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Import Bulk
+            </button>
+            {message ? <p className="mt-3 text-sm text-zinc-300">{message}</p> : null}
+          </>
+        )}
+      </section>
 
       <section className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-6 shadow-lg shadow-black/25">
         <h3 className="text-lg font-semibold text-zinc-100">Stored Servers</h3>

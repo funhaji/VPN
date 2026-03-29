@@ -13,8 +13,8 @@ const protocolOptionsSchema = z.object({
 export const serverInputSchema = z.object({
   name: z.string().trim().min(2).max(70),
   protocol: z.string().trim().min(2).max(40),
-  host: z.string().trim().min(2).max(255),
-  port: z.number().int().min(1).max(65535),
+  host: z.string().trim().min(1).max(255).optional(),
+  port: z.number().int().min(1).max(65535).optional(),
   country: z.string().trim().min(2).max(80),
   isEnabled: z.boolean().default(true),
   rawConfig: z.string().trim().min(2).max(25_000),
