@@ -1,49 +1,274 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ServerRecord } from "@/types/server";
 
 type TabId = "v2ray" | "ssh" | "openvpn" | "wireguard" | "custom" | "bulk";
+type SshMode = "direct" | "dnstt";
+type SshResolverMode = "udp" | "dot" | "doh";
+type OpenVpnMode = "tcp" | "udp";
 
 type FormState = {
   name: string;
   country: string;
-  rawConfig: string;
   host: string;
   port: string;
+  rawConfig: string;
   extraJson: string;
   mux: boolean;
   fragment: boolean;
   sniffing: boolean;
   allowInsecure: boolean;
+  sshUser: string;
+  sshPassword: string;
+  sshPrivateKey: string;
+  sshPrivateKeyPassphrase: string;
+  sshHostKeys: string;
+  sshClientVersion: string;
+  sshResolver: string;
+  sshDomain: string;
+  sshPublicKey: string;
+  sshTunnelPort: string;
+  sshLocalPort: string;
+  wgLocalAddress: string;
+  wgPrivateKey: string;
+  wgPeerPublicKey: string;
+  wgPresharedKey: string;
+  wgAllowedIps: string;
+  wgReserved: string;
+  wgMtu: string;
+  openVpnUsername: string;
+  openVpnPassword: string;
 };
 
 const BLANK: FormState = {
   name: "",
   country: "",
-  rawConfig: "",
   host: "",
   port: "",
+  rawConfig: "",
   extraJson: "{}",
   mux: false,
   fragment: false,
   sniffing: true,
   allowInsecure: false,
+  sshUser: "",
+  sshPassword: "",
+  sshPrivateKey: "",
+  sshPrivateKeyPassphrase: "",
+  sshHostKeys: "",
+  sshClientVersion: "",
+  sshResolver: "8.8.8.8:53",
+  sshDomain: "",
+  sshPublicKey: "",
+  sshTunnelPort: "2222",
+  sshLocalPort: "1080",
+  wgLocalAddress: "10.0.0.2/32",
+  wgPrivateKey: "",
+  wgPeerPublicKey: "",
+  wgPresharedKey: "",
+  wgAllowedIps: "0.0.0.0/0",
+  wgReserved: "",
+  wgMtu: "1408",
+  openVpnUsername: "",
+  openVpnPassword: "",
 };
 
-const PROTOCOLS: { id: TabId; label: string; badge: string }[] = [
-  { id: "v2ray", label: "V2Ray", badge: "vless / vmess / trojan / ss / hy" },
-  { id: "ssh", label: "SSH", badge: "direct / dnstt / udp" },
-  { id: "openvpn", label: "OpenVPN", badge: "tcp / udp" },
-  { id: "wireguard", label: "WireGuard", badge: "wg" },
-  { id: "custom", label: "Custom", badge: "any protocol string" },
-  { id: "bulk", label: "Bulk", badge: "JSON array import" },
+const PROTOCOLS: Array<{
+  id: TabId;
+  label: string;
+  badge: string;
+  support: string;
+}> = [
+  { id: "v2ray", label: "V2Ray", badge: "vless / vmess / trojan / ss / hy2", support: "Desktop-ready" },
+  { id: "ssh", label: "SSH", badge: "direct / dnstt", support: "Direct ready · DNSTT stored" },
+  { id: "wireguard", label: "WireGuard", badge: "structured profile", support: "Stored for rollout" },
+  { id: "openvpn", label: "OpenVPN", badge: ".ovpn / inline", support: "Stored for rollout" },
+  { id: "custom", label: "Custom", badge: "sing-box / xray / URI", support: "Advanced" },
+  { id: "bulk", label: "Bulk", badge: "JSON array import", support: "Import" },
 ];
+
+const parseNumber = (value: string): number | undefined => {
+  const parsed = Number(value.trim());
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+};
+
+const parseExtra = (raw: string): Record<string, string | number | boolean> => {
+  const parsed = JSON.parse(raw || "{}") as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Extra options must be a JSON object");
+  }
+  return parsed as Record<string, string | number | boolean>;
+};
+
+const splitList = (value: string, separator = /[\n,]+/): string[] =>
+  value
+    .split(separator)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+const buildSshDirectConfig = (form: FormState): string =>
+  JSON.stringify(
+    {
+      type: "ssh",
+      tag: "proxy",
+      server: form.host.trim(),
+      server_port: parseNumber(form.port) ?? 22,
+      user: form.sshUser.trim() || "root",
+      ...(form.sshPassword.trim() ? { password: form.sshPassword.trim() } : {}),
+      ...(form.sshPrivateKey.trim() ? { private_key: form.sshPrivateKey.trim() } : {}),
+      ...(form.sshPrivateKeyPassphrase.trim()
+        ? { private_key_passphrase: form.sshPrivateKeyPassphrase.trim() }
+        : {}),
+      ...(splitList(form.sshHostKeys).length > 0 ? { host_key: splitList(form.sshHostKeys) } : {}),
+      ...(form.sshClientVersion.trim() ? { client_version: form.sshClientVersion.trim() } : {}),
+    },
+    null,
+    2,
+  );
+
+const buildSshDnsttProfile = (form: FormState, resolverMode: SshResolverMode): string =>
+  JSON.stringify(
+    {
+      type: "dnstt-ssh",
+      ssh: {
+        host: form.host.trim(),
+        port: parseNumber(form.port) ?? 22,
+        user: form.sshUser.trim(),
+        ...(form.sshPassword.trim() ? { password: form.sshPassword.trim() } : {}),
+      },
+      tunnel: {
+        transport: resolverMode,
+        resolver: form.sshResolver.trim(),
+        domain: form.sshDomain.trim(),
+        public_key: form.sshPublicKey.trim(),
+        local_port: parseNumber(form.sshLocalPort) ?? 1080,
+        tunnel_port: parseNumber(form.sshTunnelPort) ?? 2222,
+      },
+    },
+    null,
+    2,
+  );
+
+const buildWireGuardProfile = (form: FormState): string =>
+  JSON.stringify(
+    {
+      type: "wireguard-profile",
+      endpoint: {
+        host: form.host.trim(),
+        port: parseNumber(form.port) ?? 51820,
+      },
+      local_address: splitList(form.wgLocalAddress),
+      private_key: form.wgPrivateKey.trim(),
+      peer_public_key: form.wgPeerPublicKey.trim(),
+      ...(form.wgPresharedKey.trim() ? { pre_shared_key: form.wgPresharedKey.trim() } : {}),
+      ...(splitList(form.wgAllowedIps).length > 0 ? { allowed_ips: splitList(form.wgAllowedIps) } : {}),
+      ...(splitList(form.wgReserved).length > 0
+        ? { reserved: splitList(form.wgReserved).map((item) => Number(item)).filter(Number.isFinite) }
+        : {}),
+      ...(parseNumber(form.wgMtu) ? { mtu: parseNumber(form.wgMtu) } : {}),
+    },
+    null,
+    2,
+  );
+
+const buildOpenVpnProfile = (form: FormState, mode: OpenVpnMode): string =>
+  JSON.stringify(
+    {
+      type: "openvpn-profile",
+      transport: mode,
+      remote: {
+        host: form.host.trim(),
+        port: parseNumber(form.port) ?? 1194,
+      },
+      credentials: {
+        username: form.openVpnUsername.trim(),
+        password: form.openVpnPassword.trim(),
+      },
+      profile: form.rawConfig.trim(),
+    },
+    null,
+    2,
+  );
+
+function ToggleChip(props: {
+  label: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  const { label, checked, onChange } = props;
+
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(!checked)}
+      className={`rounded-full border px-3 py-2 text-xs font-medium transition ${
+        checked
+          ? "border-cyan-400/60 bg-cyan-400/15 text-cyan-200"
+          : "border-zinc-700 bg-zinc-900 text-zinc-400 hover:border-zinc-600 hover:text-zinc-200"
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
+function Field(props: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  mono?: boolean;
+  type?: string;
+}) {
+  const { label, value, onChange, placeholder, mono, type = "text" } = props;
+
+  return (
+    <label className="block">
+      <span className="mb-1 block text-xs text-zinc-500">{label}</span>
+      <input
+        type={type}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className={`w-full rounded-2xl border border-zinc-800 bg-zinc-950/80 px-3 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none transition focus:border-cyan-500 ${mono ? "font-mono" : ""}`}
+      />
+    </label>
+  );
+}
+
+function TextArea(props: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  rows?: number;
+  placeholder?: string;
+  readOnly?: boolean;
+}) {
+  const { label, value, onChange, rows = 6, placeholder, readOnly } = props;
+
+  return (
+    <label className="block">
+      <span className="mb-1 block text-xs text-zinc-500">{label}</span>
+      <textarea
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        rows={rows}
+        placeholder={placeholder}
+        readOnly={readOnly}
+        className={`w-full rounded-2xl border border-zinc-800 bg-zinc-950/80 px-3 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none transition focus:border-cyan-500 resize-none font-mono ${readOnly ? "opacity-90" : ""}`}
+      />
+    </label>
+  );
+}
 
 export function AdminDashboard() {
   const [tab, setTab] = useState<TabId>("v2ray");
   const [form, setForm] = useState<FormState>(BLANK);
   const [variant, setVariant] = useState("vless");
+  const [sshMode, setSshMode] = useState<SshMode>("direct");
+  const [sshResolverMode, setSshResolverMode] = useState<SshResolverMode>("udp");
+  const [openVpnMode, setOpenVpnMode] = useState<OpenVpnMode>("udp");
   const [customProto, setCustomProto] = useState("custom:tcp");
   const [bulk, setBulk] = useState("");
   const [busy, setBusy] = useState(false);
@@ -51,16 +276,14 @@ export function AdminDashboard() {
   const [servers, setServers] = useState<ServerRecord[]>([]);
   const [stats, setStats] = useState({ total: 0, enabled: 0 });
 
-  const protocol = tab === "custom" ? customProto : `${tab}:${variant}`;
-
   const api = useCallback(async <T,>(path: string, init?: RequestInit): Promise<T> => {
     const res = await fetch(path, {
       ...init,
       headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
     });
     if (!res.ok) {
-      const d = (await res.json().catch(() => ({}))) as { error?: string };
-      throw new Error(d.error ?? `HTTP ${res.status}`);
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      throw new Error(data.error ?? `HTTP ${res.status}`);
     }
     return res.json() as Promise<T>;
   }, []);
@@ -68,47 +291,125 @@ export function AdminDashboard() {
   const load = useCallback(async () => {
     setBusy(true);
     try {
-      const d = await api<{ servers: ServerRecord[] }>("/api/admin/servers");
-      setServers(d.servers);
-      setStats({ total: d.servers.length, enabled: d.servers.filter((s) => s.isEnabled).length });
-    } catch (e) {
-      setMsg({ ok: false, text: e instanceof Error ? e.message : "Load failed" });
+      const data = await api<{ servers: ServerRecord[] }>("/api/admin/servers");
+      setServers(data.servers);
+      setStats({
+        total: data.servers.length,
+        enabled: data.servers.filter((server) => server.isEnabled).length,
+      });
+    } catch (error) {
+      setMsg({ ok: false, text: error instanceof Error ? error.message : "Load failed" });
     } finally {
       setBusy(false);
     }
   }, [api]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+  }, [load]);
 
-  const reset = () => { setForm(BLANK); setVariant("vless"); setCustomProto("custom:tcp"); };
+  const reset = () => {
+    setForm(BLANK);
+    setVariant("vless");
+    setSshMode("direct");
+    setSshResolverMode("udp");
+    setOpenVpnMode("udp");
+    setCustomProto("custom:tcp");
+  };
+
+  const protocol = useMemo(() => {
+    if (tab === "custom") return customProto.trim().toLowerCase();
+    if (tab === "ssh") return `ssh:${sshMode}`;
+    if (tab === "openvpn") return `openvpn:${openVpnMode}`;
+    if (tab === "wireguard") return "wireguard:profile";
+    return `${tab}:${variant}`;
+  }, [customProto, openVpnMode, sshMode, tab, variant]);
+
+  const effectiveRawConfig = useMemo(() => {
+    if (tab === "ssh") {
+      return sshMode === "direct"
+        ? buildSshDirectConfig(form)
+        : buildSshDnsttProfile(form, sshResolverMode);
+    }
+    if (tab === "wireguard") {
+      return buildWireGuardProfile(form);
+    }
+    if (tab === "openvpn") {
+      return buildOpenVpnProfile(form, openVpnMode);
+    }
+    return form.rawConfig.trim();
+  }, [form, openVpnMode, sshMode, sshResolverMode, tab]);
+
+  const payloadHost = useMemo(() => {
+    if (tab === "ssh" && sshMode === "dnstt") return form.sshDomain.trim();
+    return form.host.trim();
+  }, [form.host, form.sshDomain, sshMode, tab]);
+
+  const payloadPort = useMemo(() => {
+    if (tab === "ssh" && sshMode === "dnstt") return parseNumber(form.sshTunnelPort) ?? 2222;
+    return parseNumber(form.port);
+  }, [form.port, form.sshTunnelPort, sshMode, tab]);
+
+  const supportTone = useMemo(() => {
+    if (tab === "v2ray") return "Desktop runtime is enabled for these profiles.";
+    if (tab === "ssh" && sshMode === "direct") return "Direct SSH can be serialized into sing-box outbound JSON.";
+    if (tab === "ssh" && sshMode === "dnstt") return "DNSTT metadata is stored completely, but the desktop runtime is not bundled yet.";
+    if (tab === "custom") return "Use this for raw sing-box JSON, xray JSON, or custom URIs.";
+    return "This profile is stored cleanly in admin, but the current desktop runtime path is not enabled yet.";
+  }, [sshMode, tab]);
+
+  const canSubmit = useMemo(() => {
+    if (!form.name.trim() || !form.country.trim()) return false;
+    if (tab === "bulk") return bulk.trim().length > 0;
+    if (tab === "v2ray" || tab === "custom") return effectiveRawConfig.trim().length > 0;
+    if (tab === "ssh" && sshMode === "direct") {
+      return Boolean(form.host.trim() && form.port.trim() && form.sshUser.trim() && (form.sshPassword.trim() || form.sshPrivateKey.trim()));
+    }
+    if (tab === "ssh" && sshMode === "dnstt") {
+      return Boolean(form.host.trim() && form.sshUser.trim() && form.sshDomain.trim() && form.sshPublicKey.trim() && form.sshResolver.trim());
+    }
+    if (tab === "wireguard") {
+      return Boolean(form.host.trim() && form.port.trim() && form.wgLocalAddress.trim() && form.wgPrivateKey.trim() && form.wgPeerPublicKey.trim());
+    }
+    if (tab === "openvpn") {
+      return Boolean(form.host.trim() && form.port.trim() && form.rawConfig.trim());
+    }
+    return effectiveRawConfig.trim().length > 0;
+  }, [bulk, effectiveRawConfig, form, sshMode, tab]);
 
   const submit = useCallback(async () => {
     setBusy(true);
     setMsg(null);
     try {
-      const extra = JSON.parse(form.extraJson || "{}");
+      const extra = parseExtra(form.extraJson);
       const payload: Record<string, unknown> = {
         name: form.name.trim(),
         protocol,
         country: form.country.trim(),
-        rawConfig: form.rawConfig.trim(),
+        rawConfig: effectiveRawConfig.trim(),
         isEnabled: true,
-        options: { mux: form.mux, fragment: form.fragment, sniffing: form.sniffing, allowInsecure: form.allowInsecure, extra },
+        options: {
+          mux: form.mux,
+          fragment: form.fragment,
+          sniffing: form.sniffing,
+          allowInsecure: form.allowInsecure,
+          extra,
+        },
       };
-      if (tab !== "v2ray") {
-        if (form.host.trim()) payload.host = form.host.trim();
-        if (form.port.trim()) payload.port = Number(form.port);
-      }
+
+      if (payloadHost) payload.host = payloadHost;
+      if (payloadPort) payload.port = payloadPort;
+
       await api("/api/admin/servers", { method: "POST", body: JSON.stringify(payload) });
-      setMsg({ ok: true, text: "Server added" });
+      setMsg({ ok: true, text: `${form.name.trim()} saved successfully` });
       reset();
       await load();
-    } catch (e) {
-      setMsg({ ok: false, text: e instanceof Error ? e.message : "Failed" });
+    } catch (error) {
+      setMsg({ ok: false, text: error instanceof Error ? error.message : "Failed" });
     } finally {
       setBusy(false);
     }
-  }, [api, form, protocol, tab, load]);
+  }, [api, effectiveRawConfig, form, load, payloadHost, payloadPort, protocol]);
 
   const submitBulk = useCallback(async () => {
     setBusy(true);
@@ -136,8 +437,10 @@ export function AdminDashboard() {
         allowInsecure?: unknown;
         extra?: unknown;
       }>;
-      if (!Array.isArray(items) || items.length === 0) throw new Error("Must be a non-empty array");
-      const servers = items.map((item) => ({
+      if (!Array.isArray(items) || items.length === 0) {
+        throw new Error("Must be a non-empty array");
+      }
+      const mapped = items.map((item) => ({
         name: String(item.name ?? "").trim(),
         protocol: String(item.protocol ?? `custom:${item.variant ?? "tcp"}`).toLowerCase(),
         country: String(item.country ?? "").trim(),
@@ -153,12 +456,12 @@ export function AdminDashboard() {
         ...(item.host ? { host: item.host } : {}),
         ...(item.port ? { port: Number(item.port) } : {}),
       }));
-      await api("/api/admin/servers", { method: "POST", body: JSON.stringify({ servers }) });
-      setMsg({ ok: true, text: `Imported ${servers.length} servers` });
+      await api("/api/admin/servers", { method: "POST", body: JSON.stringify({ servers: mapped }) });
+      setMsg({ ok: true, text: `Imported ${mapped.length} servers` });
       setBulk("");
       await load();
-    } catch (e) {
-      setMsg({ ok: false, text: e instanceof Error ? e.message : "Bulk import failed" });
+    } catch (error) {
+      setMsg({ ok: false, text: error instanceof Error ? error.message : "Bulk import failed" });
     } finally {
       setBusy(false);
     }
@@ -166,10 +469,13 @@ export function AdminDashboard() {
 
   const toggle = useCallback(async (id: string, isEnabled: boolean) => {
     try {
-      await api(`/api/admin/servers/${id}`, { method: "PATCH", body: JSON.stringify({ isEnabled }) });
+      await api(`/api/admin/servers/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ isEnabled }),
+      });
       await load();
-    } catch (e) {
-      setMsg({ ok: false, text: e instanceof Error ? e.message : "Toggle failed" });
+    } catch (error) {
+      setMsg({ ok: false, text: error instanceof Error ? error.message : "Toggle failed" });
     }
   }, [api, load]);
 
@@ -177,8 +483,8 @@ export function AdminDashboard() {
     try {
       await api(`/api/admin/servers/${id}`, { method: "DELETE" });
       await load();
-    } catch (e) {
-      setMsg({ ok: false, text: e instanceof Error ? e.message : "Delete failed" });
+    } catch (error) {
+      setMsg({ ok: false, text: error instanceof Error ? error.message : "Delete failed" });
     }
   }, [api, load]);
 
@@ -187,243 +493,430 @@ export function AdminDashboard() {
     window.location.reload();
   };
 
-  const set = <K extends keyof FormState>(k: K, v: FormState[K]) =>
-    setForm((f) => ({ ...f, [k]: v }));
+  const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
+    setForm((current) => ({ ...current, [key]: value }));
 
   return (
-    <div className="flex h-screen bg-zinc-950 text-zinc-100 overflow-hidden">
-
-      <aside className="w-56 flex-shrink-0 flex flex-col border-r border-zinc-800 bg-zinc-900/60">
-        <div className="p-5 border-b border-zinc-800">
-          <h1 className="text-base font-bold text-zinc-50 tracking-wide">Astro VPN</h1>
-          <p className="text-xs text-zinc-500 mt-0.5">Control Panel</p>
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-3 space-y-1">
-          <p className="text-xs font-semibold text-zinc-600 uppercase mt-2 mb-1 px-2">Add Server</p>
-          {PROTOCOLS.map((p) => (
-            <button
-              key={p.id}
-              onClick={() => { setTab(p.id); setMsg(null); }}
-              className={`w-full text-left px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
-                tab === p.id
-                  ? "bg-cyan-400 text-cyan-950"
-                  : "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
-              }`}
-            >
-              {p.label}
-            </button>
-          ))}
-        </div>
-
-        <div className="p-3 border-t border-zinc-800 space-y-1">
-          <div className="px-3 py-2 rounded-lg bg-zinc-800/60 text-xs text-zinc-400">
-            <span className="font-semibold text-zinc-200">{stats.enabled}</span>/{stats.total} online
+    <div className="mx-auto flex min-h-[calc(100vh-6rem)] w-full max-w-7xl overflow-hidden rounded-[28px] border border-zinc-800 bg-zinc-950/85 text-zinc-100 shadow-[0_24px_80px_rgba(0,0,0,0.35)] backdrop-blur">
+      <aside className="w-72 flex-shrink-0 border-r border-zinc-900 bg-zinc-950/90">
+        <div className="border-b border-zinc-900 p-6">
+          <div className="rounded-3xl border border-cyan-400/15 bg-[linear-gradient(145deg,rgba(34,211,238,0.14),rgba(10,10,15,0.2))] p-5">
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-cyan-300/80">Astro VPN</p>
+            <h2 className="mt-3 text-xl font-semibold text-zinc-50">Protocol Studio</h2>
+            <p className="mt-2 text-sm leading-6 text-zinc-400">
+              Build profiles that actually match the runtime instead of dumping everything into one raw box.
+            </p>
           </div>
-          <button onClick={() => void load()} className="w-full px-3 py-2 rounded-lg text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 text-left">
-            ↺ Refresh
-          </button>
-          <button onClick={logout} className="w-full px-3 py-2 rounded-lg text-xs text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300 text-left">
-            🔒 Lock
-          </button>
+        </div>
+
+        <div className="space-y-6 p-5">
+          <div>
+            <p className="mb-3 px-2 text-[11px] font-semibold uppercase tracking-[0.22em] text-zinc-600">Builders</p>
+            <div className="space-y-1.5">
+              {PROTOCOLS.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => {
+                    setTab(item.id);
+                    setMsg(null);
+                  }}
+                  className={`w-full rounded-2xl border px-4 py-3 text-left transition ${
+                    tab === item.id
+                      ? "border-cyan-400/50 bg-cyan-400/12 text-zinc-50"
+                      : "border-zinc-900 bg-zinc-950 text-zinc-400 hover:border-zinc-800 hover:text-zinc-200"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-sm font-medium">{item.label}</span>
+                    <span className="rounded-full border border-current/20 px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] opacity-80">
+                      {item.support}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs opacity-75">{item.badge}</p>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid gap-3">
+            <div className="rounded-2xl border border-zinc-900 bg-zinc-950 p-4">
+              <p className="text-[11px] uppercase tracking-[0.2em] text-zinc-600">Live servers</p>
+              <p className="mt-2 text-2xl font-semibold text-zinc-50">{stats.enabled}</p>
+              <p className="text-sm text-zinc-500">enabled out of {stats.total}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void load()}
+              className="rounded-2xl border border-zinc-800 bg-zinc-900/80 px-4 py-3 text-sm text-zinc-300 transition hover:border-zinc-700 hover:text-zinc-50"
+            >
+              Refresh inventory
+            </button>
+            <button
+              type="button"
+              onClick={logout}
+              className="rounded-2xl border border-zinc-900 bg-zinc-950 px-4 py-3 text-sm text-zinc-500 transition hover:border-zinc-800 hover:text-zinc-300"
+            >
+              Lock session
+            </button>
+          </div>
         </div>
       </aside>
 
-      <main className="flex-1 flex flex-col overflow-hidden">
-        <header className="flex-shrink-0 flex items-center justify-between px-6 py-4 border-b border-zinc-800 bg-zinc-900/40">
-          <div>
-            <h2 className="text-sm font-semibold text-zinc-100">{PROTOCOLS.find((p) => p.id === tab)?.label} Server</h2>
-            <p className="text-xs text-zinc-500 mt-0.5">{PROTOCOLS.find((p) => p.id === tab)?.badge}</p>
+      <main className="flex-1 overflow-y-auto">
+        <div className="border-b border-zinc-900 bg-zinc-950/60 px-8 py-6">
+          <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-zinc-600">Profile builder</p>
+              <h3 className="mt-2 text-2xl font-semibold text-zinc-50">
+                {PROTOCOLS.find((item) => item.id === tab)?.label} profile
+              </h3>
+              <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-400">{supportTone}</p>
+            </div>
+            <div className="rounded-2xl border border-cyan-400/20 bg-cyan-400/10 px-4 py-3 text-sm text-cyan-200">
+              <div className="text-[11px] uppercase tracking-[0.18em] text-cyan-300/80">Stored protocol</div>
+              <div className="mt-1 font-mono">{protocol}</div>
+            </div>
           </div>
-          <code className="text-xs bg-zinc-800 text-cyan-400 px-2 py-1 rounded font-mono">{protocol}</code>
-        </header>
+        </div>
 
-        <div className="flex-1 overflow-y-auto p-6 space-y-5">
-          {tab !== "bulk" ? (
-            <>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="col-span-2 md:col-span-1">
-                  <label className="text-xs text-zinc-500 mb-1 block">Server Name</label>
-                  <input
-                    value={form.name}
-                    onChange={(e) => set("name", e.target.value)}
-                    placeholder="Germany Free #1"
-                    className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2.5 text-sm text-zinc-100 placeholder-zinc-600 focus:border-cyan-500 focus:outline-none"
-                  />
-                </div>
-                <div className="col-span-2 md:col-span-1">
-                  <label className="text-xs text-zinc-500 mb-1 block">Country / Label</label>
-                  <input
-                    value={form.country}
-                    onChange={(e) => set("country", e.target.value)}
-                    placeholder="Germany"
-                    className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2.5 text-sm text-zinc-100 placeholder-zinc-600 focus:border-cyan-500 focus:outline-none"
-                  />
+        <div className="grid gap-6 p-8 xl:grid-cols-[minmax(0,1.5fr)_360px]">
+          <section className="space-y-6">
+            {tab !== "bulk" ? (
+              <div className="rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-6">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Field label="Server name" value={form.name} onChange={(value) => set("name", value)} placeholder="Germany Premium #1" />
+                  <Field label="Country / label" value={form.country} onChange={(value) => set("country", value)} placeholder="Germany" />
                 </div>
 
-                {tab !== "v2ray" && (
-                  <div className="col-span-2 md:col-span-1">
-                    <label className="text-xs text-zinc-500 mb-1 block">Host / IP</label>
-                    <input
-                      value={form.host}
-                      onChange={(e) => set("host", e.target.value)}
-                      placeholder="192.168.1.1"
-                      className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2.5 text-sm text-zinc-100 placeholder-zinc-600 focus:border-cyan-500 focus:outline-none"
+                {tab === "v2ray" ? (
+                  <div className="mt-6 space-y-4">
+                    <div className="flex flex-wrap gap-2">
+                      {["vless", "vmess", "trojan", "shadowsocks", "hysteria2"].map((item) => (
+                        <ToggleChip key={item} label={item} checked={variant === item} onChange={() => setVariant(item)} />
+                      ))}
+                    </div>
+                    <TextArea
+                      label="Paste URI or JSON"
+                      value={form.rawConfig}
+                      onChange={(value) => set("rawConfig", value)}
+                      rows={7}
+                      placeholder={variant === "vmess" ? "vmess://..." : variant === "vless" ? "vless://..." : "Paste the full share link or JSON"}
+                    />
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <Field label="Optional host override" value={form.host} onChange={(value) => set("host", value)} placeholder="Leave empty to auto-detect" />
+                      <Field label="Optional port override" value={form.port} onChange={(value) => set("port", value)} placeholder="443" />
+                    </div>
+                  </div>
+                ) : null}
+
+                {tab === "ssh" ? (
+                  <div className="mt-6 space-y-4">
+                    <div className="flex flex-wrap gap-2">
+                      <ToggleChip label="Direct SSH" checked={sshMode === "direct"} onChange={() => setSshMode("direct")} />
+                      <ToggleChip label="SSH over DNSTT" checked={sshMode === "dnstt"} onChange={() => setSshMode("dnstt")} />
+                    </div>
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <Field label="SSH host / IP" value={form.host} onChange={(value) => set("host", value)} placeholder="203.0.113.5" />
+                      <Field label="SSH port" value={form.port} onChange={(value) => set("port", value)} placeholder="22" />
+                      <Field label="SSH username" value={form.sshUser} onChange={(value) => set("sshUser", value)} placeholder="root" />
+                      <Field label="Password" value={form.sshPassword} onChange={(value) => set("sshPassword", value)} placeholder="Optional when using private key" />
+                    </div>
+
+                    {sshMode === "direct" ? (
+                      <>
+                        <TextArea
+                          label="Private key"
+                          value={form.sshPrivateKey}
+                          onChange={(value) => set("sshPrivateKey", value)}
+                          rows={6}
+                          placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+                        />
+                        <div className="grid gap-4 md:grid-cols-2">
+                          <Field
+                            label="Private key passphrase"
+                            value={form.sshPrivateKeyPassphrase}
+                            onChange={(value) => set("sshPrivateKeyPassphrase", value)}
+                            placeholder="Optional"
+                          />
+                          <Field
+                            label="Client version"
+                            value={form.sshClientVersion}
+                            onChange={(value) => set("sshClientVersion", value)}
+                            placeholder="SSH-2.0-OpenSSH_9.6"
+                          />
+                        </div>
+                        <TextArea
+                          label="Allowed host keys"
+                          value={form.sshHostKeys}
+                          onChange={(value) => set("sshHostKeys", value)}
+                          rows={4}
+                          placeholder="One host key per line. Leave empty to accept any host key."
+                        />
+                      </>
+                    ) : (
+                      <>
+                        <div className="flex flex-wrap gap-2">
+                          {(["udp", "dot", "doh"] as SshResolverMode[]).map((item) => (
+                            <ToggleChip key={item} label={item.toUpperCase()} checked={sshResolverMode === item} onChange={() => setSshResolverMode(item)} />
+                          ))}
+                        </div>
+                        <div className="grid gap-4 md:grid-cols-2">
+                          <Field label="Tunnel domain" value={form.sshDomain} onChange={(value) => set("sshDomain", value)} placeholder="t.example.com" />
+                          <Field label="DNSTT public key" value={form.sshPublicKey} onChange={(value) => set("sshPublicKey", value)} placeholder="64 hex chars or full key text" mono />
+                          <Field label="Resolver target" value={form.sshResolver} onChange={(value) => set("sshResolver", value)} placeholder={sshResolverMode === "doh" ? "https://dns.google/dns-query" : sshResolverMode === "dot" ? "8.8.8.8:853" : "8.8.8.8:53"} mono />
+                          <Field label="Remote tunnel port" value={form.sshTunnelPort} onChange={(value) => set("sshTunnelPort", value)} placeholder="2222" />
+                          <Field label="Local proxy/listen port" value={form.sshLocalPort} onChange={(value) => set("sshLocalPort", value)} placeholder="1080" />
+                        </div>
+                        <div className="rounded-2xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+                          DNSTT requires a separate client/runtime. This panel now stores all required metadata, including the tunnel domain, resolver, and server public key.
+                        </div>
+                      </>
+                    )}
+                  </div>
+                ) : null}
+
+                {tab === "wireguard" ? (
+                  <div className="mt-6 space-y-4">
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <Field label="Endpoint host" value={form.host} onChange={(value) => set("host", value)} placeholder="162.159.193.10" />
+                      <Field label="Endpoint port" value={form.port} onChange={(value) => set("port", value)} placeholder="51820" />
+                      <Field label="Local address" value={form.wgLocalAddress} onChange={(value) => set("wgLocalAddress", value)} placeholder="10.0.0.2/32" mono />
+                      <Field label="MTU" value={form.wgMtu} onChange={(value) => set("wgMtu", value)} placeholder="1408" />
+                    </div>
+                    <TextArea label="Private key" value={form.wgPrivateKey} onChange={(value) => set("wgPrivateKey", value)} rows={4} placeholder="Base64 private key" />
+                    <TextArea label="Peer public key" value={form.wgPeerPublicKey} onChange={(value) => set("wgPeerPublicKey", value)} rows={3} placeholder="Base64 peer public key" />
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <Field label="Pre-shared key" value={form.wgPresharedKey} onChange={(value) => set("wgPresharedKey", value)} placeholder="Optional" mono />
+                      <Field label="Reserved bytes" value={form.wgReserved} onChange={(value) => set("wgReserved", value)} placeholder="0,0,0" mono />
+                    </div>
+                    <Field label="Allowed IPs" value={form.wgAllowedIps} onChange={(value) => set("wgAllowedIps", value)} placeholder="0.0.0.0/0, ::/0" mono />
+                  </div>
+                ) : null}
+
+                {tab === "openvpn" ? (
+                  <div className="mt-6 space-y-4">
+                    <div className="flex flex-wrap gap-2">
+                      <ToggleChip label="UDP" checked={openVpnMode === "udp"} onChange={() => setOpenVpnMode("udp")} />
+                      <ToggleChip label="TCP" checked={openVpnMode === "tcp"} onChange={() => setOpenVpnMode("tcp")} />
+                    </div>
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <Field label="Remote host" value={form.host} onChange={(value) => set("host", value)} placeholder="vpn.example.com" />
+                      <Field label="Remote port" value={form.port} onChange={(value) => set("port", value)} placeholder="1194" />
+                      <Field label="Profile username" value={form.openVpnUsername} onChange={(value) => set("openVpnUsername", value)} placeholder="Optional" />
+                      <Field label="Profile password" value={form.openVpnPassword} onChange={(value) => set("openVpnPassword", value)} placeholder="Optional" />
+                    </div>
+                    <TextArea
+                      label="OpenVPN profile"
+                      value={form.rawConfig}
+                      onChange={(value) => set("rawConfig", value)}
+                      rows={10}
+                      placeholder="Paste the .ovpn file contents or inline profile."
                     />
                   </div>
-                )}
-                {tab !== "v2ray" && (
-                  <div className="col-span-2 md:col-span-1">
-                    <label className="text-xs text-zinc-500 mb-1 block">Port</label>
-                    <input
-                      value={form.port}
-                      onChange={(e) => set("port", e.target.value)}
-                      placeholder="443"
-                      className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2.5 text-sm text-zinc-100 placeholder-zinc-600 focus:border-cyan-500 focus:outline-none"
+                ) : null}
+
+                {tab === "custom" ? (
+                  <div className="mt-6 space-y-4">
+                    <Field label="Custom protocol id" value={customProto} onChange={setCustomProto} placeholder="custom:tcp or sing-box:manual" mono />
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <Field label="Optional host" value={form.host} onChange={(value) => set("host", value)} placeholder="Used for list display and ping" />
+                      <Field label="Optional port" value={form.port} onChange={(value) => set("port", value)} placeholder="Used for list display and ping" />
+                    </div>
+                    <TextArea
+                      label="Raw config"
+                      value={form.rawConfig}
+                      onChange={(value) => set("rawConfig", value)}
+                      rows={10}
+                      placeholder="Paste sing-box outbound JSON, xray config JSON, or any custom URI."
                     />
                   </div>
-                )}
+                ) : null}
 
-                <div className="col-span-2">
-                  <label className="text-xs text-zinc-500 mb-1 block">
-                    {tab === "v2ray" ? "V2Ray URI / JSON" : "Raw Config / URI / JSON"}
-                  </label>
-                  <textarea
-                    value={form.rawConfig}
-                    onChange={(e) => set("rawConfig", e.target.value)}
-                    rows={4}
-                    placeholder={
-                      tab === "v2ray"
-                        ? "vless://... (full URI or JSON — host/port auto-extracted)"
-                        : "Full config URI, JSON, or base64 blob"
-                    }
-                    className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2.5 text-sm text-zinc-100 placeholder-zinc-600 focus:border-cyan-500 focus:outline-none resize-none font-mono"
-                  />
+                <div className="mt-6 rounded-3xl border border-zinc-900 bg-zinc-950/80 p-5">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <p className="text-sm font-semibold text-zinc-100">Routing switches</p>
+                      <p className="mt-1 text-xs text-zinc-500">These are stored into protocol options and reused by the desktop app.</p>
+                    </div>
+                    <div className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-3 py-1 text-[11px] uppercase tracking-[0.18em] text-cyan-300">
+                      extra options
+                    </div>
+                  </div>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <ToggleChip label="Mux" checked={form.mux} onChange={(checked) => set("mux", checked)} />
+                    <ToggleChip label="Fragment" checked={form.fragment} onChange={(checked) => set("fragment", checked)} />
+                    <ToggleChip label="Sniffing" checked={form.sniffing} onChange={(checked) => set("sniffing", checked)} />
+                    <ToggleChip label="Allow insecure" checked={form.allowInsecure} onChange={(checked) => set("allowInsecure", checked)} />
+                  </div>
+                  <div className="mt-4">
+                    <TextArea
+                      label="Extra options JSON"
+                      value={form.extraJson}
+                      onChange={(value) => set("extraJson", value)}
+                      rows={4}
+                      placeholder='{"packetEncoding":"xudp","serverName":"example.com"}'
+                    />
+                  </div>
                 </div>
 
-                <div className="col-span-2">
-                  <label className="text-xs text-zinc-500 mb-1 block">Extra Options (JSON)</label>
-                  <input
-                    value={form.extraJson}
-                    onChange={(e) => set("extraJson", e.target.value)}
-                    placeholder='{"packetEncoding":"xudp"}'
-                    className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2.5 text-sm text-zinc-100 placeholder-zinc-600 focus:border-cyan-500 focus:outline-none font-mono"
-                  />
-                </div>
-
-                <div className="col-span-2 flex flex-wrap gap-2">
-                  {[
-                    { k: "mux", l: "Mux" },
-                    { k: "fragment", l: "Fragment" },
-                    { k: "sniffing", l: "Sniffing" },
-                    { k: "allowInsecure", l: "AllowInsecure" },
-                  ].map(({ k, l }) => (
-                    <label key={k} className="flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-xs text-zinc-300 cursor-pointer hover:border-zinc-600">
-                      <input
-                        type="checkbox"
-                        checked={form[k as keyof FormState] as boolean}
-                        onChange={(e) => set(k as keyof FormState, e.target.checked)}
-                        className="accent-cyan-400"
-                      />
-                      {l}
-                    </label>
-                  ))}
+                <div className="mt-6 flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={() => void submit()}
+                    disabled={busy || !canSubmit}
+                    className="rounded-2xl bg-cyan-400 px-6 py-3 text-sm font-semibold text-cyan-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {busy ? "Saving..." : "Save profile"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={reset}
+                    className="rounded-2xl border border-zinc-800 bg-zinc-950 px-6 py-3 text-sm text-zinc-400 transition hover:border-zinc-700 hover:text-zinc-100"
+                  >
+                    Reset form
+                  </button>
                 </div>
               </div>
-
-              <button
-                onClick={() => void submit()}
-                disabled={busy || !form.name.trim() || !form.rawConfig.trim()}
-                className="rounded-xl bg-cyan-400 px-6 py-3 text-sm font-bold text-cyan-950 hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-40 transition-colors w-full md:w-auto"
-              >
-                {busy ? "Saving..." : "Add Server"}
-              </button>
-            </>
-          ) : (
-            <>
-              <div>
-                <label className="text-xs text-zinc-500 mb-1 block">Bulk JSON</label>
-                <textarea
+            ) : (
+              <div className="rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-6">
+                <TextArea
+                  label="Bulk JSON import"
                   value={bulk}
-                  onChange={(e) => setBulk(e.target.value)}
-                  rows={10}
+                  onChange={setBulk}
+                  rows={16}
                   placeholder={`[
   {
     "name": "Germany VLESS",
     "protocol": "v2ray:vless",
     "country": "Germany",
     "rawConfig": "vless://...",
-    "options": {"mux": true, "sniffing": true}
-  },
-  {
-    "name": "US SSH",
-    "protocol": "ssh:direct",
-    "host": "1.2.3.4",
-    "port": 22,
-    "country": "United States",
-    "rawConfig": "ssh://..."
+    "options": { "mux": true, "sniffing": true }
   }
 ]`}
-                  className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2.5 text-xs text-zinc-100 placeholder-zinc-600 focus:border-cyan-500 focus:outline-none resize-none font-mono"
                 />
-              </div>
-              <button
-                onClick={() => void submitBulk()}
-                disabled={busy || !bulk.trim()}
-                className="rounded-xl bg-cyan-400 px-6 py-3 text-sm font-bold text-cyan-950 hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-40 transition-colors w-full md:w-auto"
-              >
-                {busy ? "Importing..." : "Import Bulk"}
-              </button>
-            </>
-          )}
-
-          {msg && (
-            <div className={`rounded-xl px-4 py-3 text-sm ${msg.ok ? "bg-emerald-900/40 text-emerald-300 border border-emerald-800" : "bg-rose-900/40 text-rose-300 border border-rose-800"}`}>
-              {msg.text}
-            </div>
-          )}
-
-          <div className="border-t border-zinc-800 pt-5">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-semibold text-zinc-200">Stored Servers ({servers.length})</h3>
-            </div>
-            <div className="space-y-2">
-              {servers.map((s) => (
-                <div key={s.id} className="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900/50 px-4 py-3">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-zinc-100 truncate">{s.name}</p>
-                    <p className="text-xs text-zinc-500 mt-0.5">
-                      {s.protocol.toUpperCase()} · {s.country}
-                      {s.host ? ` · ${s.host}:${s.port}` : ""}
-                    </p>
-                  </div>
-                  <div className="flex gap-2 ml-3 flex-shrink-0">
-                    <button
-                      onClick={() => void toggle(s.id, !s.isEnabled)}
-                      className={`rounded-lg px-2.5 py-1.5 text-xs font-semibold border transition-colors ${
-                        s.isEnabled
-                          ? "border-emerald-700 text-emerald-400 hover:bg-emerald-900/30"
-                          : "border-zinc-700 text-zinc-500 hover:bg-zinc-800"
-                      }`}
-                    >
-                      {s.isEnabled ? "ON" : "OFF"}
-                    </button>
-                    <button
-                      onClick={() => void remove(s.id)}
-                      className="rounded-lg border border-rose-800 px-2.5 py-1.5 text-xs font-semibold text-rose-400 hover:bg-rose-900/30 transition-colors"
-                    >
-                      ✕
-                    </button>
-                  </div>
+                <div className="mt-4 flex gap-3">
+                  <button
+                    type="button"
+                    onClick={() => void submitBulk()}
+                    disabled={busy || !bulk.trim()}
+                    className="rounded-2xl bg-cyan-400 px-6 py-3 text-sm font-semibold text-cyan-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {busy ? "Importing..." : "Import profiles"}
+                  </button>
                 </div>
-              ))}
-              {servers.length === 0 && (
-                <div className="rounded-xl border border-dashed border-zinc-800 px-4 py-8 text-center text-sm text-zinc-600">
-                  No servers yet — add one from the form above.
+              </div>
+            )}
+
+            {msg ? (
+              <div className={`rounded-2xl border px-4 py-3 text-sm ${msg.ok ? "border-emerald-700/50 bg-emerald-500/10 text-emerald-200" : "border-rose-700/50 bg-rose-500/10 text-rose-200"}`}>
+                {msg.text}
+              </div>
+            ) : null}
+
+            <div className="rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-6">
+              <div className="mb-4 flex items-center justify-between">
+                <div>
+                  <h4 className="text-lg font-semibold text-zinc-50">Stored servers</h4>
+                  <p className="mt-1 text-sm text-zinc-500">Inventory synced from encrypted storage.</p>
+                </div>
+                <div className="rounded-full border border-zinc-800 px-3 py-1 text-xs text-zinc-400">
+                  {servers.length} total
+                </div>
+              </div>
+              <div className="grid gap-3">
+                {servers.map((server) => (
+                  <div key={server.id} className="rounded-2xl border border-zinc-900 bg-zinc-950 px-4 py-4">
+                    <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="truncate text-sm font-semibold text-zinc-100">{server.name}</p>
+                          <span className={`rounded-full px-2 py-0.5 text-[10px] uppercase tracking-[0.18em] ${server.isEnabled ? "bg-emerald-500/15 text-emerald-300" : "bg-zinc-800 text-zinc-500"}`}>
+                            {server.isEnabled ? "Enabled" : "Disabled"}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-xs text-zinc-500">
+                          {server.protocol.toUpperCase()} · {server.country} · {server.host}:{server.port}
+                        </p>
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void toggle(server.id, !server.isEnabled)}
+                          className={`rounded-xl border px-3 py-2 text-xs font-semibold transition ${
+                            server.isEnabled
+                              ? "border-emerald-700 text-emerald-300 hover:bg-emerald-500/10"
+                              : "border-zinc-800 text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200"
+                          }`}
+                        >
+                          {server.isEnabled ? "Disable" : "Enable"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void remove(server.id)}
+                          className="rounded-xl border border-rose-700/50 px-3 py-2 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/10"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                {servers.length === 0 ? (
+                  <div className="rounded-2xl border border-dashed border-zinc-800 px-4 py-10 text-center text-sm text-zinc-600">
+                    No servers yet — use one of the builders above to create the first profile.
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          </section>
+
+          <aside className="space-y-6">
+            <div className="rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-6">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-zinc-600">What gets stored</p>
+              <h4 className="mt-3 text-lg font-semibold text-zinc-50">Generated payload preview</h4>
+              <p className="mt-2 text-sm leading-6 text-zinc-500">
+                This is the exact raw config encrypted into storage for the current builder.
+              </p>
+              {tab !== "bulk" ? (
+                <div className="mt-4">
+                  <TextArea
+                    label="Raw config preview"
+                    value={effectiveRawConfig}
+                    onChange={() => undefined}
+                    rows={18}
+                    readOnly
+                  />
+                </div>
+              ) : (
+                <div className="mt-4 rounded-2xl border border-zinc-900 bg-zinc-950 px-4 py-6 text-sm text-zinc-500">
+                  Bulk mode stores every item exactly as provided in the import array.
                 </div>
               )}
             </div>
-          </div>
+
+            <div className="rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-6">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-zinc-600">Protocol notes</p>
+              <div className="mt-4 space-y-4 text-sm leading-6 text-zinc-400">
+                <div className="rounded-2xl border border-zinc-900 bg-zinc-950 px-4 py-4">
+                  <p className="font-medium text-zinc-200">V2Ray family</p>
+                  <p className="mt-1">Paste the full share link or JSON so transport settings stay intact.</p>
+                </div>
+                <div className="rounded-2xl border border-zinc-900 bg-zinc-950 px-4 py-4">
+                  <p className="font-medium text-zinc-200">SSH direct</p>
+                  <p className="mt-1">Supports password or private key auth, host key pinning, and custom client version.</p>
+                </div>
+                <div className="rounded-2xl border border-zinc-900 bg-zinc-950 px-4 py-4">
+                  <p className="font-medium text-zinc-200">SSH DNSTT</p>
+                  <p className="mt-1">Requires the tunnel domain, resolver target, and the server public key. The panel now stores all of them.</p>
+                </div>
+                <div className="rounded-2xl border border-zinc-900 bg-zinc-950 px-4 py-4">
+                  <p className="font-medium text-zinc-200">WireGuard / OpenVPN</p>
+                  <p className="mt-1">These builders now store structured metadata cleanly so the runtime can be added later without re-entering every server.</p>
+                </div>
+              </div>
+            </div>
+          </aside>
         </div>
       </main>
     </div>

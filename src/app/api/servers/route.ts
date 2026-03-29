@@ -566,9 +566,34 @@ const buildOutboundFromXrayJson = (
 };
 
 const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): JsonObject => {
+  const loweredProtocol = server.protocol.trim().toLowerCase();
   const normalizedProtocol = normalizeProtocol(server.protocol, rawConfig);
   const trimmed = rawConfig.trim();
   const parsedJson = parseJson(trimmed);
+
+  if (loweredProtocol.includes("dnstt")) {
+    return {
+      engine: "unsupported",
+      supported: false,
+      reason: "DNSTT profiles are stored for the admin panel, but the desktop client does not bundle a DNSTT runtime yet.",
+    };
+  }
+
+  if (loweredProtocol.includes("openvpn")) {
+    return {
+      engine: "unsupported",
+      supported: false,
+      reason: "OpenVPN profiles are stored, but the desktop client currently runs sing-box based connections.",
+    };
+  }
+
+  if (loweredProtocol.includes("wireguard") || loweredProtocol === "wg") {
+    return {
+      engine: "unsupported",
+      supported: false,
+      reason: "WireGuard profile storage is available in the admin panel, but the desktop runtime path is not enabled for current sing-box versions.",
+    };
+  }
 
   if (isObject(parsedJson)) {
     if (Array.isArray(parsedJson.outbounds)) {
@@ -638,29 +663,12 @@ const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): JsonObjec
   if (normalizedProtocol === "ssh") {
     return { engine: "sing-box", supported: true, outbound: buildOutboundFromSsh(trimmed) };
   }
-  if (normalizedProtocol === "wireguard" && isObject(parsedJson)) {
-    return {
-      engine: "sing-box",
-      supported: true,
-      outbound: withOptional(
-        {
-          ...parsedJson,
-          type: "wireguard",
-          tag: "proxy",
-        },
-        {
-          multiplex: undefined,
-        },
-      ),
-    };
-  }
-
   return {
     engine: "unsupported",
     supported: false,
     reason:
-      normalizedProtocol === "openvpn"
-        ? "OpenVPN profiles are stored, but the desktop client currently runs sing-box based connections."
+      normalizedProtocol === "openvpn" || normalizedProtocol === "wireguard"
+        ? "This profile type is stored, but not enabled in the desktop runtime path."
         : "Unsupported server format",
   };
 };
