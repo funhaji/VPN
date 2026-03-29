@@ -8,7 +8,7 @@ const ITERATIONS = 310_000;
 
 const getKey = (): Buffer => {
   const passphrase = getPassphrase();
-  const salt = process.env.ENCRYPTION_SALT ?? "astro-vpn-neon-salt";
+  const salt = process.env.ENCRYPTION_SALT ?? "AUGabgabgoag";
   return pbkdf2Sync(passphrase, salt, ITERATIONS, KEY_LENGTH, "sha256");
 };
 

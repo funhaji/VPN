@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { safeEquals } from "@/lib/crypto";
 import { getPassphrase } from "@/lib/env";
+import { hasValidSessionToken, SESSION_COOKIE } from "@/lib/session";
 
 const WINDOW_MS = 60_000;
 const MAX_HITS = 30;
@@ -27,9 +28,10 @@ export const limitRequest = (request: NextRequest): boolean => {
 };
 
 export const isAuthorized = (request: NextRequest): boolean => {
-  const token = request.headers.get("x-admin-pass");
-  if (!token) {
-    return false;
+  const headerToken = request.headers.get("x-admin-pass");
+  if (headerToken && safeEquals(headerToken, getPassphrase())) {
+    return true;
   }
-  return safeEquals(token, getPassphrase());
+  const sessionToken = request.cookies.get(SESSION_COOKIE)?.value;
+  return hasValidSessionToken(sessionToken);
 };

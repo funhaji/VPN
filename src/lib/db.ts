@@ -119,6 +119,24 @@ export const createServer = async (input: {
   `;
 };
 
+export const createServers = async (
+  items: Array<{
+    id: string;
+    name: string;
+    protocol: string;
+    host: string;
+    port: number;
+    country: string;
+    isEnabled: boolean;
+    options: ProtocolOptions;
+    encryptedConfig: { cipherText: string; iv: string; authTag: string };
+  }>,
+): Promise<void> => {
+  for (const item of items) {
+    await createServer(item);
+  }
+};
+
 export const deleteServer = async (id: string): Promise<void> => {
   await ensureSchema();
   const query = getSql();

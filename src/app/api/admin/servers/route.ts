@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { createServer, listServers } from "@/lib/db";
+import { createServer, createServers, listServers } from "@/lib/db";
 import { encryptConfig } from "@/lib/crypto";
 import { isAuthorized, limitRequest } from "@/lib/auth";
 import { serverInputSchema } from "@/lib/validation";
@@ -28,12 +28,42 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const payload = await request.json();
+    const payload = (await request.json()) as { servers?: unknown[] } | unknown;
+    if (typeof payload === "object" && payload && Array.isArray((payload as { servers?: unknown[] }).servers)) {
+      const incoming = (payload as { servers: unknown[] }).servers;
+      if (incoming.length === 0) {
+        return NextResponse.json({ error: "Empty server list" }, { status: 400 });
+      }
+      const validServers = [];
+      for (const item of incoming) {
+        const parsedItem = serverInputSchema.safeParse(item);
+        if (!parsedItem.success) {
+          return NextResponse.json({ error: "Invalid payload in bulk list" }, { status: 400 });
+        }
+        validServers.push(parsedItem.data);
+      }
+      await createServers(
+        validServers.map((data) => {
+          return {
+            id: randomUUID(),
+            name: data.name,
+            protocol: data.protocol,
+            host: data.host,
+            port: data.port,
+            country: data.country,
+            isEnabled: data.isEnabled,
+            options: data.options,
+            encryptedConfig: encryptConfig(data.rawConfig),
+          };
+        }),
+      );
+      return NextResponse.json({ ok: true, count: validServers.length });
+    }
+
     const parsed = serverInputSchema.safeParse(payload);
     if (!parsed.success) {
       return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
     }
-
     const encryptedConfig = encryptConfig(parsed.data.rawConfig);
     await createServer({
       id: randomUUID(),
