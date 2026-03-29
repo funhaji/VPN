@@ -88,7 +88,6 @@ const buildTlsFromUrl = (
   const serverName =
     url.searchParams.get("sni") ??
     url.searchParams.get("peer") ??
-    url.searchParams.get("host") ??
     undefined;
   const alpn = splitCsv(url.searchParams.get("alpn"));
   const fingerprint = url.searchParams.get("fp") ?? url.searchParams.get("fingerprint") ?? undefined;
