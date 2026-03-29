@@ -12,10 +12,17 @@ export default async function Home() {
   }
 
   return (
-    <main className="min-h-screen bg-gradient-to-b from-zinc-950 via-zinc-950 to-zinc-900">
-      <div className="mx-auto flex w-full max-w-6xl flex-col gap-2 px-6 pt-10 md:px-8">
-        <h1 className="text-3xl font-semibold text-zinc-50">Astro VPN</h1>
-        <p className="text-sm text-zinc-400">Vercel + Neon secure server manager</p>
+    <main className="min-h-screen bg-[radial-gradient(circle_at_top,#1b2a4a_0%,#09090b_28%,#09090b_100%)]">
+      <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 px-6 pt-8 md:px-8">
+        <section className="flex items-center justify-between rounded-2xl border border-zinc-800/80 bg-zinc-900/60 px-5 py-4 shadow-2xl shadow-black/20 backdrop-blur">
+          <div className="flex flex-col gap-1">
+            <h1 className="text-2xl font-semibold tracking-tight text-zinc-50 md:text-3xl">Astro VPN</h1>
+            <p className="text-sm text-zinc-400">Secure control center for protocols, routes, and encrypted server sync</p>
+          </div>
+          <div className="hidden rounded-xl border border-cyan-400/20 bg-cyan-400/10 px-3 py-2 text-xs font-medium text-cyan-300 md:block">
+            Vercel + Neon
+          </div>
+        </section>
       </div>
       <AdminDashboard />
     </main>
