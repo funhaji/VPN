@@ -27,6 +27,8 @@ type FormState = {
   sshHostKeys: string;
   sshClientVersion: string;
   sshResolver: string;
+  dnsttQuerySize: string;
+  dnsttMtu: string;
   sshDomain: string;
   sshPublicKey: string;
   sshTunnelPort: string;
@@ -60,6 +62,8 @@ const BLANK: FormState = {
   sshHostKeys: "",
   sshClientVersion: "",
   sshResolver: "8.8.8.8:53",
+  dnsttQuerySize: "1232",
+  dnsttMtu: "1232",
   sshDomain: "",
   sshPublicKey: "",
   sshTunnelPort: "2222",
@@ -145,6 +149,10 @@ const buildSshDnsttProfile = (form: FormState, resolverMode: SshResolverMode): s
         public_key: form.sshPublicKey.trim(),
         local_port: parseNumber(form.sshLocalPort) ?? 1080,
         tunnel_port: parseNumber(form.sshTunnelPort) ?? 2222,
+        ...(parseNumber(form.dnsttMtu) ? { mtu: parseNumber(form.dnsttMtu) } : {}),
+        ...(parseNumber(form.dnsttQuerySize)
+          ? { query_size: parseNumber(form.dnsttQuerySize) }
+          : {}),
       },
     },
     null,
@@ -278,6 +286,32 @@ export function AdminDashboard() {
   const [servers, setServers] = useState<ServerRecord[]>([]);
   const [stats, setStats] = useState({ total: 0, enabled: 0 });
   const [pendingServerId, setPendingServerId] = useState<string | null>(null);
+  const [serversPage, setServersPage] = useState(0);
+  const [dnsttDefaults, setDnsttDefaults] = useState<{ dns: string; querySize: string; mtu: string }>({
+    dns: "8.8.8.8:53",
+    querySize: "1232",
+    mtu: "1232",
+  });
+
+  useEffect(() => {
+    const raw = localStorage.getItem("astro_admin_dnstt_defaults_v1");
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw) as Partial<{ dns: string; querySize: string; mtu: string }>;
+      const dns = parsed.dns?.trim();
+      const querySize = parsed.querySize?.trim();
+      const mtu = parsed.mtu?.trim();
+      if (dns) setDnsttDefaults((cur) => ({ ...cur, dns }));
+      if (querySize) setDnsttDefaults((cur) => ({ ...cur, querySize }));
+      if (mtu) setDnsttDefaults((cur) => ({ ...cur, mtu }));
+    } catch {
+      // ignore bad localStorage
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem("astro_admin_dnstt_defaults_v1", JSON.stringify(dnsttDefaults));
+  }, [dnsttDefaults]);
 
   const api = useCallback(async <T,>(path: string, init?: RequestInit): Promise<T> => {
     const res = await fetch(path, {
@@ -296,6 +330,7 @@ export function AdminDashboard() {
     try {
       const data = await api<{ servers: ServerRecord[] }>("/api/admin/servers");
       setServers(data.servers);
+      setServersPage(0);
       setStats({
         total: data.servers.length,
         enabled: data.servers.filter((server) => server.isEnabled).length,
@@ -320,6 +355,21 @@ export function AdminDashboard() {
     setCustomProto("custom:tcp");
   };
 
+  const selectSshMode = useCallback(
+    (next: SshMode) => {
+      setSshMode(next);
+      if (next === "dnstt") {
+        setForm((current) => ({
+          ...current,
+          sshResolver: dnsttDefaults.dns,
+          dnsttMtu: dnsttDefaults.mtu,
+          dnsttQuerySize: dnsttDefaults.querySize,
+        }));
+      }
+    },
+    [dnsttDefaults],
+  );
+
   const protocol = useMemo(() => {
     if (tab === "custom") return customProto.trim().toLowerCase();
     if (tab === "ssh") return `ssh:${sshMode}`;
@@ -327,6 +377,12 @@ export function AdminDashboard() {
     if (tab === "wireguard") return "wireguard:profile";
     return `${tab}:${variant}`;
   }, [customProto, openVpnMode, sshMode, tab, variant]);
+
+  const PAGE_SIZE = 8;
+  const displayedServers = useMemo(
+    () => servers.slice(serversPage * PAGE_SIZE, (serversPage + 1) * PAGE_SIZE),
+    [servers, serversPage],
+  );
 
   const effectiveRawConfig = useMemo(() => {
     if (tab === "ssh") {
@@ -356,7 +412,7 @@ export function AdminDashboard() {
   const supportTone = useMemo(() => {
     if (tab === "v2ray") return "Desktop runtime is enabled for these profiles.";
     if (tab === "ssh" && sshMode === "direct") return "Direct SSH can be serialized into sing-box outbound JSON.";
-    if (tab === "ssh" && sshMode === "dnstt") return "DNSTT metadata is stored completely, but the desktop runtime is not bundled yet.";
+    if (tab === "ssh" && sshMode === "dnstt") return "DNSTT-SSH outbound is stored as-is and executed by the desktop runtime.";
     if (tab === "custom") return "Use this for raw sing-box JSON, xray JSON, or custom URIs.";
     return "This profile is stored cleanly in admin, but the current desktop runtime path is not enabled yet.";
   }, [sshMode, tab]);
@@ -622,8 +678,8 @@ export function AdminDashboard() {
                 {tab === "ssh" ? (
                   <div className="mt-6 space-y-4">
                     <div className="flex flex-wrap gap-2">
-                      <ToggleChip label="Direct SSH" checked={sshMode === "direct"} onChange={() => setSshMode("direct")} />
-                      <ToggleChip label="SSH over DNSTT" checked={sshMode === "dnstt"} onChange={() => setSshMode("dnstt")} />
+                      <ToggleChip label="Direct SSH" checked={sshMode === "direct"} onChange={() => selectSshMode("direct")} />
+                      <ToggleChip label="SSH over DNSTT" checked={sshMode === "dnstt"} onChange={() => selectSshMode("dnstt")} />
                     </div>
                     <div className="grid gap-4 md:grid-cols-2">
                       <Field label="SSH host / IP" value={form.host} onChange={(value) => set("host", value)} placeholder="203.0.113.5" />
@@ -670,12 +726,60 @@ export function AdminDashboard() {
                             <ToggleChip key={item} label={item.toUpperCase()} checked={sshResolverMode === item} onChange={() => setSshResolverMode(item)} />
                           ))}
                         </div>
+                        <div className="rounded-2xl border border-cyan-400/15 bg-cyan-400/5 px-4 py-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-cyan-300/80">DNSTT defaults</p>
+                              <p className="mt-1 text-xs text-zinc-400">Used to prefill new SSH-DNSTT profiles.</p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setForm((current) => ({
+                                  ...current,
+                                  sshResolver: dnsttDefaults.dns,
+                                  dnsttMtu: dnsttDefaults.mtu,
+                                  dnsttQuerySize: dnsttDefaults.querySize,
+                                }));
+                              }}
+                              className="rounded-2xl border border-cyan-400/30 bg-cyan-400/10 px-3 py-2 text-xs font-semibold text-cyan-200 transition hover:border-cyan-400/60"
+                            >
+                              Apply defaults
+                            </button>
+                          </div>
+
+                          <div className="mt-4 grid gap-3 md:grid-cols-3">
+                            <Field
+                              label="Default DNS resolver"
+                              value={dnsttDefaults.dns}
+                              onChange={(value) => setDnsttDefaults((cur) => ({ ...cur, dns: value }))}
+                              placeholder="8.8.8.8:53 or https://..."
+                              mono
+                            />
+                            <Field
+                              label="Default MTU"
+                              value={dnsttDefaults.mtu}
+                              onChange={(value) => setDnsttDefaults((cur) => ({ ...cur, mtu: value }))}
+                              placeholder="1232"
+                              mono
+                            />
+                            <Field
+                              label="DNS query size"
+                              value={dnsttDefaults.querySize}
+                              onChange={(value) => setDnsttDefaults((cur) => ({ ...cur, querySize: value }))}
+                              placeholder="1232"
+                              mono
+                            />
+                          </div>
+                        </div>
                         <div className="grid gap-4 md:grid-cols-2">
                           <Field label="Tunnel domain" value={form.sshDomain} onChange={(value) => set("sshDomain", value)} placeholder="t.example.com" />
                           <Field label="DNSTT public key" value={form.sshPublicKey} onChange={(value) => set("sshPublicKey", value)} placeholder="64 hex chars or full key text" mono />
-                          <Field label="Resolver target" value={form.sshResolver} onChange={(value) => set("sshResolver", value)} placeholder={sshResolverMode === "doh" ? "https://dns.google/dns-query" : sshResolverMode === "dot" ? "8.8.8.8:853" : "8.8.8.8:53"} mono />
+                          <Field label="DNS resolver target" value={form.sshResolver} onChange={(value) => set("sshResolver", value)} placeholder={sshResolverMode === "doh" ? "https://dns.google/dns-query" : sshResolverMode === "dot" ? "8.8.8.8:853" : "8.8.8.8:53"} mono />
                           <Field label="Remote tunnel port" value={form.sshTunnelPort} onChange={(value) => set("sshTunnelPort", value)} placeholder="2222" />
                           <Field label="Local proxy/listen port" value={form.sshLocalPort} onChange={(value) => set("sshLocalPort", value)} placeholder="1080" />
+                          <Field label="DNSTT MTU" value={form.dnsttMtu} onChange={(value) => set("dnsttMtu", value)} placeholder="1232" mono />
+                          <Field label="DNS query size" value={form.dnsttQuerySize} onChange={(value) => set("dnsttQuerySize", value)} placeholder="1232" mono />
                         </div>
                         <div className="rounded-2xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
                           DNSTT requires a separate client/runtime. This panel now stores all required metadata, including the tunnel domain, resolver, and server public key.
@@ -830,11 +934,11 @@ export function AdminDashboard() {
                   <p className="mt-1 text-sm text-zinc-500">Inventory synced from encrypted storage.</p>
                 </div>
                 <div className="rounded-full border border-zinc-800 px-3 py-1 text-xs text-zinc-400">
-                  {servers.length} total
+                  {stats.total} total
                 </div>
               </div>
               <div className="grid gap-3">
-                {servers.map((server) => (
+                {displayedServers.map((server) => (
                   <div key={server.id} className="rounded-2xl border border-zinc-900 bg-zinc-950 px-4 py-4">
                     <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                       <div className="min-w-0">
@@ -879,6 +983,30 @@ export function AdminDashboard() {
                   </div>
                 ) : null}
               </div>
+
+              {stats.total > PAGE_SIZE ? (
+                <div className="mt-4 flex items-center justify-between gap-3">
+                  <button
+                    type="button"
+                    className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-2 text-xs text-zinc-400 transition hover:border-zinc-700 hover:text-zinc-100 disabled:opacity-40 disabled:cursor-not-allowed"
+                    onClick={() => setServersPage((p) => Math.max(0, p - 1))}
+                    disabled={serversPage === 0}
+                  >
+                    Prev
+                  </button>
+                  <div className="text-xs text-zinc-500">
+                    Page {serversPage + 1} / {Math.max(1, Math.ceil(stats.total / PAGE_SIZE))}
+                  </div>
+                  <button
+                    type="button"
+                    className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-2 text-xs text-zinc-400 transition hover:border-zinc-700 hover:text-zinc-100 disabled:opacity-40 disabled:cursor-not-allowed"
+                    onClick={() => setServersPage((p) => Math.min(Math.max(0, Math.ceil(stats.total / PAGE_SIZE) - 1), p + 1))}
+                    disabled={serversPage >= Math.max(0, Math.ceil(stats.total / PAGE_SIZE) - 1)}
+                  >
+                    Next
+                  </button>
+                </div>
+              ) : null}
             </div>
           </section>
 

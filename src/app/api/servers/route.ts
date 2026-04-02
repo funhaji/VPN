@@ -636,12 +636,16 @@ const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): JsonObjec
   const trimmed = rawConfig.trim();
   const parsedJson = parseJson(trimmed);
 
-  if (loweredProtocol.includes("dnstt")) {
-    return {
-      engine: "unsupported",
-      supported: false,
-      reason: "DNSTT profiles are stored for the admin panel, but the desktop client does not bundle a DNSTT runtime yet.",
-    };
+  if (isObject(parsedJson)) {
+    const parsedType = pickString((parsedJson as JsonObject).type);
+    if (parsedType && parsedType.toLowerCase() === "dnstt-ssh") {
+      return {
+        engine: "sing-box",
+        supported: true,
+        // Admin stores the full sing-box outbound payload for DNSTT-SSH.
+        outbound: { ...(parsedJson as JsonObject), tag: "proxy" },
+      };
+    }
   }
 
   if (loweredProtocol.includes("openvpn")) {
@@ -722,7 +726,15 @@ const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): JsonObjec
     return { engine: "sing-box", supported: true, outbound: buildOutboundFromHysteria2(trimmed, server.options) };
   }
   if (normalizedProtocol === "ssh") {
-    return { engine: "sing-box", supported: true, outbound: buildOutboundFromSsh(trimmed) };
+    try {
+      return { engine: "sing-box", supported: true, outbound: buildOutboundFromSsh(trimmed) };
+    } catch {
+      return {
+        engine: "unsupported",
+        supported: false,
+        reason: "Invalid SSH profile format for this runtime. DNSTT-SSH must be stored as a DNSTT-SSH JSON payload.",
+      };
+    }
   }
   return {
     engine: "unsupported",
