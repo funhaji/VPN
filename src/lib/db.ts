@@ -132,8 +132,10 @@ export const createServers = async (
     encryptedConfig: { cipherText: string; iv: string; authTag: string };
   }>,
 ): Promise<void> => {
-  for (const item of items) {
-    await createServer(item);
+  const BATCH_SIZE = 20;
+  for (let index = 0; index < items.length; index += BATCH_SIZE) {
+    const chunk = items.slice(index, index + BATCH_SIZE);
+    await Promise.all(chunk.map((item) => createServer(item)));
   }
 };
 

@@ -5,12 +5,25 @@ import { hasValidSessionToken, SESSION_COOKIE } from "@/lib/session";
 
 const WINDOW_MS = 60_000;
 const MAX_HITS = 30;
+const PRUNE_INTERVAL = 200;
 
 const requestMap = new Map<string, { hitCount: number; windowStart: number }>();
+let requestCount = 0;
+
+const pruneRateLimitMap = (now: number): void => {
+  requestCount += 1;
+  if (requestCount % PRUNE_INTERVAL !== 0) return;
+  for (const [ip, bucket] of requestMap.entries()) {
+    if (now - bucket.windowStart > WINDOW_MS * 2) {
+      requestMap.delete(ip);
+    }
+  }
+};
 
 export const limitRequest = (request: NextRequest): boolean => {
   const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
   const now = Date.now();
+  pruneRateLimitMap(now);
   const existing = requestMap.get(ip);
 
   if (!existing || now - existing.windowStart > WINDOW_MS) {

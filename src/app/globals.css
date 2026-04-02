@@ -3,6 +3,9 @@
 :root {
   --background: #09090b;
   --foreground: #f4f4f5;
+  --space-nebula-a: #4f46e5;
+  --space-nebula-b: #0ea5e9;
+  --space-star: rgba(255, 255, 255, 0.5);
 }
 
 @theme inline {
@@ -16,4 +19,32 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+}
+
+.space-bg {
+  background:
+    radial-gradient(circle at 18% 8%, color-mix(in oklab, var(--space-nebula-a) 24%, #020617), transparent 42%),
+    radial-gradient(circle at 88% 2%, color-mix(in oklab, var(--space-nebula-b) 22%, #020617), transparent 46%),
+    linear-gradient(180deg, #070b16 0%, #07070b 42%, #09090b 100%);
+  position: relative;
+  overflow: hidden;
+}
+
+.space-bg::before {
+  content: "";
+  position: absolute;
+  inset: -20% -10%;
+  pointer-events: none;
+  opacity: 0.26;
+  background-image:
+    radial-gradient(circle, var(--space-star) 1px, transparent 1.6px),
+    radial-gradient(circle, var(--space-star) 1px, transparent 1.4px);
+  background-size: 120px 120px, 180px 180px;
+  background-position: 0 0, 60px 80px;
+  animation: drift-stars 28s linear infinite;
+}
+
+@keyframes drift-stars {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(-90px, 60px, 0); }
 }

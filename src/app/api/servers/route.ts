@@ -316,6 +316,72 @@ const buildOutboundFromSsh = (
   );
 };
 
+const buildOutboundFromWireguardProfile = (rawConfig: string): JsonObject => {
+  const parsed = parseJson(rawConfig);
+  if (!isObject(parsed) || !isObject(parsed.endpoint)) {
+    throw new Error("Invalid WireGuard profile");
+  }
+  const endpoint = parsed.endpoint;
+  const localAddress = Array.isArray(parsed.local_address)
+    ? parsed.local_address.filter((item): item is string => typeof item === "string")
+    : [];
+  const allowedIps = Array.isArray(parsed.allowed_ips)
+    ? parsed.allowed_ips.filter((item): item is string => typeof item === "string")
+    : undefined;
+  const reserved = Array.isArray(parsed.reserved)
+    ? parsed.reserved.filter((item): item is number => typeof item === "number")
+    : undefined;
+
+  return withOptional(
+    {
+      type: "wireguard",
+      tag: "proxy",
+      server: pickString(endpoint.host) ?? "",
+      server_port: pickNumber(endpoint.port) ?? 51820,
+      local_address: localAddress,
+      private_key: pickString(parsed.private_key) ?? "",
+      peer_public_key: pickString(parsed.peer_public_key) ?? "",
+    },
+    {
+      pre_shared_key: pickString(parsed.pre_shared_key),
+      allowed_ips: allowedIps,
+      reserved,
+      mtu: pickNumber(parsed.mtu),
+    },
+  );
+};
+
+const buildOpenVpnRuntimeProfile = (rawConfig: string): JsonObject => {
+  const parsed = parseJson(rawConfig);
+  if (!isObject(parsed) || !isObject(parsed.remote)) {
+    throw new Error("Invalid OpenVPN profile");
+  }
+  const remote = parsed.remote;
+  const credentials = isObject(parsed.credentials) ? parsed.credentials : {};
+  return {
+    engine: "openvpn",
+    supported: true,
+    outbound: withOptional(
+      {
+        type: "openvpn-profile",
+        host: pickString(remote.host) ?? "",
+        port: pickNumber(remote.port) ?? 1194,
+        transport: pickString(parsed.transport) ?? "udp",
+        profile: pickString(parsed.profile) ?? "",
+      },
+      {
+        credentials:
+          pickString(credentials.username) || pickString(credentials.password)
+            ? {
+                username: pickString(credentials.username) ?? "",
+                password: pickString(credentials.password) ?? "",
+              }
+            : undefined,
+      },
+    ),
+  };
+};
+
 const buildOutboundFromVmess = (
   rawConfig: string,
   options: ProtocolOptions,
@@ -579,18 +645,14 @@ const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): JsonObjec
   }
 
   if (loweredProtocol.includes("openvpn")) {
-    return {
-      engine: "unsupported",
-      supported: false,
-      reason: "OpenVPN profiles are stored, but the desktop client currently runs sing-box based connections.",
-    };
+    return buildOpenVpnRuntimeProfile(trimmed);
   }
 
   if (loweredProtocol.includes("wireguard") || loweredProtocol === "wg") {
     return {
-      engine: "unsupported",
-      supported: false,
-      reason: "WireGuard profile storage is available in the admin panel, but the desktop runtime path is not enabled for current sing-box versions.",
+      engine: "sing-box",
+      supported: true,
+      outbound: buildOutboundFromWireguardProfile(trimmed),
     };
   }
 
@@ -675,17 +737,21 @@ const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): JsonObjec
 export async function GET() {
   const servers = await listServers(true);
   return NextResponse.json({
-    servers: servers.map((server) => ({
-      id: server.id,
-      name: server.name,
-      protocol: server.protocol,
-      host: server.host,
-      port: server.port,
-      country: server.country,
-      options: server.options,
-      rawConfig: decryptConfig(server.encryptedConfig),
-      runtimeProfile: buildRuntimeProfile(server, decryptConfig(server.encryptedConfig)),
-      updatedAt: server.updatedAt,
-    })),
+    servers: servers.map((server) => {
+      const rawConfig = decryptConfig(server.encryptedConfig);
+      return {
+        id: server.id,
+        name: server.name,
+        protocol: server.protocol,
+        host: server.host,
+        port: server.port,
+        country: server.country,
+        options: server.options,
+        // Public endpoint intentionally omits decrypted profile bodies.
+        rawConfig: "",
+        runtimeProfile: buildRuntimeProfile(server, rawConfig),
+        updatedAt: server.updatedAt,
+      };
+    }),
   });
 }

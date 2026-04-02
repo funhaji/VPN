@@ -5,11 +5,16 @@ import { getPassphrase } from "@/lib/env";
 const ALGORITHM = "aes-256-gcm";
 const KEY_LENGTH = 32;
 const ITERATIONS = 310_000;
+let cachedKey: Buffer | null = null;
 
 const getKey = (): Buffer => {
+  if (cachedKey) {
+    return cachedKey;
+  }
   const passphrase = getPassphrase();
   const salt = process.env.ENCRYPTION_SALT ?? "AUGabgabgoag";
-  return pbkdf2Sync(passphrase, salt, ITERATIONS, KEY_LENGTH, "sha256");
+  cachedKey = pbkdf2Sync(passphrase, salt, ITERATIONS, KEY_LENGTH, "sha256");
+  return cachedKey;
 };
 
 export const encryptConfig = (plainText: string): EncryptedConfig => {

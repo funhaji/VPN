@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import type { ServerRecord } from "@/types/server";
 
 type TabId = "v2ray" | "ssh" | "openvpn" | "wireguard" | "custom" | "bulk";
@@ -263,6 +264,7 @@ function TextArea(props: {
 }
 
 export function AdminDashboard() {
+  const router = useRouter();
   const [tab, setTab] = useState<TabId>("v2ray");
   const [form, setForm] = useState<FormState>(BLANK);
   const [variant, setVariant] = useState("vless");
@@ -275,6 +277,7 @@ export function AdminDashboard() {
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [servers, setServers] = useState<ServerRecord[]>([]);
   const [stats, setStats] = useState({ total: 0, enabled: 0 });
+  const [pendingServerId, setPendingServerId] = useState<string | null>(null);
 
   const api = useCallback(async <T,>(path: string, init?: RequestInit): Promise<T> => {
     const res = await fetch(path, {
@@ -468,6 +471,7 @@ export function AdminDashboard() {
   }, [api, bulk, load]);
 
   const toggle = useCallback(async (id: string, isEnabled: boolean) => {
+    setPendingServerId(id);
     try {
       await api(`/api/admin/servers/${id}`, {
         method: "PATCH",
@@ -476,21 +480,26 @@ export function AdminDashboard() {
       await load();
     } catch (error) {
       setMsg({ ok: false, text: error instanceof Error ? error.message : "Toggle failed" });
+    } finally {
+      setPendingServerId(null);
     }
   }, [api, load]);
 
   const remove = useCallback(async (id: string) => {
+    setPendingServerId(id);
     try {
       await api(`/api/admin/servers/${id}`, { method: "DELETE" });
       await load();
     } catch (error) {
       setMsg({ ok: false, text: error instanceof Error ? error.message : "Delete failed" });
+    } finally {
+      setPendingServerId(null);
     }
   }, [api, load]);
 
   const logout = async () => {
     await fetch("/api/admin/auth/logout", { method: "POST" });
-    window.location.reload();
+    router.refresh();
   };
 
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
@@ -843,20 +852,22 @@ export function AdminDashboard() {
                         <button
                           type="button"
                           onClick={() => void toggle(server.id, !server.isEnabled)}
+                          disabled={pendingServerId === server.id}
                           className={`rounded-xl border px-3 py-2 text-xs font-semibold transition ${
                             server.isEnabled
                               ? "border-emerald-700 text-emerald-300 hover:bg-emerald-500/10"
                               : "border-zinc-800 text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200"
                           }`}
                         >
-                          {server.isEnabled ? "Disable" : "Enable"}
+                          {pendingServerId === server.id ? "Working..." : server.isEnabled ? "Disable" : "Enable"}
                         </button>
                         <button
                           type="button"
                           onClick={() => void remove(server.id)}
+                          disabled={pendingServerId === server.id}
                           className="rounded-xl border border-rose-700/50 px-3 py-2 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/10"
                         >
-                          Delete
+                          {pendingServerId === server.id ? "Working..." : "Delete"}
                         </button>
                       </div>
                     </div>
