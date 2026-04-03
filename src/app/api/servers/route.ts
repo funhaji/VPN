@@ -123,7 +123,22 @@ const buildTlsFromUrl = (
 
 const buildTransportFromUrl = (url: URL): JsonObject | undefined => {
   const type = (url.searchParams.get("type") ?? "tcp").toLowerCase();
+  if (type === "tcp") {
+    const headerType = (url.searchParams.get("headerType") ?? "").toLowerCase();
+    if (headerType === "http") {
+      return withOptional(
+        { type: "http" },
+        {
+          path: url.searchParams.get("path") ?? undefined,
+          host: splitCsv(url.searchParams.get("host")),
+          method: url.searchParams.get("method") ?? undefined,
+        },
+      );
+    }
+    return undefined;
+  }
   if (type === "ws") {
+    const ed = parseNumber(url.searchParams.get("ed"), 0);
     return withOptional(
       { type: "ws" },
       {
@@ -131,6 +146,9 @@ const buildTransportFromUrl = (url: URL): JsonObject | undefined => {
         headers: url.searchParams.get("host")
           ? { Host: url.searchParams.get("host") }
           : undefined,
+        max_early_data: ed > 0 ? ed : undefined,
+        early_data_header_name:
+          ed > 0 ? (url.searchParams.get("eh") ?? "Sec-WebSocket-Protocol") : undefined,
       },
     );
   }
@@ -206,6 +224,7 @@ const buildOutboundFromVless = (
       packet_encoding:
         pickString(options.extra.packetEncoding) ??
         pickString(options.extra.packet_encoding) ??
+        pickString(url.searchParams.get("packetEncoding")) ??
         undefined,
       tls: buildTlsFromUrl(url, options, {
         reality: (url.searchParams.get("security") ?? "").toLowerCase() === "reality",
