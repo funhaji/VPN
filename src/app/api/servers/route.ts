@@ -369,23 +369,84 @@ const buildOutboundFromWireguardProfile = (rawConfig: string): JsonObject => {
   );
 };
 
-const buildOpenVpnRuntimeProfile = (rawConfig: string): JsonObject => {
+const parseOpenVpnInlineProfile = (
+  rawConfig: string,
+  server: ServerRecord,
+): { transport: string; host: string; port: number; profile: string } | null => {
+  const trimmed = rawConfig.trim();
+  if (!trimmed) return null;
+
+  const remoteMatch = trimmed.match(/^\s*remote\s+([^\s#;]+)\s+(\d+)/im);
+  const protoMatch = trimmed.match(/^\s*proto\s+([^\s#;]+)/im);
+  const host = remoteMatch?.[1]?.trim() || server.host.trim();
+  const port = Number(remoteMatch?.[2] ?? server.port);
+  const transport = (protoMatch?.[1] ?? server.protocol.split(":")[1] ?? "udp")
+    .trim()
+    .toLowerCase();
+
+  if (!host || !Number.isFinite(port) || port <= 0) {
+    return null;
+  }
+
+  return {
+    transport: transport || "udp",
+    host,
+    port,
+    profile: trimmed,
+  };
+};
+
+const buildOpenVpnRuntimeProfile = (
+  rawConfig: string,
+  server: ServerRecord,
+): JsonObject => {
   const parsed = parseJson(rawConfig);
-  if (!isObject(parsed) || !isObject(parsed.remote)) {
+  if (!isObject(parsed)) {
+    const inline = parseOpenVpnInlineProfile(rawConfig, server);
+    if (!inline) {
+      throw new Error("Invalid OpenVPN profile");
+    }
+
+    return {
+      engine: "openvpn",
+      supported: true,
+      outbound: {
+        type: "openvpn-profile",
+        host: inline.host,
+        port: inline.port,
+        transport: inline.transport,
+        profile: inline.profile,
+      },
+    };
+  }
+
+  const remote = isObject(parsed.remote) ? parsed.remote : undefined;
+  const credentials = isObject(parsed.credentials) ? parsed.credentials : {};
+  const inlineProfile = pickString(parsed.profile);
+  const fallbackInline = !remote || !inlineProfile ? parseOpenVpnInlineProfile(rawConfig, server) : null;
+  const host = pickString(remote?.host) ?? fallbackInline?.host ?? server.host;
+  const port = pickNumber(remote?.port) ?? fallbackInline?.port ?? server.port;
+  const transport =
+    pickString(parsed.transport)?.toLowerCase() ??
+    fallbackInline?.transport ??
+    server.protocol.split(":")[1] ??
+    "udp";
+  const profile = inlineProfile ?? fallbackInline?.profile ?? "";
+
+  if (!host || !port || !profile) {
     throw new Error("Invalid OpenVPN profile");
   }
-  const remote = parsed.remote;
-  const credentials = isObject(parsed.credentials) ? parsed.credentials : {};
+
   return {
     engine: "openvpn",
     supported: true,
     outbound: withOptional(
       {
         type: "openvpn-profile",
-        host: pickString(remote.host) ?? "",
-        port: pickNumber(remote.port) ?? 1194,
-        transport: pickString(parsed.transport) ?? "udp",
-        profile: pickString(parsed.profile) ?? "",
+        host,
+        port,
+        transport,
+        profile,
       },
       {
         credentials:
@@ -667,7 +728,7 @@ export const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): Js
   }
 
   if (loweredProtocol.includes("openvpn")) {
-    return buildOpenVpnRuntimeProfile(trimmed);
+    return buildOpenVpnRuntimeProfile(trimmed, server);
   }
 
   if (loweredProtocol.includes("wireguard") || loweredProtocol === "wg") {

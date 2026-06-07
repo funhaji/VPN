@@ -19,6 +19,20 @@ export async function GET(request: NextRequest) {
   return NextResponse.json({
     servers: servers.map((server) => {
       const rawConfig = decryptConfig(server.encryptedConfig);
+      let runtimeProfile;
+      try {
+        runtimeProfile = buildRuntimeProfile(server, rawConfig);
+      } catch (error) {
+        runtimeProfile = {
+          engine: "unsupported",
+          supported: false,
+          reason:
+            error instanceof Error && error.message.trim()
+              ? `Failed to build runtime metadata: ${error.message}`
+              : "Failed to build runtime metadata for this server",
+        };
+      }
+
       return {
         id: server.id,
         name: server.name,
@@ -28,7 +42,7 @@ export async function GET(request: NextRequest) {
         country: server.country,
         options: server.options,
         rawConfig: "",
-        runtimeProfile: buildRuntimeProfile(server, rawConfig),
+        runtimeProfile,
         updatedAt: server.updatedAt,
       };
     }),
