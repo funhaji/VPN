@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { decryptConfig } from "@/lib/crypto";
 import { listServers } from "@/lib/db";
 import type { ProtocolOptions, ServerRecord } from "@/types/server";
 
@@ -649,7 +648,7 @@ const buildOutboundFromXrayJson = (
   return null;
 };
 
-const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): JsonObject => {
+export const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): JsonObject => {
   const loweredProtocol = server.protocol.trim().toLowerCase();
   const normalizedProtocol = normalizeProtocol(server.protocol, rawConfig);
   const trimmed = rawConfig.trim();
@@ -769,18 +768,11 @@ export async function GET() {
   const servers = await listServers(true);
   return NextResponse.json({
     servers: servers.map((server) => {
-      const rawConfig = decryptConfig(server.encryptedConfig);
       return {
         id: server.id,
         name: server.name,
         protocol: server.protocol,
-        host: server.host,
-        port: server.port,
         country: server.country,
-        options: server.options,
-        // Public endpoint intentionally omits decrypted profile bodies.
-        rawConfig: "",
-        runtimeProfile: buildRuntimeProfile(server, rawConfig),
         updatedAt: server.updatedAt,
       };
     }),

@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { safeEquals } from "@/lib/crypto";
-import { getPassphrase } from "@/lib/env";
+import { getClientCatalogToken, getPassphrase } from "@/lib/env";
 import { hasValidSessionToken, SESSION_COOKIE } from "@/lib/session";
 
 const WINDOW_MS = 60_000;
@@ -47,4 +47,27 @@ export const isAuthorized = (request: NextRequest): boolean => {
   }
   const sessionToken = request.cookies.get(SESSION_COOKIE)?.value;
   return hasValidSessionToken(sessionToken);
+};
+
+const readBearerToken = (request: NextRequest): string | null => {
+  const authorization = request.headers.get("authorization");
+  if (!authorization) return null;
+  const [scheme, token] = authorization.split(/\s+/, 2);
+  if (!scheme || !token || scheme.toLowerCase() !== "bearer") {
+    return null;
+  }
+  return token.trim() || null;
+};
+
+export const isClientAuthorized = (request: NextRequest): boolean => {
+  const presented =
+    request.headers.get("x-astro-client-token") ??
+    request.headers.get("x-client-token") ??
+    readBearerToken(request);
+
+  if (!presented) {
+    return false;
+  }
+
+  return safeEquals(presented, getClientCatalogToken());
 };

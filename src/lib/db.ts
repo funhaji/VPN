@@ -1,8 +1,10 @@
 import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
+import { decryptConfig, encryptConfig } from "@/lib/crypto";
 import type { ProtocolOptions, ServerRecord } from "@/types/server";
 import { getDatabaseUrl } from "@/lib/env";
 
 let schemaReady = false;
+let legacyMigrationChecked = false;
 let sql: NeonQueryFunction<false, false> | null = null;
 
 const getSql = (): NeonQueryFunction<false, false> => {
@@ -22,8 +24,10 @@ type DatabaseServer = {
   is_enabled: boolean;
   options_json: string;
   config_cipher: string;
+  config_salt: string | null;
   config_iv: string;
   config_tag: string;
+  config_version: number | null;
   created_at: string;
   updated_at: string;
 };
@@ -38,7 +42,9 @@ const mapServer = (row: DatabaseServer): ServerRecord => ({
   isEnabled: row.is_enabled,
   options: JSON.parse(row.options_json) as ProtocolOptions,
   encryptedConfig: {
+    version: row.config_version ?? undefined,
     cipherText: row.config_cipher,
+    salt: row.config_salt ?? undefined,
     iv: row.config_iv,
     authTag: row.config_tag,
   },
@@ -62,11 +68,21 @@ export const ensureSchema = async (): Promise<void> => {
       is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
       options_json TEXT NOT NULL,
       config_cipher TEXT NOT NULL,
+      config_salt TEXT,
       config_iv TEXT NOT NULL,
       config_tag TEXT NOT NULL,
+      config_version INT NOT NULL DEFAULT 1,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+  `;
+  await query`
+    ALTER TABLE vpn_servers
+    ADD COLUMN IF NOT EXISTS config_salt TEXT;
+  `;
+  await query`
+    ALTER TABLE vpn_servers
+    ADD COLUMN IF NOT EXISTS config_version INT NOT NULL DEFAULT 1;
   `;
   await query`
     CREATE INDEX IF NOT EXISTS idx_vpn_servers_enabled ON vpn_servers(is_enabled);
@@ -74,8 +90,55 @@ export const ensureSchema = async (): Promise<void> => {
   schemaReady = true;
 };
 
+const migrateLegacyEncryption = async (): Promise<void> => {
+  if (legacyMigrationChecked) {
+    return;
+  }
+
+  await ensureSchema();
+  const query = getSql();
+  const rows = await query`
+    SELECT id, config_cipher, config_salt, config_iv, config_tag, config_version
+    FROM vpn_servers
+    WHERE config_version IS NULL OR config_version < 2 OR config_salt IS NULL OR config_salt = ''
+  ` as Array<Pick<
+    DatabaseServer,
+    "id" | "config_cipher" | "config_salt" | "config_iv" | "config_tag" | "config_version"
+  >>;
+
+  if (rows.length === 0) {
+    legacyMigrationChecked = true;
+    return;
+  }
+
+  for (const row of rows) {
+    const plainText = decryptConfig({
+      version: row.config_version ?? undefined,
+      cipherText: row.config_cipher,
+      salt: row.config_salt ?? undefined,
+      iv: row.config_iv,
+      authTag: row.config_tag,
+    });
+    const upgraded = encryptConfig(plainText);
+    await query`
+      UPDATE vpn_servers
+      SET
+        config_cipher = ${upgraded.cipherText},
+        config_salt = ${upgraded.salt ?? null},
+        config_iv = ${upgraded.iv},
+        config_tag = ${upgraded.authTag},
+        config_version = ${upgraded.version ?? 2},
+        updated_at = NOW()
+      WHERE id = ${row.id};
+    `;
+  }
+
+  legacyMigrationChecked = true;
+};
+
 export const listServers = async (enabledOnly: boolean): Promise<ServerRecord[]> => {
   await ensureSchema();
+  await migrateLegacyEncryption();
   const query = getSql();
   const rows = (enabledOnly
     ? await query`
@@ -96,13 +159,13 @@ export const createServer = async (input: {
   country: string;
   isEnabled: boolean;
   options: ProtocolOptions;
-  encryptedConfig: { cipherText: string; iv: string; authTag: string };
+  encryptedConfig: { version?: number; cipherText: string; salt?: string; iv: string; authTag: string };
 }): Promise<void> => {
   await ensureSchema();
   const query = getSql();
   await query`
     INSERT INTO vpn_servers (
-      id, name, protocol, host, port, country, is_enabled, options_json, config_cipher, config_iv, config_tag
+      id, name, protocol, host, port, country, is_enabled, options_json, config_cipher, config_salt, config_iv, config_tag, config_version
     ) VALUES (
       ${input.id},
       ${input.name},
@@ -113,8 +176,10 @@ export const createServer = async (input: {
       ${input.isEnabled},
       ${JSON.stringify(input.options)},
       ${input.encryptedConfig.cipherText},
+      ${input.encryptedConfig.salt ?? null},
       ${input.encryptedConfig.iv},
-      ${input.encryptedConfig.authTag}
+      ${input.encryptedConfig.authTag},
+      ${input.encryptedConfig.version ?? 2}
     );
   `;
 };
@@ -129,7 +194,7 @@ export const createServers = async (
     country: string;
     isEnabled: boolean;
     options: ProtocolOptions;
-    encryptedConfig: { cipherText: string; iv: string; authTag: string };
+    encryptedConfig: { version?: number; cipherText: string; salt?: string; iv: string; authTag: string };
   }>,
 ): Promise<void> => {
   const BATCH_SIZE = 20;

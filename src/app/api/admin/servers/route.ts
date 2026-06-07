@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServer, createServers, listServers } from "@/lib/db";
 import { encryptConfig } from "@/lib/crypto";
 import { isAuthorized, limitRequest } from "@/lib/auth";
+import { detectProfileMetadata } from "@/lib/profile-import";
 import { serverInputSchema } from "@/lib/validation";
 
 export const dynamic = "force-dynamic";
@@ -13,20 +14,10 @@ const normalizeEndpoint = (
   if (input.host && input.port) {
     return { host: input.host, port: input.port };
   }
-  const raw = input.rawConfig.trim();
-  try {
-    const url = new URL(raw);
-    const host = input.host ?? url.hostname;
-    const port = input.port ?? (url.port ? Number(url.port) : 443);
-    if (host && Number.isFinite(port) && port > 0) {
-      return { host, port };
-    }
-  } catch {}
 
-  const hostMatch = raw.match(/@([^:/?#\s]+)|host["']?\s*[:=]\s*["']([^"']+)["']/i);
-  const portMatch = raw.match(/:(\d{2,5})|port["']?\s*[:=]\s*(\d{2,5})/i);
-  const host = input.host ?? hostMatch?.[1] ?? hostMatch?.[2] ?? "embedded-config";
-  const portValue = input.port ?? Number(portMatch?.[1] ?? portMatch?.[2] ?? 443);
+  const detected = detectProfileMetadata(input.rawConfig, "custom:tcp");
+  const host = input.host ?? detected.host ?? "embedded-config";
+  const portValue = input.port ?? detected.port ?? 443;
   const port = Number.isFinite(portValue) && portValue > 0 ? portValue : 443;
   return { host, port };
 };

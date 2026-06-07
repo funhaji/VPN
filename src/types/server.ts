@@ -7,9 +7,11 @@ export type ProtocolOptions = {
 };
 
 export type EncryptedConfig = {
+  version?: number;
   cipherText: string;
   iv: string;
   authTag: string;
+  salt?: string;
 };
 
 export type ServerRecord = {

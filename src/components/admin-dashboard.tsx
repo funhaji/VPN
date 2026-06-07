@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { ServerRecord } from "@/types/server";
+import { detectProfileMetadata, splitImportedProfiles } from "@/lib/profile-import";
 
 type TabId = "v2ray" | "ssh" | "openvpn" | "wireguard" | "custom" | "bulk";
 type SshMode = "direct" | "dnstt";
@@ -199,6 +200,44 @@ const buildOpenVpnProfile = (form: FormState, mode: OpenVpnMode): string =>
     null,
     2,
   );
+
+const buildImportedPayload = (
+  rawConfig: string,
+  fallbackProtocol: string,
+  form: FormState,
+  index = 0,
+) => {
+  const detected = detectProfileMetadata(rawConfig, fallbackProtocol);
+  const explicitName = form.name.trim();
+  const explicitCountry = form.country.trim();
+  const explicitHost = form.host.trim();
+  const explicitPort = parseNumber(form.port);
+  const rawName = explicitName
+    ? index > 0
+      ? `${explicitName} #${index + 1}`
+      : explicitName
+    : detected.name;
+  const safeName = rawName.trim() || `Imported profile #${index + 1}`;
+  const rawCountry = explicitCountry || detected.country || detected.host || safeName;
+  const safeCountry = rawCountry.trim() || "Imported";
+
+  return {
+    name: safeName,
+    protocol: detected.protocol,
+    country: safeCountry,
+    rawConfig: detected.rawConfig,
+    isEnabled: true,
+    options: {
+      mux: form.mux,
+      fragment: form.fragment,
+      sniffing: form.sniffing,
+      allowInsecure: form.allowInsecure,
+      extra: parseExtra(form.extraJson),
+    },
+    ...(explicitHost || detected.host ? { host: explicitHost || detected.host } : {}),
+    ...(explicitPort || detected.port ? { port: explicitPort ?? detected.port } : {}),
+  };
+};
 
 function ToggleChip(props: {
   label: string;
@@ -399,6 +438,11 @@ export function AdminDashboard() {
     return form.rawConfig.trim();
   }, [form, openVpnMode, sshMode, sshResolverMode, tab]);
 
+  const parsedImportProfiles = useMemo(
+    () => (tab === "v2ray" || tab === "custom" ? splitImportedProfiles(effectiveRawConfig) : []),
+    [effectiveRawConfig, tab],
+  );
+
   const payloadHost = useMemo(() => {
     if (tab === "ssh" && sshMode === "dnstt") return form.sshDomain.trim();
     return form.host.trim();
@@ -410,17 +454,19 @@ export function AdminDashboard() {
   }, [form.port, form.sshTunnelPort, sshMode, tab]);
 
   const supportTone = useMemo(() => {
-    if (tab === "v2ray") return "Desktop runtime is enabled for these profiles.";
+    if (tab === "v2ray") {
+      return "Paste one share link or multiple share links at once. Names, protocol, host, and port are auto-detected per profile.";
+    }
     if (tab === "ssh" && sshMode === "direct") return "Direct SSH can be serialized into sing-box outbound JSON.";
     if (tab === "ssh" && sshMode === "dnstt") return "DNSTT-SSH outbound is stored as-is and executed by the desktop runtime.";
-    if (tab === "custom") return "Use this for raw sing-box JSON, xray JSON, or custom URIs.";
+    if (tab === "custom") return "Use this for raw sing-box JSON, xray JSON, or custom URIs. Multiple entries are split when possible.";
     return "This profile is stored cleanly in admin, but the current desktop runtime path is not enabled yet.";
   }, [sshMode, tab]);
 
   const canSubmit = useMemo(() => {
-    if (!form.name.trim() || !form.country.trim()) return false;
     if (tab === "bulk") return bulk.trim().length > 0;
     if (tab === "v2ray" || tab === "custom") return effectiveRawConfig.trim().length > 0;
+    if (!form.name.trim() || !form.country.trim()) return false;
     if (tab === "ssh" && sshMode === "direct") {
       return Boolean(form.host.trim() && form.port.trim() && form.sshUser.trim() && (form.sshPassword.trim() || form.sshPrivateKey.trim()));
     }
@@ -440,11 +486,28 @@ export function AdminDashboard() {
     setBusy(true);
     setMsg(null);
     try {
-      const extra = parseExtra(form.extraJson);
+      const importableProfiles =
+        tab === "v2ray" || tab === "custom" ? splitImportedProfiles(effectiveRawConfig) : [];
+
+      if (importableProfiles.length > 1) {
+        const payloads = importableProfiles.map((entry, index) =>
+          buildImportedPayload(entry, protocol, form, index),
+        );
+        await api("/api/admin/servers", {
+          method: "POST",
+          body: JSON.stringify({ servers: payloads }),
+        });
+        setMsg({ ok: true, text: `Imported ${payloads.length} profiles` });
+        reset();
+        await load();
+        return;
+      }
+
+      const detected = detectProfileMetadata(effectiveRawConfig.trim(), protocol);
       const payload: Record<string, unknown> = {
-        name: form.name.trim(),
-        protocol,
-        country: form.country.trim(),
+        name: form.name.trim() || detected.name,
+        protocol: detected.protocol,
+        country: form.country.trim() || detected.country,
         rawConfig: effectiveRawConfig.trim(),
         isEnabled: true,
         options: {
@@ -452,15 +515,15 @@ export function AdminDashboard() {
           fragment: form.fragment,
           sniffing: form.sniffing,
           allowInsecure: form.allowInsecure,
-          extra,
+          extra: parseExtra(form.extraJson),
         },
       };
 
-      if (payloadHost) payload.host = payloadHost;
-      if (payloadPort) payload.port = payloadPort;
+      if (payloadHost || detected.host) payload.host = payloadHost || detected.host;
+      if (payloadPort || detected.port) payload.port = payloadPort ?? detected.port;
 
       await api("/api/admin/servers", { method: "POST", body: JSON.stringify(payload) });
-      setMsg({ ok: true, text: `${form.name.trim()} saved successfully` });
+      setMsg({ ok: true, text: `${String(payload.name)} saved successfully` });
       reset();
       await load();
     } catch (error) {
@@ -468,53 +531,75 @@ export function AdminDashboard() {
     } finally {
       setBusy(false);
     }
-  }, [api, effectiveRawConfig, form, load, payloadHost, payloadPort, protocol]);
+  }, [api, effectiveRawConfig, form, load, payloadHost, payloadPort, protocol, tab]);
 
   const submitBulk = useCallback(async () => {
     setBusy(true);
     setMsg(null);
     try {
-      const items = JSON.parse(bulk) as Array<{
-        name?: unknown;
-        protocol?: unknown;
-        variant?: unknown;
-        country?: unknown;
-        rawConfig?: unknown;
-        config?: unknown;
-        host?: unknown;
-        port?: unknown;
-        options?: {
+      let mapped: Array<Record<string, unknown>> = [];
+
+      try {
+        const items = JSON.parse(bulk) as Array<{
+          name?: unknown;
+          protocol?: unknown;
+          variant?: unknown;
+          country?: unknown;
+          rawConfig?: unknown;
+          config?: unknown;
+          host?: unknown;
+          port?: unknown;
+          options?: {
+            mux?: unknown;
+            fragment?: unknown;
+            sniffing?: unknown;
+            allowInsecure?: unknown;
+            extra?: unknown;
+          };
           mux?: unknown;
           fragment?: unknown;
           sniffing?: unknown;
           allowInsecure?: unknown;
           extra?: unknown;
-        };
-        mux?: unknown;
-        fragment?: unknown;
-        sniffing?: unknown;
-        allowInsecure?: unknown;
-        extra?: unknown;
-      }>;
-      if (!Array.isArray(items) || items.length === 0) {
-        throw new Error("Must be a non-empty array");
+        }>;
+        if (!Array.isArray(items) || items.length === 0) {
+          throw new Error("Must be a non-empty array");
+        }
+
+        mapped = items.map((item, index) => {
+          const rawConfig = String(item.rawConfig ?? item.config ?? "").trim();
+          const detected = detectProfileMetadata(
+            rawConfig,
+            String(item.protocol ?? `custom:${item.variant ?? "tcp"}`),
+          );
+
+          return {
+            name: String(item.name ?? "").trim() || detected.name || `Imported profile #${index + 1}`,
+            protocol: String(item.protocol ?? detected.protocol ?? `custom:${item.variant ?? "tcp"}`).toLowerCase(),
+            country: String(item.country ?? "").trim() || detected.country,
+            rawConfig: detected.rawConfig,
+            isEnabled: true,
+            options: {
+              mux: Boolean(item.options?.mux ?? item.mux),
+              fragment: Boolean(item.options?.fragment ?? item.fragment),
+              sniffing: Boolean(item.options?.sniffing ?? item.sniffing ?? true),
+              allowInsecure: Boolean(item.options?.allowInsecure ?? item.allowInsecure),
+              extra: (item.options?.extra ?? item.extra) ?? {},
+            },
+            ...(item.host || detected.host ? { host: item.host ?? detected.host } : {}),
+            ...(item.port || detected.port ? { port: Number(item.port ?? detected.port) } : {}),
+          };
+        });
+      } catch {
+        const profiles = splitImportedProfiles(bulk);
+        if (profiles.length === 0) {
+          throw new Error("Paste a JSON array or one share link per line");
+        }
+        mapped = profiles.map((entry, index) =>
+          buildImportedPayload(entry, "custom:tcp", form, index),
+        );
       }
-      const mapped = items.map((item) => ({
-        name: String(item.name ?? "").trim(),
-        protocol: String(item.protocol ?? `custom:${item.variant ?? "tcp"}`).toLowerCase(),
-        country: String(item.country ?? "").trim(),
-        rawConfig: String(item.rawConfig ?? item.config ?? "").trim(),
-        isEnabled: true,
-        options: {
-          mux: Boolean(item.options?.mux ?? item.mux),
-          fragment: Boolean(item.options?.fragment ?? item.fragment),
-          sniffing: Boolean(item.options?.sniffing ?? item.sniffing ?? true),
-          allowInsecure: Boolean(item.options?.allowInsecure ?? item.allowInsecure),
-          extra: (item.options?.extra ?? item.extra) ?? {},
-        },
-        ...(item.host ? { host: item.host } : {}),
-        ...(item.port ? { port: Number(item.port) } : {}),
-      }));
+
       await api("/api/admin/servers", { method: "POST", body: JSON.stringify({ servers: mapped }) });
       setMsg({ ok: true, text: `Imported ${mapped.length} servers` });
       setBulk("");
@@ -524,7 +609,7 @@ export function AdminDashboard() {
     } finally {
       setBusy(false);
     }
-  }, [api, bulk, load]);
+  }, [api, bulk, form, load]);
 
   const toggle = useCallback(async (id: string, isEnabled: boolean) => {
     setPendingServerId(id);
@@ -653,6 +738,11 @@ export function AdminDashboard() {
                   <Field label="Server name" value={form.name} onChange={(value) => set("name", value)} placeholder="Germany Premium #1" />
                   <Field label="Country / label" value={form.country} onChange={(value) => set("country", value)} placeholder="Germany" />
                 </div>
+                {(tab === "v2ray" || tab === "custom") ? (
+                  <p className="mt-3 text-xs leading-6 text-zinc-500">
+                    Leave these blank to auto-detect from the share link. If you paste multiple profiles, the name is generated per entry.
+                  </p>
+                ) : null}
 
                 {tab === "v2ray" ? (
                   <div className="mt-6 space-y-4">
@@ -666,8 +756,13 @@ export function AdminDashboard() {
                       value={form.rawConfig}
                       onChange={(value) => set("rawConfig", value)}
                       rows={7}
-                      placeholder={variant === "vmess" ? "vmess://..." : variant === "vless" ? "vless://..." : "Paste the full share link or JSON"}
+                      placeholder={variant === "vmess" ? "vmess://...\nvmess://..." : variant === "vless" ? "vless://...\nvless://..." : "Paste one share link per line or a raw JSON profile"}
                     />
+                    {parsedImportProfiles.length > 1 ? (
+                      <div className="rounded-2xl border border-cyan-400/15 bg-cyan-400/8 px-4 py-3 text-sm text-cyan-100">
+                        {parsedImportProfiles.length} share links detected. Saving will create separate servers automatically.
+                      </div>
+                    ) : null}
                     <div className="grid gap-4 md:grid-cols-2">
                       <Field label="Optional host override" value={form.host} onChange={(value) => set("host", value)} placeholder="Leave empty to auto-detect" />
                       <Field label="Optional port override" value={form.port} onChange={(value) => set("port", value)} placeholder="443" />
@@ -841,8 +936,13 @@ export function AdminDashboard() {
                       value={form.rawConfig}
                       onChange={(value) => set("rawConfig", value)}
                       rows={10}
-                      placeholder="Paste sing-box outbound JSON, xray config JSON, or any custom URI."
+                      placeholder="Paste sing-box outbound JSON, xray config JSON, or one custom URI per line."
                     />
+                    {parsedImportProfiles.length > 1 ? (
+                      <div className="rounded-2xl border border-cyan-400/15 bg-cyan-400/8 px-4 py-3 text-sm text-cyan-100">
+                        {parsedImportProfiles.length} entries detected. Saving will import them as separate profiles.
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
 
@@ -894,11 +994,16 @@ export function AdminDashboard() {
             ) : (
               <div className="rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-6">
                 <TextArea
-                  label="Bulk JSON import"
+                  label="Bulk import"
                   value={bulk}
                   onChange={setBulk}
                   rows={16}
-                  placeholder={`[
+                  placeholder={`vless://...
+vmess://...
+
+or
+
+[
   {
     "name": "Germany VLESS",
     "protocol": "v2ray:vless",
@@ -908,6 +1013,9 @@ export function AdminDashboard() {
   }
 ]`}
                 />
+                <p className="mt-3 text-xs leading-6 text-zinc-500">
+                  Paste a JSON array or paste one share link per line. Names, protocol, host, and port are auto-detected when possible.
+                </p>
                 <div className="mt-4 flex gap-3">
                   <button
                     type="button"
