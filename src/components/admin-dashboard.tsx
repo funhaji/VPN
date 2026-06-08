@@ -4,8 +4,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { ServerRecord } from "@/types/server";
 import { detectProfileMetadata, splitImportedProfiles } from "@/lib/profile-import";
+import { RoutingRulesPanel } from "@/components/routing-rules-panel";
 
-type TabId = "v2ray" | "ssh" | "openvpn" | "wireguard" | "custom" | "bulk";
+type TabId = "v2ray" | "ssh" | "openvpn" | "wireguard" | "custom" | "bulk" | "routing";
 type SshMode = "direct" | "dnstt";
 type SshResolverMode = "udp" | "dot" | "doh";
 type OpenVpnMode = "tcp" | "udp";
@@ -92,6 +93,7 @@ const PROTOCOLS: Array<{
   { id: "openvpn", label: "OpenVPN", badge: ".ovpn / inline", support: "Stored for rollout" },
   { id: "custom", label: "Custom", badge: "sing-box / xray / URI", support: "Advanced" },
   { id: "bulk", label: "Bulk", badge: "JSON array import", support: "Import" },
+  { id: "routing", label: "Routing Rules", badge: "Iran Direct", support: "Geo IP bypass" },
 ];
 
 const parseNumber = (value: string): number | undefined => {
@@ -1133,6 +1135,8 @@ export function AdminDashboard() {
                   )}
                 </div>
               </div>
+            ) : tab === "routing" ? (
+              <RoutingRulesPanel api={api} busy={busy} setBusy={setBusy} setMsg={setMsg} />
             ) : (
               <div className="rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-6">
                 <TextArea

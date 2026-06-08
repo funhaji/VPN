@@ -3,7 +3,7 @@ import { decryptConfig } from "@/lib/crypto";
 import { listServers } from "@/lib/db";
 import type { ProtocolOptions, ServerRecord } from "@/types/server";
 
-export const dynamic = "force-dynamic";
+export const revalidate = 60; // Cache on Edge CDN for 60 seconds
 
 type JsonObject = Record<string, unknown>;
 

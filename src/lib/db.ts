@@ -94,6 +94,17 @@ export const ensureSchema = async (): Promise<void> => {
   await query`
     CREATE INDEX IF NOT EXISTS idx_vpn_servers_enabled ON vpn_servers(is_enabled);
   `;
+  await query`
+    CREATE TABLE IF NOT EXISTS routing_rules (
+      id UUID PRIMARY KEY,
+      type VARCHAR(20) NOT NULL,
+      value TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `;
+  await query`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_routing_rules_type_value ON routing_rules(type, value);
+  `;
   schemaReady = true;
 };
 
@@ -371,5 +382,39 @@ export const updateServerOrders = async (orders: { id: string; sort_order: numbe
       UPDATE vpn_servers SET sort_order = ${item.sort_order}, updated_at = NOW() WHERE id = ${item.id};
     `;
   }
+  }
 };
 
+export type RoutingRuleRecord = {
+  id: string;
+  type: string;
+  value: string;
+  created_at: string;
+};
+
+export const listRoutingRules = async (): Promise<RoutingRuleRecord[]> => {
+  await ensureSchema();
+  const query = getSql();
+  const rows = await query`SELECT id, type, value, created_at FROM routing_rules ORDER BY created_at DESC;`;
+  return rows as RoutingRuleRecord[];
+};
+
+export const addRoutingRules = async (rules: { id: string; type: string; value: string }[]): Promise<void> => {
+  await ensureSchema();
+  const query = getSql();
+  const BATCH_SIZE = 50;
+  for (let i = 0; i < rules.length; i += BATCH_SIZE) {
+    const chunk = rules.slice(i, i + BATCH_SIZE);
+    await Promise.all(chunk.map(r => query`
+      INSERT INTO routing_rules (id, type, value)
+      VALUES (${r.id}, ${r.type}, ${r.value})
+      ON CONFLICT (type, value) DO NOTHING;
+    `));
+  }
+};
+
+export const deleteRoutingRule = async (id: string): Promise<void> => {
+  await ensureSchema();
+  const query = getSql();
+  await query`DELETE FROM routing_rules WHERE id = ${id};`;
+};
