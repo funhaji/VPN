@@ -28,6 +28,7 @@ type DatabaseServer = {
   config_iv: string;
   config_tag: string;
   config_version: number | null;
+  sort_order: number;
   created_at: string;
   updated_at: string;
 };
@@ -48,6 +49,7 @@ const mapServer = (row: DatabaseServer): ServerRecord => ({
     iv: row.config_iv,
     authTag: row.config_tag,
   },
+  sortOrder: row.sort_order,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
 });
@@ -72,6 +74,7 @@ export const ensureSchema = async (): Promise<void> => {
       config_iv TEXT NOT NULL,
       config_tag TEXT NOT NULL,
       config_version INT NOT NULL DEFAULT 1,
+      sort_order INT NOT NULL DEFAULT 0,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
@@ -83,6 +86,10 @@ export const ensureSchema = async (): Promise<void> => {
   await query`
     ALTER TABLE vpn_servers
     ADD COLUMN IF NOT EXISTS config_version INT NOT NULL DEFAULT 1;
+  `;
+  await query`
+    ALTER TABLE vpn_servers
+    ADD COLUMN IF NOT EXISTS sort_order INT NOT NULL DEFAULT 0;
   `;
   await query`
     CREATE INDEX IF NOT EXISTS idx_vpn_servers_enabled ON vpn_servers(is_enabled);
@@ -196,10 +203,10 @@ export const listServers = async (enabledOnly: boolean): Promise<ServerRecord[]>
   const query = getSql();
   const rows = (enabledOnly
     ? await query`
-      SELECT * FROM vpn_servers WHERE is_enabled = TRUE ORDER BY updated_at DESC
+      SELECT * FROM vpn_servers WHERE is_enabled = TRUE ORDER BY sort_order ASC, updated_at DESC
     `
     : await query`
-      SELECT * FROM vpn_servers ORDER BY updated_at DESC
+      SELECT * FROM vpn_servers ORDER BY sort_order ASC, updated_at DESC
     `) as DatabaseServer[];
   return rows.map((row) => mapServer(row));
 };
@@ -214,12 +221,13 @@ export const createServer = async (input: {
   isEnabled: boolean;
   options: ProtocolOptions;
   encryptedConfig: { version?: number; cipherText: string; salt?: string; iv: string; authTag: string };
+  sortOrder?: number;
 }): Promise<void> => {
   await ensureSchema();
   const query = getSql();
   await query`
     INSERT INTO vpn_servers (
-      id, name, protocol, host, port, country, is_enabled, options_json, config_cipher, config_salt, config_iv, config_tag, config_version
+      id, name, protocol, host, port, country, is_enabled, options_json, config_cipher, config_salt, config_iv, config_tag, config_version, sort_order
     ) VALUES (
       ${input.id},
       ${input.name},
@@ -233,7 +241,8 @@ export const createServer = async (input: {
       ${input.encryptedConfig.salt ?? null},
       ${input.encryptedConfig.iv},
       ${input.encryptedConfig.authTag},
-      ${input.encryptedConfig.version ?? 2}
+      ${input.encryptedConfig.version ?? 2},
+      ${input.sortOrder ?? 0}
     );
   `;
 };
@@ -273,3 +282,94 @@ export const updateServerEnabled = async (id: string, isEnabled: boolean): Promi
     WHERE id = ${id};
   `;
 };
+
+export const getServer = async (id: string): Promise<ServerRecord | null> => {
+  await ensureSchema();
+  const query = getSql();
+  const rows = await query`SELECT * FROM vpn_servers WHERE id = ${id} LIMIT 1;` as DatabaseServer[];
+  if (rows.length === 0) return null;
+  return mapServer(rows[0]);
+};
+
+export const updateServer = async (id: string, input: {
+  name?: string;
+  protocol?: string;
+  host?: string;
+  port?: number;
+  country?: string;
+  isEnabled?: boolean;
+  options?: ProtocolOptions;
+  encryptedConfig?: { version?: number; cipherText: string; salt?: string; iv: string; authTag: string };
+}): Promise<void> => {
+  await ensureSchema();
+  const query = getSql();
+  
+  const updates: string[] = [];
+  const values: any[] = [];
+  
+  const addUpdate = (column: string, value: any) => {
+    updates.push(`${column} = $${values.length + 1}`);
+    values.push(value);
+  };
+  
+  if (input.name !== undefined) addUpdate('name', input.name);
+  if (input.protocol !== undefined) addUpdate('protocol', input.protocol);
+  if (input.host !== undefined) addUpdate('host', input.host);
+  if (input.port !== undefined) addUpdate('port', input.port);
+  if (input.country !== undefined) addUpdate('country', input.country);
+  if (input.isEnabled !== undefined) addUpdate('is_enabled', input.isEnabled);
+  if (input.options !== undefined) addUpdate('options_json', JSON.stringify(input.options));
+  if (input.encryptedConfig !== undefined) {
+    addUpdate('config_cipher', input.encryptedConfig.cipherText);
+    addUpdate('config_salt', input.encryptedConfig.salt ?? null);
+    addUpdate('config_iv', input.encryptedConfig.iv);
+    addUpdate('config_tag', input.encryptedConfig.authTag);
+    addUpdate('config_version', input.encryptedConfig.version ?? 2);
+  }
+  
+  if (updates.length === 0) return;
+  
+  addUpdate('updated_at', new Date());
+  
+  values.push(id);
+  const sqlString = `UPDATE vpn_servers SET ${updates.join(', ')} WHERE id = $${values.length};`;
+  
+  // Dynamic query using raw string since neon query builder doesn't easily support dynamic SET blocks
+  // but wait, neon query template literal is required to avoid injection. 
+  // We can just construct a safe query or update everything.
+  // A safer approach with neon template literal:
+  
+  const current = await getServer(id);
+  if (!current) throw new Error("Server not found");
+  
+  await query`
+    UPDATE vpn_servers SET
+      name = ${input.name ?? current.name},
+      protocol = ${input.protocol ?? current.protocol},
+      host = ${input.host ?? current.host},
+      port = ${input.port ?? current.port},
+      country = ${input.country ?? current.country},
+      is_enabled = ${input.isEnabled ?? current.isEnabled},
+      options_json = ${input.options ? JSON.stringify(input.options) : JSON.stringify(current.options)},
+      config_cipher = ${input.encryptedConfig?.cipherText ?? current.encryptedConfig.cipherText},
+      config_salt = ${input.encryptedConfig?.salt ?? current.encryptedConfig.salt ?? null},
+      config_iv = ${input.encryptedConfig?.iv ?? current.encryptedConfig.iv},
+      config_tag = ${input.encryptedConfig?.authTag ?? current.encryptedConfig.authTag},
+      config_version = ${input.encryptedConfig?.version ?? current.encryptedConfig.version ?? 2},
+      updated_at = NOW()
+    WHERE id = ${id};
+  `;
+};
+
+export const updateServerOrders = async (orders: { id: string; sort_order: number }[]): Promise<void> => {
+  await ensureSchema();
+  const query = getSql();
+  // Using a transaction is better, but since serverless neon doesn't guarantee transaction support easily without explicit connection blocks, 
+  // we can update one by one for small lists or use a CTE/unnest. Let's do batch sequential.
+  for (const item of orders) {
+    await query`
+      UPDATE vpn_servers SET sort_order = ${item.sort_order}, updated_at = NOW() WHERE id = ${item.id};
+    `;
+  }
+};
+

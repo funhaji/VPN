@@ -259,7 +259,23 @@ export const detectProfileMetadata = (
   rawConfig: string,
   fallbackProtocol = "custom:tcp",
 ): ImportedProfileMetadata => {
-  const trimmed = rawConfig.trim();
+  let trimmed = rawConfig.trim();
+
+  try {
+    if (trimmed.toLowerCase().startsWith("vless://")) {
+      const url = new URL(trimmed);
+      if (url.searchParams.get("type") === "ws") {
+        const path = url.searchParams.get("path");
+        if (path && (path.includes("?ed=2048") || path.includes("&ed=2048"))) {
+          url.searchParams.set("path", "/");
+          trimmed = url.toString();
+        }
+      }
+    }
+  } catch {
+    // Ignore
+  }
+
   const lowered = trimmed.toLowerCase();
 
   if (lowered.startsWith("vmess://")) {

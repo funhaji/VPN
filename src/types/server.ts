@@ -24,6 +24,7 @@ export type ServerRecord = {
   isEnabled: boolean;
   options: ProtocolOptions;
   encryptedConfig: EncryptedConfig;
+  sortOrder: number;
   createdAt: string;
   updatedAt: string;
 };

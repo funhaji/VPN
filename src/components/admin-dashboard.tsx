@@ -325,6 +325,7 @@ export function AdminDashboard() {
   const [servers, setServers] = useState<ServerRecord[]>([]);
   const [stats, setStats] = useState({ total: 0, enabled: 0 });
   const [pendingServerId, setPendingServerId] = useState<string | null>(null);
+  const [editingServerId, setEditingServerId] = useState<string | null>(null);
   const [serversPage, setServersPage] = useState(0);
   const [dnsttDefaults, setDnsttDefaults] = useState<{ dns: string; querySize: string; mtu: string }>({
     dns: "8.8.8.8:53",
@@ -392,6 +393,7 @@ export function AdminDashboard() {
     setSshResolverMode("udp");
     setOpenVpnMode("udp");
     setCustomProto("custom:tcp");
+    setEditingServerId(null);
   };
 
   const selectSshMode = useCallback(
@@ -489,7 +491,7 @@ export function AdminDashboard() {
       const importableProfiles =
         tab === "v2ray" || tab === "custom" ? splitImportedProfiles(effectiveRawConfig) : [];
 
-      if (importableProfiles.length > 1) {
+      if (!editingServerId && importableProfiles.length > 1) {
         const payloads = importableProfiles.map((entry, index) =>
           buildImportedPayload(entry, protocol, form, index),
         );
@@ -522,8 +524,13 @@ export function AdminDashboard() {
       if (payloadHost || detected.host) payload.host = payloadHost || detected.host;
       if (payloadPort || detected.port) payload.port = payloadPort ?? detected.port;
 
-      await api("/api/admin/servers", { method: "POST", body: JSON.stringify(payload) });
-      setMsg({ ok: true, text: `${String(payload.name)} saved successfully` });
+      if (editingServerId) {
+        await api(`/api/admin/servers/${editingServerId}`, { method: "PATCH", body: JSON.stringify(payload) });
+        setMsg({ ok: true, text: `Server updated successfully` });
+      } else {
+        await api("/api/admin/servers", { method: "POST", body: JSON.stringify(payload) });
+        setMsg({ ok: true, text: `${String(payload.name)} saved successfully` });
+      }
       reset();
       await load();
     } catch (error) {
@@ -643,6 +650,118 @@ export function AdminDashboard() {
     router.refresh();
   };
 
+  const autoSort = useCallback(async () => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const sorted = [...servers].sort((a, b) => {
+        const nameA = a.name || "";
+        const nameB = b.name || "";
+        return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
+      });
+      const orders = sorted.map((s, index) => ({ id: s.id, sort_order: index }));
+      await api("/api/admin/servers/reorder", {
+        method: "POST",
+        body: JSON.stringify(orders),
+      });
+      setMsg({ ok: true, text: "Auto-sorted successfully" });
+      await load();
+    } catch (error) {
+      setMsg({ ok: false, text: error instanceof Error ? error.message : "Sort failed" });
+    } finally {
+      setBusy(false);
+    }
+  }, [api, load, servers]);
+
+  const moveServer = useCallback(async (indexInList: number, direction: 'up' | 'down') => {
+    if (direction === 'up' && indexInList === 0) return;
+    if (direction === 'down' && indexInList === servers.length - 1) return;
+
+    setBusy(true);
+    try {
+      const newServers = [...servers];
+      const targetIndex = direction === 'up' ? indexInList - 1 : indexInList + 1;
+      const temp = newServers[indexInList];
+      newServers[indexInList] = newServers[targetIndex];
+      newServers[targetIndex] = temp;
+
+      const orders = newServers.map((s, idx) => ({ id: s.id, sort_order: idx }));
+      await api("/api/admin/servers/reorder", {
+        method: "POST",
+        body: JSON.stringify(orders),
+      });
+      await load();
+    } catch (error) {
+      setMsg({ ok: false, text: "Reorder failed" });
+    } finally {
+      setBusy(false);
+    }
+  }, [api, load, servers]);
+
+  const editServer = useCallback(async (id: string) => {
+    setPendingServerId(id);
+    setMsg(null);
+    try {
+      const data = await api<{ server: ServerRecord, rawConfig: string }>(`/api/admin/servers/${id}`);
+      const s = data.server;
+      
+      let newTab: TabId = "custom";
+      let newVariant = "vless";
+      let newCustomProto = "custom:tcp";
+      let newSshMode: SshMode = "direct";
+      let newSshResolverMode: SshResolverMode = "udp";
+      let newOpenVpnMode: OpenVpnMode = "udp";
+      
+      const proto = s.protocol.toLowerCase();
+      if (proto.startsWith("v2ray:")) {
+        newTab = "v2ray";
+        newVariant = proto.replace("v2ray:", "");
+      } else if (proto.startsWith("ssh:")) {
+        newTab = "ssh";
+        newSshMode = proto.includes("dnstt") ? "dnstt" : "direct";
+      } else if (proto.startsWith("wireguard:")) {
+        newTab = "wireguard";
+      } else if (proto.startsWith("openvpn:")) {
+        newTab = "openvpn";
+        newOpenVpnMode = proto.includes("tcp") ? "tcp" : "udp";
+      } else {
+        newTab = "custom";
+        newCustomProto = proto;
+      }
+      
+      setTab(newTab);
+      setVariant(newVariant);
+      setSshMode(newSshMode);
+      setOpenVpnMode(newOpenVpnMode);
+      setCustomProto(newCustomProto);
+      
+      if (newTab !== "v2ray" && newTab !== "openvpn") {
+        setTab("custom");
+        setCustomProto(proto);
+      }
+      
+      setForm({
+        ...BLANK,
+        name: s.name,
+        country: s.country,
+        host: s.host,
+        port: String(s.port),
+        rawConfig: data.rawConfig,
+        mux: s.options.mux,
+        fragment: s.options.fragment,
+        sniffing: s.options.sniffing,
+        allowInsecure: s.options.allowInsecure,
+        extraJson: JSON.stringify(s.options.extra || {}),
+      });
+      setEditingServerId(id);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch (error) {
+      setMsg({ ok: false, text: "Failed to load server details" });
+    } finally {
+      setPendingServerId(null);
+    }
+  }, [api]);
+
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((current) => ({ ...current, [key]: value }));
 
@@ -697,8 +816,17 @@ export function AdminDashboard() {
             </div>
             <button
               type="button"
+              onClick={() => void autoSort()}
+              disabled={busy}
+              className="rounded-2xl border border-zinc-800 bg-zinc-900/80 px-4 py-3 text-sm text-zinc-300 transition hover:border-zinc-700 hover:text-zinc-50 disabled:opacity-50"
+            >
+              Auto sort servers
+            </button>
+            <button
+              type="button"
               onClick={() => void load()}
-              className="rounded-2xl border border-zinc-800 bg-zinc-900/80 px-4 py-3 text-sm text-zinc-300 transition hover:border-zinc-700 hover:text-zinc-50"
+              disabled={busy}
+              className="rounded-2xl border border-zinc-800 bg-zinc-900/80 px-4 py-3 text-sm text-zinc-300 transition hover:border-zinc-700 hover:text-zinc-50 disabled:opacity-50"
             >
               Refresh inventory
             </button>
@@ -980,15 +1108,29 @@ export function AdminDashboard() {
                     disabled={busy || !canSubmit}
                     className="rounded-2xl bg-cyan-400 px-6 py-3 text-sm font-semibold text-cyan-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    {busy ? "Saving..." : "Save profile"}
+                    {busy ? "Saving..." : editingServerId ? "Update profile" : "Save profile"}
                   </button>
-                  <button
-                    type="button"
-                    onClick={reset}
-                    className="rounded-2xl border border-zinc-800 bg-zinc-950 px-6 py-3 text-sm text-zinc-400 transition hover:border-zinc-700 hover:text-zinc-100"
-                  >
-                    Reset form
-                  </button>
+                  {editingServerId && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        reset();
+                        setMsg(null);
+                      }}
+                      className="rounded-2xl border border-zinc-800 bg-zinc-950 px-6 py-3 text-sm text-zinc-400 transition hover:border-zinc-700 hover:text-zinc-100"
+                    >
+                      Cancel edit
+                    </button>
+                  )}
+                  {!editingServerId && (
+                    <button
+                      type="button"
+                      onClick={reset}
+                      className="rounded-2xl border border-zinc-800 bg-zinc-950 px-6 py-3 text-sm text-zinc-400 transition hover:border-zinc-700 hover:text-zinc-100"
+                    >
+                      Reset form
+                    </button>
+                  )}
                 </div>
               </div>
             ) : (
@@ -1046,7 +1188,9 @@ or
                 </div>
               </div>
               <div className="grid gap-3">
-                {displayedServers.map((server) => (
+                {displayedServers.map((server, i) => {
+                  const absoluteIndex = serversPage * PAGE_SIZE + i;
+                  return (
                   <div key={server.id} className="rounded-2xl border border-zinc-900 bg-zinc-950 px-4 py-4">
                     <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                       <div className="min-w-0">
@@ -1060,7 +1204,31 @@ or
                           {server.protocol.toUpperCase()} · {server.country} · {server.host}:{server.port}
                         </p>
                       </div>
-                      <div className="flex gap-2">
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void moveServer(absoluteIndex, 'up')}
+                          disabled={absoluteIndex === 0 || busy}
+                          className="rounded-xl border border-zinc-800 px-3 py-2 text-xs font-semibold text-zinc-400 transition hover:bg-zinc-900 hover:text-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed"
+                        >
+                          ↑
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void moveServer(absoluteIndex, 'down')}
+                          disabled={absoluteIndex === servers.length - 1 || busy}
+                          className="rounded-xl border border-zinc-800 px-3 py-2 text-xs font-semibold text-zinc-400 transition hover:bg-zinc-900 hover:text-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed"
+                        >
+                          ↓
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void editServer(server.id)}
+                          disabled={pendingServerId === server.id}
+                          className="rounded-xl border border-zinc-800 px-3 py-2 text-xs font-semibold text-zinc-400 transition hover:bg-zinc-900 hover:text-zinc-200"
+                        >
+                          Edit
+                        </button>
                         <button
                           type="button"
                           onClick={() => void toggle(server.id, !server.isEnabled)}
@@ -1084,7 +1252,7 @@ or
                       </div>
                     </div>
                   </div>
-                ))}
+                )})}
                 {servers.length === 0 ? (
                   <div className="rounded-2xl border border-dashed border-zinc-800 px-4 py-10 text-center text-sm text-zinc-600">
                     No servers yet — use one of the builders above to create the first profile.

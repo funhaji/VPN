@@ -75,6 +75,33 @@ const withOptional = <T extends JsonObject>(
 const buildMultiplex = (options: ProtocolOptions): JsonObject | undefined =>
   options.mux ? { enabled: true } : undefined;
 
+const parseExtraJson = (value: string | null | undefined): JsonObject | undefined => {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const candidate = trimmed.startsWith("{") ? trimmed : decodeBase64(trimmed);
+  const parsed = parseJson(candidate);
+  return isObject(parsed) ? parsed : undefined;
+};
+
+const buildXhttpTransport = (params: {
+  path?: string | null;
+  host?: string | null;
+  mode?: string | null;
+  extra?: string | null;
+  headers?: Record<string, string>;
+}): JsonObject =>
+  withOptional(
+    { type: "xhttp" },
+    {
+      path: params.path ?? undefined,
+      host: params.host ?? undefined,
+      mode: params.mode ?? undefined,
+      extra: parseExtraJson(params.extra),
+      headers: params.headers,
+    },
+  );
+
 const buildTlsFromUrl = (
   url: URL,
   options: ProtocolOptions,
@@ -138,11 +165,24 @@ const buildTransportFromUrl = (url: URL): JsonObject | undefined => {
     return undefined;
   }
   if (type === "ws") {
-    const ed = parseNumber(url.searchParams.get("ed"), 0);
+    const rawPath = url.searchParams.get("path") ?? "";
+    let wsPath: string | undefined;
+    let ed: number;
+    const embeddedQ = rawPath.indexOf("?");
+    if (embeddedQ !== -1) {
+      const pathPart = rawPath.slice(0, embeddedQ);
+      const embedded = new URLSearchParams(rawPath.slice(embeddedQ + 1));
+      const edFromPath = parseNumber(embedded.get("ed"), 0);
+      ed = edFromPath > 0 ? edFromPath : parseNumber(url.searchParams.get("ed"), 0);
+      wsPath = pathPart || "/";
+    } else {
+      wsPath = rawPath || undefined;
+      ed = parseNumber(url.searchParams.get("ed"), 0);
+    }
     return withOptional(
       { type: "ws" },
       {
-        path: url.searchParams.get("path") ?? undefined,
+        path: wsPath,
         headers: url.searchParams.get("host")
           ? { Host: url.searchParams.get("host") }
           : undefined,
@@ -180,6 +220,16 @@ const buildTransportFromUrl = (url: URL): JsonObject | undefined => {
         host: url.searchParams.get("host") ?? undefined,
       },
     );
+  }
+  if (type === "xhttp" || type === "splithttp") {
+    const host = url.searchParams.get("host");
+    return buildXhttpTransport({
+      path: url.searchParams.get("path"),
+      host,
+      mode: url.searchParams.get("mode"),
+      extra: url.searchParams.get("extra"),
+      headers: host ? { Host: host } : undefined,
+    });
   }
   return undefined;
 };
@@ -442,7 +492,9 @@ const buildOutboundFromVmess = (
                 host: host ? [host] : undefined,
               },
             )
-          : undefined;
+          : network === "xhttp" || network === "splithttp"
+            ? buildXhttpTransport({ path, host })
+            : undefined;
 
   return withOptional(
     {
@@ -509,6 +561,11 @@ const buildOutboundFromXrayJson = (
   const httpupgradeSettings = isObject(streamSettings.httpupgradeSettings)
     ? streamSettings.httpupgradeSettings
     : {};
+  const xhttpSettings = isObject(streamSettings.xhttpSettings)
+    ? streamSettings.xhttpSettings
+    : isObject(streamSettings.splithttpSettings)
+      ? streamSettings.splithttpSettings
+      : {};
 
   const tls = security === "tls" || security === "reality"
     ? withOptional(
@@ -579,7 +636,26 @@ const buildOutboundFromXrayJson = (
                   host: pickString(httpupgradeSettings.host),
                 },
               )
-            : undefined;
+            : network === "xhttp" || network === "splithttp"
+              ? withOptional(
+                  { type: "xhttp" },
+                  {
+                    path: pickString(xhttpSettings.path),
+                    host: pickString(xhttpSettings.host),
+                    mode: pickString(xhttpSettings.mode),
+                    headers:
+                      isObject(xhttpSettings.headers) &&
+                      Object.keys(xhttpSettings.headers).length > 0
+                        ? Object.fromEntries(
+                            Object.entries(xhttpSettings.headers).filter(
+                              (entry): entry is [string, string] =>
+                                typeof entry[1] === "string",
+                            ),
+                          )
+                        : undefined,
+                  },
+                )
+              : undefined;
 
   if (protocol === "vless" || protocol === "vmess") {
     const vnext = Array.isArray(settings.vnext) ? settings.vnext[0] : null;
