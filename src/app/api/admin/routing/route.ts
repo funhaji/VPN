@@ -1,17 +1,21 @@
-import { NextResponse } from "next/server";
-import { listRoutingRules, addRoutingRules, deleteRoutingRule } from "@/lib/db";
-import { requireSession } from "@/lib/session";
+import { NextRequest, NextResponse } from "next/server";
+import { listRoutingRules, addRoutingRules } from "@/lib/db";
+import { isAuthorized, limitRequest } from "@/lib/auth";
 import { revalidatePath } from "next/cache";
 
-export async function GET() {
-  await requireSession();
+export async function GET(request: NextRequest) {
+  if (!limitRequest(request)) return NextResponse.json({ error: "Too many requests" }, { status: 429 });
+  if (!isAuthorized(request)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   const rules = await listRoutingRules();
   return NextResponse.json({ rules });
 }
 
-export async function POST(req: Request) {
-  await requireSession();
-  const body = await req.json();
+export async function POST(request: NextRequest) {
+  if (!limitRequest(request)) return NextResponse.json({ error: "Too many requests" }, { status: 429 });
+  if (!isAuthorized(request)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const body = await request.json();
   const { rules } = body;
   if (!Array.isArray(rules)) {
     return NextResponse.json({ error: "rules must be an array" }, { status: 400 });

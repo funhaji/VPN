@@ -382,7 +382,6 @@ export const updateServerOrders = async (orders: { id: string; sort_order: numbe
       UPDATE vpn_servers SET sort_order = ${item.sort_order}, updated_at = NOW() WHERE id = ${item.id};
     `;
   }
-  }
 };
 
 export type RoutingRuleRecord = {

@@ -862,7 +862,9 @@ export function AdminDashboard() {
 
         <div className="grid gap-6 p-8 xl:grid-cols-[minmax(0,1.5fr)_360px]">
           <section className="space-y-6">
-            {tab !== "bulk" ? (
+            {tab === "routing" ? (
+              <RoutingRulesPanel api={api} busy={busy} setBusy={setBusy} setMsg={setMsg} />
+            ) : tab !== "bulk" ? (
               <div className="rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-6">
                 <div className="grid gap-4 md:grid-cols-2">
                   <Field label="Server name" value={form.name} onChange={(value) => set("name", value)} placeholder="Germany Premium #1" />
@@ -1135,8 +1137,6 @@ export function AdminDashboard() {
                   )}
                 </div>
               </div>
-            ) : tab === "routing" ? (
-              <RoutingRulesPanel api={api} busy={busy} setBusy={setBusy} setMsg={setMsg} />
             ) : (
               <div className="rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-6">
                 <TextArea
