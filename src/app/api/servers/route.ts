@@ -222,13 +222,12 @@ const buildTransportFromUrl = (url: URL): JsonObject | undefined => {
     );
   }
   if (type === "xhttp" || type === "splithttp") {
-    const host = url.searchParams.get("host");
     return buildXhttpTransport({
       path: url.searchParams.get("path"),
-      host,
+      host: url.searchParams.get("host"),
       mode: url.searchParams.get("mode"),
       extra: url.searchParams.get("extra"),
-      headers: host ? { Host: host } : undefined,
+      headers: undefined, // Don't add Host header - Xray rejects it in xhttp
     });
   }
   return undefined;
