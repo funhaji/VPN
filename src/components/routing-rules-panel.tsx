@@ -46,7 +46,16 @@ export function RoutingRulesPanel({
     setBusy(true);
     try {
       const lines = raw.split(/[\n,]+/).map(r => r.trim()).filter(Boolean);
-      const mapped = lines.map(value => ({ type, value }));
+      const mapped = lines.map(value => {
+        let cleanValue = value;
+        if (type === "domain") {
+          // Strip http:// or https://
+          cleanValue = cleanValue.replace(/^https?:\/\//i, "");
+          // Strip paths
+          cleanValue = cleanValue.split("/")[0];
+        }
+        return { type, value: cleanValue };
+      });
       
       await api("/api/admin/routing", {
         method: "POST",
@@ -57,6 +66,34 @@ export function RoutingRulesPanel({
       await loadRules();
     } catch (e) {
       setMsg({ ok: false, text: "Failed to add rules" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const loadDefaultRules = async () => {
+    setBusy(true);
+    try {
+      const defaults = [
+        ...[
+          "94.101.178.69", "193.176.243.25", "192.168.70.1", "185.239.104.186"
+        ].map(value => ({ type: "ip", value })),
+        ...[
+          "splus.ir", "maxgaming.ir", "uupload.ir", "anime-shop.ir", "oppobot.ir", "modemhamrah.ir", 
+          "gbaz.ir", "persianjanebi.com", "sajad-iran.onthewifi.com", "s3.tcnl.ir", "bale.sh", 
+          "restorecord.com", "parsdev.com", "soroshsanat.ir", "openlua.cloud", "saba.host", 
+          "scdn.co", "goftino.com", "ecsw.ir", "divar.cloud", "gov.ir", "elcdn.ir", 
+          "electrotm.org", "yektanet.com"
+        ].map(value => ({ type: "domain", value }))
+      ];
+      await api("/api/admin/routing", {
+        method: "POST",
+        body: JSON.stringify({ rules: defaults })
+      });
+      setMsg({ ok: true, text: "Added default Iranian rules" });
+      await loadRules();
+    } catch (e) {
+      setMsg({ ok: false, text: "Failed to load default rules" });
     } finally {
       setBusy(false);
     }
@@ -101,14 +138,14 @@ export function RoutingRulesPanel({
 
       <div className="rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-6">
         <h3 className="text-lg font-semibold text-zinc-50">Domain Rules</h3>
-        <p className="mt-1 text-sm text-zinc-500">Bypass VPN for these domains. Prefix with `domain:` for Xray syntax.</p>
+        <p className="mt-1 text-sm text-zinc-500">Bypass VPN for these domains.</p>
         <div className="mt-4">
           <textarea
             className="w-full rounded-2xl border border-zinc-800 bg-zinc-950/80 px-3 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none transition focus:border-cyan-500 font-mono resize-none"
             rows={5}
             value={bulkDomain}
             onChange={(e) => setBulkDomain(e.target.value)}
-            placeholder="domain:splus.ir&#10;domain:divar.ir"
+            placeholder="splus.ir&#10;divar.ir"
           />
           <button
             type="button"
@@ -147,7 +184,19 @@ export function RoutingRulesPanel({
         <h3 className="text-lg font-semibold text-zinc-50">Active Rules</h3>
         <p className="mt-1 text-sm text-zinc-500">List of all applied bypass rules.</p>
         <div className="mt-4 flex flex-col gap-2 max-h-96 overflow-y-auto pr-2">
-          {rules.length === 0 && <p className="text-zinc-500 text-sm">No rules active.</p>}
+          {rules.length === 0 && (
+            <div className="flex flex-col items-start gap-3">
+              <p className="text-zinc-500 text-sm">No rules active.</p>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void loadDefaultRules()}
+                className="rounded-xl border border-zinc-800 bg-zinc-900 px-4 py-2 text-xs font-semibold text-zinc-300 hover:bg-zinc-800 transition disabled:opacity-50"
+              >
+                Load Default Iranian Rules
+              </button>
+            </div>
+          )}
           {rules.map((rule) => (
             <div key={rule.id} className="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900 px-4 py-3">
               <div className="flex items-center gap-3">
