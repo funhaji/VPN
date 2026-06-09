@@ -731,6 +731,17 @@ const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): JsonObjec
   const trimmed = rawConfig.trim();
   const parsedJson = parseJson(trimmed);
 
+  // Helper: Check if outbound requires Xray-core (xhttp/splithttp are Xray-only transports)
+  const requiresXray = (outbound: unknown): boolean => {
+    if (!isObject(outbound)) return false;
+    const transport = (outbound as JsonObject).transport;
+    if (isObject(transport)) {
+      const type = pickString((transport as JsonObject).type);
+      return type === "xhttp" || type === "splithttp";
+    }
+    return false;
+  };
+
   if (isObject(parsedJson)) {
     const parsedType = pickString((parsedJson as JsonObject).type);
     if (parsedType && parsedType.toLowerCase() === "dnstt-ssh") {
@@ -763,25 +774,26 @@ const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): JsonObjec
         return Boolean(type && !["direct", "block", "dns"].includes(type));
       });
       if (isObject(singBoxOutbound)) {
+        const outbound = withOptional(
+          {
+            ...singBoxOutbound,
+            tag: "proxy",
+          },
+          {
+            multiplex: server.options.mux ? { enabled: true } : singBoxOutbound.multiplex,
+          },
+        );
         return {
-          engine: "sing-box",
+          engine: requiresXray(outbound) ? "xray-core" : "sing-box",
           supported: true,
-          outbound: withOptional(
-            {
-              ...singBoxOutbound,
-              tag: "proxy",
-            },
-            {
-              multiplex: server.options.mux ? { enabled: true } : singBoxOutbound.multiplex,
-            },
-          ),
+          outbound,
         };
       }
 
       const xrayOutbound = buildOutboundFromXrayJson(parsedJson, server.options);
       if (xrayOutbound) {
         return {
-          engine: "sing-box",
+          engine: requiresXray(xrayOutbound) ? "xray-core" : "sing-box",
           supported: true,
           outbound: xrayOutbound,
         };
@@ -789,36 +801,42 @@ const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): JsonObjec
     }
 
     if (typeof parsedJson.type === "string" && typeof parsedJson.server === "string") {
+      const outbound = withOptional(
+        {
+          ...parsedJson,
+          tag: "proxy",
+        },
+        {
+          multiplex: server.options.mux ? { enabled: true } : parsedJson.multiplex,
+        },
+      );
       return {
-        engine: "sing-box",
+        engine: requiresXray(outbound) ? "xray-core" : "sing-box",
         supported: true,
-        outbound: withOptional(
-          {
-            ...parsedJson,
-            tag: "proxy",
-          },
-          {
-            multiplex: server.options.mux ? { enabled: true } : parsedJson.multiplex,
-          },
-        ),
+        outbound,
       };
     }
   }
 
   if (normalizedProtocol === "vless") {
-    return { engine: "sing-box", supported: true, outbound: buildOutboundFromVless(trimmed, server.options) };
+    const outbound = buildOutboundFromVless(trimmed, server.options);
+    return { engine: requiresXray(outbound) ? "xray-core" : "sing-box", supported: true, outbound };
   }
   if (normalizedProtocol === "vmess") {
-    return { engine: "sing-box", supported: true, outbound: buildOutboundFromVmess(trimmed, server.options) };
+    const outbound = buildOutboundFromVmess(trimmed, server.options);
+    return { engine: requiresXray(outbound) ? "xray-core" : "sing-box", supported: true, outbound };
   }
   if (normalizedProtocol === "trojan") {
-    return { engine: "sing-box", supported: true, outbound: buildOutboundFromTrojan(trimmed, server.options) };
+    const outbound = buildOutboundFromTrojan(trimmed, server.options);
+    return { engine: requiresXray(outbound) ? "xray-core" : "sing-box", supported: true, outbound };
   }
   if (normalizedProtocol === "shadowsocks") {
-    return { engine: "sing-box", supported: true, outbound: buildOutboundFromShadowsocks(trimmed, server.options) };
+    const outbound = buildOutboundFromShadowsocks(trimmed, server.options);
+    return { engine: requiresXray(outbound) ? "xray-core" : "sing-box", supported: true, outbound };
   }
   if (normalizedProtocol === "hysteria2") {
-    return { engine: "sing-box", supported: true, outbound: buildOutboundFromHysteria2(trimmed, server.options) };
+    const outbound = buildOutboundFromHysteria2(trimmed, server.options);
+    return { engine: requiresXray(outbound) ? "xray-core" : "sing-box", supported: true, outbound };
   }
   if (normalizedProtocol === "ssh") {
     try {
