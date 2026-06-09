@@ -57,11 +57,16 @@ export function RoutingRulesPanel({
         return { type, value: cleanValue };
       });
       
-      await api("/api/admin/routing", {
+      const res = await api<{ success: boolean; count: number; totalSubmitted: number }>("/api/admin/routing", {
         method: "POST",
         body: JSON.stringify({ rules: mapped })
       });
-      setMsg({ ok: true, text: `Added ${mapped.length} ${type} rules` });
+      if (res.count < mapped.length) {
+        const skipped = mapped.length - res.count;
+        setMsg({ ok: true, text: `Added ${res.count} new ${type} rules (${skipped} duplicates skipped)` });
+      } else {
+        setMsg({ ok: true, text: `Added ${res.count} ${type} rules` });
+      }
       setRaw("");
       await loadRules();
     } catch (e) {

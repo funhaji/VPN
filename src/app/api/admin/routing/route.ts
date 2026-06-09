@@ -21,17 +21,29 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "rules must be an array" }, { status: 400 });
   }
 
+  const existingRules = await listRoutingRules();
+  const existingSet = new Set(existingRules.map(r => `${r.type}:${r.value}`));
+
   const crypto = globalThis.crypto;
-  const toAdd = rules.map((r: { type: string; value: string }) => ({
-    id: crypto.randomUUID(),
-    type: r.type,
-    value: r.value,
-  }));
+  const toAdd = [];
+  const addedSet = new Set<string>();
+
+  for (const r of rules) {
+    const key = `${r.type}:${r.value}`;
+    if (!existingSet.has(key) && !addedSet.has(key)) {
+      toAdd.push({
+        id: crypto.randomUUID(),
+        type: r.type,
+        value: r.value,
+      });
+      addedSet.add(key);
+    }
+  }
 
   if (toAdd.length > 0) {
     await addRoutingRules(toAdd);
     revalidatePath("/api/client/routing");
   }
 
-  return NextResponse.json({ success: true, count: toAdd.length });
+  return NextResponse.json({ success: true, count: toAdd.length, totalSubmitted: rules.length });
 }
