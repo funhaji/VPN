@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 type RoutingRuleRecord = {
   id: string;
@@ -24,13 +24,22 @@ export function RoutingRulesPanel({
   const [bulkIp, setBulkIp] = useState("");
   const [bulkDomain, setBulkDomain] = useState("");
   const [bulkProcess, setBulkProcess] = useState("");
+  const ruleCounts = useMemo(
+    () => ({
+      ip: rules.filter((rule) => rule.type === "ip").length,
+      domain: rules.filter((rule) => rule.type === "domain").length,
+      process: rules.filter((rule) => rule.type === "process").length,
+      all: rules.length,
+    }),
+    [rules],
+  );
 
   const loadRules = useCallback(async () => {
     setBusy(true);
     try {
       const res = await api<{ rules: RoutingRuleRecord[] }>("/api/admin/routing");
       setRules(res.rules);
-    } catch (e) {
+    } catch {
       setMsg({ ok: false, text: "Failed to load routing rules" });
     } finally {
       setBusy(false);
@@ -69,7 +78,7 @@ export function RoutingRulesPanel({
       }
       setRaw("");
       await loadRules();
-    } catch (e) {
+    } catch {
       setMsg({ ok: false, text: "Failed to add rules" });
     } finally {
       setBusy(false);
@@ -97,7 +106,7 @@ export function RoutingRulesPanel({
       });
       setMsg({ ok: true, text: "Added default Iranian rules" });
       await loadRules();
-    } catch (e) {
+    } catch {
       setMsg({ ok: false, text: "Failed to load default rules" });
     } finally {
       setBusy(false);
@@ -110,8 +119,27 @@ export function RoutingRulesPanel({
       await api(`/api/admin/routing/${id}`, { method: "DELETE" });
       setMsg({ ok: true, text: "Rule deleted" });
       await loadRules();
-    } catch (e) {
+    } catch {
       setMsg({ ok: false, text: "Failed to delete rule" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const clearRules = async (type?: "ip" | "domain" | "process") => {
+    const label = type ? `${type} rules` : "all routing rules";
+    if (!window.confirm(`Delete ${label}? This cannot be undone.`)) return;
+
+    setBusy(true);
+    try {
+      const suffix = type ? `?type=${encodeURIComponent(type)}` : "";
+      const res = await api<{ success: boolean; deleted: number }>(`/api/admin/routing${suffix}`, {
+        method: "DELETE",
+      });
+      setMsg({ ok: true, text: `Deleted ${res.deleted} ${type ?? "routing"} rules` });
+      await loadRules();
+    } catch {
+      setMsg({ ok: false, text: "Failed to clear rules" });
     } finally {
       setBusy(false);
     }
@@ -120,8 +148,20 @@ export function RoutingRulesPanel({
   return (
     <div className="space-y-8">
       <div className="rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-6">
-        <h3 className="text-lg font-semibold text-zinc-50">IP Rules</h3>
-        <p className="mt-1 text-sm text-zinc-500">Bypass VPN for these IPs (one per line or comma separated).</p>
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div>
+            <h3 className="text-lg font-semibold text-zinc-50">IP Rules</h3>
+            <p className="mt-1 text-sm text-zinc-500">Bypass VPN for these IPs (one per line or comma separated).</p>
+          </div>
+          <button
+            type="button"
+            disabled={busy || ruleCounts.ip === 0}
+            onClick={() => void clearRules("ip")}
+            className="rounded-xl border border-rose-700/50 px-3 py-2 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/10 disabled:opacity-40"
+          >
+            Delete all IP
+          </button>
+        </div>
         <div className="mt-4">
           <textarea
             className="w-full rounded-2xl border border-zinc-800 bg-zinc-950/80 px-3 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none transition focus:border-cyan-500 font-mono resize-none"
@@ -142,8 +182,20 @@ export function RoutingRulesPanel({
       </div>
 
       <div className="rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-6">
-        <h3 className="text-lg font-semibold text-zinc-50">Domain Rules</h3>
-        <p className="mt-1 text-sm text-zinc-500">Bypass VPN for these domains.</p>
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div>
+            <h3 className="text-lg font-semibold text-zinc-50">Domain Rules</h3>
+            <p className="mt-1 text-sm text-zinc-500">Bypass VPN for these domains.</p>
+          </div>
+          <button
+            type="button"
+            disabled={busy || ruleCounts.domain === 0}
+            onClick={() => void clearRules("domain")}
+            className="rounded-xl border border-rose-700/50 px-3 py-2 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/10 disabled:opacity-40"
+          >
+            Delete all domains
+          </button>
+        </div>
         <div className="mt-4">
           <textarea
             className="w-full rounded-2xl border border-zinc-800 bg-zinc-950/80 px-3 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none transition focus:border-cyan-500 font-mono resize-none"
@@ -164,8 +216,20 @@ export function RoutingRulesPanel({
       </div>
 
       <div className="rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-6">
-        <h3 className="text-lg font-semibold text-zinc-50">Process Rules</h3>
-        <p className="mt-1 text-sm text-zinc-500">Bypass VPN for these processes.</p>
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div>
+            <h3 className="text-lg font-semibold text-zinc-50">Process Rules</h3>
+            <p className="mt-1 text-sm text-zinc-500">Bypass VPN for these processes.</p>
+          </div>
+          <button
+            type="button"
+            disabled={busy || ruleCounts.process === 0}
+            onClick={() => void clearRules("process")}
+            className="rounded-xl border border-rose-700/50 px-3 py-2 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/10 disabled:opacity-40"
+          >
+            Delete all processes
+          </button>
+        </div>
         <div className="mt-4">
           <textarea
             className="w-full rounded-2xl border border-zinc-800 bg-zinc-950/80 px-3 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none transition focus:border-cyan-500 font-mono resize-none"
@@ -186,8 +250,20 @@ export function RoutingRulesPanel({
       </div>
 
       <div className="rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-6">
-        <h3 className="text-lg font-semibold text-zinc-50">Active Rules</h3>
-        <p className="mt-1 text-sm text-zinc-500">List of all applied bypass rules.</p>
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div>
+            <h3 className="text-lg font-semibold text-zinc-50">Active Rules</h3>
+            <p className="mt-1 text-sm text-zinc-500">List of all applied bypass rules.</p>
+          </div>
+          <button
+            type="button"
+            disabled={busy || ruleCounts.all === 0}
+            onClick={() => void clearRules()}
+            className="rounded-xl border border-rose-700/50 px-3 py-2 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/10 disabled:opacity-40"
+          >
+            Delete all rules
+          </button>
+        </div>
         <div className="mt-4 flex flex-col gap-2 max-h-96 overflow-y-auto pr-2">
           {rules.length === 0 && (
             <div className="flex flex-col items-start gap-3">

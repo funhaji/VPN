@@ -271,10 +271,64 @@ export const createServers = async (
     encryptedConfig: { version?: number; cipherText: string; salt?: string; iv: string; authTag: string };
   }>,
 ): Promise<void> => {
-  const BATCH_SIZE = 20;
+  await ensureSchema();
+  const query = getSql();
+  const BATCH_SIZE = 100;
   for (let index = 0; index < items.length; index += BATCH_SIZE) {
     const chunk = items.slice(index, index + BATCH_SIZE);
-    await Promise.all(chunk.map((item) => createServer(item)));
+    const rows = chunk.map((item, offset) => ({
+      id: item.id,
+      name: item.name,
+      protocol: item.protocol,
+      host: item.host,
+      port: item.port,
+      country: item.country,
+      is_enabled: item.isEnabled,
+      options_json: JSON.stringify(item.options),
+      config_cipher: item.encryptedConfig.cipherText,
+      config_salt: item.encryptedConfig.salt ?? null,
+      config_iv: item.encryptedConfig.iv,
+      config_tag: item.encryptedConfig.authTag,
+      config_version: item.encryptedConfig.version ?? 2,
+      sort_order: index + offset,
+    }));
+    await query`
+      INSERT INTO vpn_servers (
+        id, name, protocol, host, port, country, is_enabled, options_json,
+        config_cipher, config_salt, config_iv, config_tag, config_version, sort_order
+      )
+      SELECT
+        id::uuid,
+        name,
+        protocol,
+        host,
+        port,
+        country,
+        is_enabled,
+        options_json,
+        config_cipher,
+        config_salt,
+        config_iv,
+        config_tag,
+        config_version,
+        sort_order
+      FROM jsonb_to_recordset(${JSON.stringify(rows)}::jsonb) AS x(
+        id text,
+        name text,
+        protocol text,
+        host text,
+        port int,
+        country text,
+        is_enabled boolean,
+        options_json text,
+        config_cipher text,
+        config_salt text,
+        config_iv text,
+        config_tag text,
+        config_version int,
+        sort_order int
+      );
+    `;
   }
 };
 
@@ -282,6 +336,25 @@ export const deleteServer = async (id: string): Promise<void> => {
   await ensureSchema();
   const query = getSql();
   await query`DELETE FROM vpn_servers WHERE id = ${id};`;
+};
+
+export const deleteAllServers = async (): Promise<number> => {
+  await ensureSchema();
+  const query = getSql();
+  const rows = await query`DELETE FROM vpn_servers RETURNING id;` as Array<{ id: string }>;
+  return rows.length;
+};
+
+export const setAllServersEnabled = async (isEnabled: boolean): Promise<number> => {
+  await ensureSchema();
+  const query = getSql();
+  const rows = await query`
+    UPDATE vpn_servers
+    SET is_enabled = ${isEnabled}, updated_at = NOW()
+    WHERE is_enabled IS DISTINCT FROM ${isEnabled}
+    RETURNING id;
+  ` as Array<{ id: string }>;
+  return rows.length;
 };
 
 export const updateServerEnabled = async (id: string, isEnabled: boolean): Promise<void> => {
@@ -314,41 +387,9 @@ export const updateServer = async (id: string, input: {
 }): Promise<void> => {
   await ensureSchema();
   const query = getSql();
-  
-  const updates: string[] = [];
-  const values: any[] = [];
-  
-  const addUpdate = (column: string, value: any) => {
-    updates.push(`${column} = $${values.length + 1}`);
-    values.push(value);
-  };
-  
-  if (input.name !== undefined) addUpdate('name', input.name);
-  if (input.protocol !== undefined) addUpdate('protocol', input.protocol);
-  if (input.host !== undefined) addUpdate('host', input.host);
-  if (input.port !== undefined) addUpdate('port', input.port);
-  if (input.country !== undefined) addUpdate('country', input.country);
-  if (input.isEnabled !== undefined) addUpdate('is_enabled', input.isEnabled);
-  if (input.options !== undefined) addUpdate('options_json', JSON.stringify(input.options));
-  if (input.encryptedConfig !== undefined) {
-    addUpdate('config_cipher', input.encryptedConfig.cipherText);
-    addUpdate('config_salt', input.encryptedConfig.salt ?? null);
-    addUpdate('config_iv', input.encryptedConfig.iv);
-    addUpdate('config_tag', input.encryptedConfig.authTag);
-    addUpdate('config_version', input.encryptedConfig.version ?? 2);
-  }
-  
-  if (updates.length === 0) return;
-  
-  addUpdate('updated_at', new Date());
-  
-  values.push(id);
-  const sqlString = `UPDATE vpn_servers SET ${updates.join(', ')} WHERE id = $${values.length};`;
-  
-  // Dynamic query using raw string since neon query builder doesn't easily support dynamic SET blocks
-  // but wait, neon query template literal is required to avoid injection. 
-  // We can just construct a safe query or update everything.
-  // A safer approach with neon template literal:
+
+  const hasChanges = Object.values(input).some((value) => value !== undefined);
+  if (!hasChanges) return;
   
   const current = await getServer(id);
   if (!current) throw new Error("Server not found");
@@ -375,13 +416,17 @@ export const updateServer = async (id: string, input: {
 export const updateServerOrders = async (orders: { id: string; sort_order: number }[]): Promise<void> => {
   await ensureSchema();
   const query = getSql();
-  // Using a transaction is better, but since serverless neon doesn't guarantee transaction support easily without explicit connection blocks, 
-  // we can update one by one for small lists or use a CTE/unnest. Let's do batch sequential.
-  for (const item of orders) {
-    await query`
-      UPDATE vpn_servers SET sort_order = ${item.sort_order}, updated_at = NOW() WHERE id = ${item.id};
-    `;
-  }
+  if (orders.length === 0) return;
+  await query`
+    WITH incoming AS (
+      SELECT id::uuid, sort_order
+      FROM jsonb_to_recordset(${JSON.stringify(orders)}::jsonb) AS x(id text, sort_order int)
+    )
+    UPDATE vpn_servers AS server
+    SET sort_order = incoming.sort_order, updated_at = NOW()
+    FROM incoming
+    WHERE server.id = incoming.id;
+  `;
 };
 
 export type RoutingRuleRecord = {
@@ -398,22 +443,36 @@ export const listRoutingRules = async (): Promise<RoutingRuleRecord[]> => {
   return rows as RoutingRuleRecord[];
 };
 
-export const addRoutingRules = async (rules: { id: string; type: string; value: string }[]): Promise<void> => {
+export const addRoutingRules = async (rules: { id: string; type: string; value: string }[]): Promise<number> => {
   await ensureSchema();
   const query = getSql();
-  const BATCH_SIZE = 50;
+  let inserted = 0;
+  const BATCH_SIZE = 250;
   for (let i = 0; i < rules.length; i += BATCH_SIZE) {
     const chunk = rules.slice(i, i + BATCH_SIZE);
-    await Promise.all(chunk.map(r => query`
+    const rows = await query`
       INSERT INTO routing_rules (id, type, value)
-      VALUES (${r.id}, ${r.type}, ${r.value})
-      ON CONFLICT (type, value) DO NOTHING;
-    `));
+      SELECT id::uuid, type, value
+      FROM jsonb_to_recordset(${JSON.stringify(chunk)}::jsonb) AS x(id text, type text, value text)
+      ON CONFLICT (type, value) DO NOTHING
+      RETURNING id;
+    ` as Array<unknown>;
+    inserted += rows.length;
   }
+  return inserted;
 };
 
 export const deleteRoutingRule = async (id: string): Promise<void> => {
   await ensureSchema();
   const query = getSql();
   await query`DELETE FROM routing_rules WHERE id = ${id};`;
+};
+
+export const deleteRoutingRules = async (type?: string): Promise<number> => {
+  await ensureSchema();
+  const query = getSql();
+  const rows = type
+    ? await query`DELETE FROM routing_rules WHERE type = ${type} RETURNING id;`
+    : await query`DELETE FROM routing_rules RETURNING id;`;
+  return (rows as Array<{ id: string }>).length;
 };

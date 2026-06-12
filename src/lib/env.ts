@@ -7,8 +7,10 @@ const readEnv = (name: string): string => {
 };
 
 export const getDatabaseUrl = (): string =>
-  process.env.DATABASE_URL ??
+  process.env.DATABASE_URL_POOLED ??
   process.env.POSTGRES_URL ??
+  process.env.POSTGRES_PRISMA_URL ??
+  process.env.DATABASE_URL ??
   process.env.DATABASE_URL_UNPOOLED ??
   process.env.POSTGRES_URL_NON_POOLING ??
   readEnv("DATABASE_URL");

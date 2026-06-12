@@ -1,12 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { createServer, createServers, listServers } from "@/lib/db";
+import { revalidatePath } from "next/cache";
+import { createServer, createServers, deleteAllServers, listServers, setAllServersEnabled } from "@/lib/db";
 import { encryptConfig } from "@/lib/crypto";
 import { isAuthorized, limitRequest } from "@/lib/auth";
 import { detectProfileMetadata } from "@/lib/profile-import";
 import { serverInputSchema } from "@/lib/validation";
 
 export const dynamic = "force-dynamic";
+
+const revalidateServerCatalog = (): void => {
+  revalidatePath("/api/servers");
+};
 
 const normalizeEndpoint = (
   input: { host?: string; port?: number; rawConfig: string },
@@ -73,6 +78,7 @@ export async function POST(request: NextRequest) {
           };
         }),
       );
+      revalidateServerCatalog();
       return NextResponse.json({ ok: true, count: validServers.length });
     }
 
@@ -94,7 +100,48 @@ export async function POST(request: NextRequest) {
       encryptedConfig,
     });
 
+    revalidateServerCatalog();
     return NextResponse.json({ ok: true });
+  } catch {
+    return NextResponse.json({ error: "Request failed" }, { status: 500 });
+  }
+}
+
+export async function PATCH(request: NextRequest) {
+  if (!limitRequest(request)) {
+    return NextResponse.json({ error: "Too many requests" }, { status: 429 });
+  }
+  if (!isAuthorized(request)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  try {
+    const payload = (await request.json()) as { action?: unknown };
+    const action = typeof payload.action === "string" ? payload.action : "";
+    if (action !== "enable-all" && action !== "disable-all") {
+      return NextResponse.json({ error: "Invalid action" }, { status: 400 });
+    }
+
+    const changed = await setAllServersEnabled(action === "enable-all");
+    revalidateServerCatalog();
+    return NextResponse.json({ ok: true, changed });
+  } catch {
+    return NextResponse.json({ error: "Request failed" }, { status: 500 });
+  }
+}
+
+export async function DELETE(request: NextRequest) {
+  if (!limitRequest(request)) {
+    return NextResponse.json({ error: "Too many requests" }, { status: 429 });
+  }
+  if (!isAuthorized(request)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  try {
+    const deleted = await deleteAllServers();
+    revalidateServerCatalog();
+    return NextResponse.json({ ok: true, deleted });
   } catch {
     return NextResponse.json({ error: "Request failed" }, { status: 500 });
   }

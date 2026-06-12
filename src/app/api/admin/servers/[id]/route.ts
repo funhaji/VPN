@@ -1,12 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
-import { deleteServer, updateServerEnabled } from "@/lib/db";
+import { revalidatePath } from "next/cache";
+import { deleteServer, getServer, updateServer } from "@/lib/db";
 import { isAuthorized, limitRequest } from "@/lib/auth";
 
 import { decryptConfig, encryptConfig } from "@/lib/crypto";
-import { getServer, updateServer } from "@/lib/db";
 import { updateServerSchema } from "@/lib/validation";
 
 export const dynamic = "force-dynamic";
+
+const revalidateServerCatalog = (): void => {
+  revalidatePath("/api/servers");
+};
 
 const getId = (input: string): string | null => {
   const value = input.trim();
@@ -63,13 +67,21 @@ export async function PATCH(
     }
 
     const data = parsed.data;
-    const updateInput: any = { ...data };
+    const updateInput: Parameters<typeof updateServer>[1] = {
+      name: data.name,
+      protocol: data.protocol,
+      host: data.host,
+      port: data.port,
+      country: data.country,
+      isEnabled: data.isEnabled,
+      options: data.options,
+    };
     if (data.rawConfig !== undefined) {
       updateInput.encryptedConfig = encryptConfig(data.rawConfig);
-      delete updateInput.rawConfig;
     }
 
     await updateServer(id, updateInput);
+    revalidateServerCatalog();
     return NextResponse.json({ ok: true });
   } catch {
     return NextResponse.json({ error: "Request failed" }, { status: 500 });
@@ -92,5 +104,6 @@ export async function DELETE(
     return NextResponse.json({ error: "Invalid id" }, { status: 400 });
   }
   await deleteServer(id);
+  revalidateServerCatalog();
   return NextResponse.json({ ok: true });
 }

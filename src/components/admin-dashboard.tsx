@@ -540,7 +540,7 @@ export function AdminDashboard() {
     } finally {
       setBusy(false);
     }
-  }, [api, effectiveRawConfig, form, load, payloadHost, payloadPort, protocol, tab]);
+  }, [api, editingServerId, effectiveRawConfig, form, load, payloadHost, payloadPort, protocol, tab]);
 
   const submitBulk = useCallback(async () => {
     setBusy(true);
@@ -647,6 +647,35 @@ export function AdminDashboard() {
     }
   }, [api, load]);
 
+  const bulkServerAction = useCallback(async (action: "enable-all" | "disable-all" | "delete-all") => {
+    if (action === "delete-all" && !window.confirm("Delete every stored server? This cannot be undone.")) {
+      return;
+    }
+
+    setBusy(true);
+    setMsg(null);
+    try {
+      if (action === "delete-all") {
+        const res = await api<{ deleted: number }>("/api/admin/servers", { method: "DELETE" });
+        setMsg({ ok: true, text: `Deleted ${res.deleted} servers` });
+      } else {
+        const res = await api<{ changed: number }>("/api/admin/servers", {
+          method: "PATCH",
+          body: JSON.stringify({ action }),
+        });
+        setMsg({
+          ok: true,
+          text: `${action === "enable-all" ? "Enabled" : "Disabled"} ${res.changed} servers`,
+        });
+      }
+      await load();
+    } catch (error) {
+      setMsg({ ok: false, text: error instanceof Error ? error.message : "Bulk action failed" });
+    } finally {
+      setBusy(false);
+    }
+  }, [api, load]);
+
   const logout = async () => {
     await fetch("/api/admin/auth/logout", { method: "POST" });
     router.refresh();
@@ -693,7 +722,7 @@ export function AdminDashboard() {
         body: JSON.stringify(orders),
       });
       await load();
-    } catch (error) {
+    } catch {
       setMsg({ ok: false, text: "Reorder failed" });
     } finally {
       setBusy(false);
@@ -711,7 +740,6 @@ export function AdminDashboard() {
       let newVariant = "vless";
       let newCustomProto = "custom:tcp";
       let newSshMode: SshMode = "direct";
-      let newSshResolverMode: SshResolverMode = "udp";
       let newOpenVpnMode: OpenVpnMode = "udp";
       
       const proto = s.protocol.toLowerCase();
@@ -757,7 +785,7 @@ export function AdminDashboard() {
       });
       setEditingServerId(id);
       window.scrollTo({ top: 0, behavior: "smooth" });
-    } catch (error) {
+    } catch {
       setMsg({ ok: false, text: "Failed to load server details" });
     } finally {
       setPendingServerId(null);
@@ -1182,13 +1210,39 @@ or
             ) : null}
 
             <div className="rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-6">
-              <div className="mb-4 flex items-center justify-between">
+              <div className="mb-4 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                 <div>
                   <h4 className="text-lg font-semibold text-zinc-50">Stored servers</h4>
                   <p className="mt-1 text-sm text-zinc-500">Inventory synced from encrypted storage.</p>
                 </div>
-                <div className="rounded-full border border-zinc-800 px-3 py-1 text-xs text-zinc-400">
-                  {stats.total} total
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void bulkServerAction("enable-all")}
+                    disabled={busy || stats.total === 0}
+                    className="rounded-xl border border-emerald-700/50 px-3 py-2 text-xs font-semibold text-emerald-300 transition hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Enable all
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void bulkServerAction("disable-all")}
+                    disabled={busy || stats.total === 0}
+                    className="rounded-xl border border-zinc-800 px-3 py-2 text-xs font-semibold text-zinc-400 transition hover:bg-zinc-900 hover:text-zinc-200 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Disable all
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void bulkServerAction("delete-all")}
+                    disabled={busy || stats.total === 0}
+                    className="rounded-xl border border-rose-700/50 px-3 py-2 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Delete all
+                  </button>
+                  <div className="rounded-full border border-zinc-800 px-3 py-1 text-xs text-zinc-400">
+                    {stats.total} total
+                  </div>
                 </div>
               </div>
               <div className="grid gap-3">

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { listRoutingRules, addRoutingRules } from "@/lib/db";
+import { listRoutingRules, addRoutingRules, deleteRoutingRules } from "@/lib/db";
 import { isAuthorized, limitRequest } from "@/lib/auth";
 import { revalidatePath } from "next/cache";
 
@@ -21,29 +21,53 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "rules must be an array" }, { status: 400 });
   }
 
-  const existingRules = await listRoutingRules();
-  const existingSet = new Set(existingRules.map(r => `${r.type}:${r.value}`));
-
   const crypto = globalThis.crypto;
   const toAdd = [];
   const addedSet = new Set<string>();
 
   for (const r of rules) {
-    const key = `${r.type}:${r.value}`;
-    if (!existingSet.has(key) && !addedSet.has(key)) {
+    if (
+      !r ||
+      typeof r !== "object" ||
+      !["ip", "domain", "process"].includes(String(r.type)) ||
+      typeof r.value !== "string" ||
+      !r.value.trim()
+    ) {
+      return NextResponse.json({ error: "Invalid rule payload" }, { status: 400 });
+    }
+    const type = String(r.type);
+    const value = r.value.trim();
+    const key = `${type}:${value}`;
+    if (!addedSet.has(key)) {
       toAdd.push({
         id: crypto.randomUUID(),
-        type: r.type,
-        value: r.value,
+        type,
+        value,
       });
       addedSet.add(key);
     }
   }
 
+  let count = 0;
   if (toAdd.length > 0) {
-    await addRoutingRules(toAdd);
+    count = await addRoutingRules(toAdd);
     revalidatePath("/api/client/routing");
   }
 
-  return NextResponse.json({ success: true, count: toAdd.length, totalSubmitted: rules.length });
+  return NextResponse.json({ success: true, count, totalSubmitted: rules.length });
+}
+
+export async function DELETE(request: NextRequest) {
+  if (!limitRequest(request)) return NextResponse.json({ error: "Too many requests" }, { status: 429 });
+  if (!isAuthorized(request)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const url = new URL(request.url);
+  const type = url.searchParams.get("type")?.trim();
+  if (type && !["ip", "domain", "process"].includes(type)) {
+    return NextResponse.json({ error: "Invalid type" }, { status: 400 });
+  }
+
+  const deleted = await deleteRoutingRules(type || undefined);
+  revalidatePath("/api/client/routing");
+  return NextResponse.json({ success: true, deleted });
 }

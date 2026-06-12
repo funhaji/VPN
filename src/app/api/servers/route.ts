@@ -3,7 +3,7 @@ import { decryptConfig } from "@/lib/crypto";
 import { listServers } from "@/lib/db";
 import type { ProtocolOptions, ServerRecord } from "@/types/server";
 
-export const revalidate = 60; // Cache on Edge CDN for 60 seconds
+export const revalidate = 300; // Cache the public catalog for 5 minutes.
 
 type JsonObject = Record<string, unknown>;
 
@@ -870,8 +870,8 @@ export async function GET() {
           id: server.id,
           name: server.name,
           protocol: server.protocol,
-          host: server.host,
-          port: server.port,
+          host: null,
+          port: null,
           country: server.country,
           options: server.options,
           rawConfig: "",
@@ -884,7 +884,12 @@ export async function GET() {
     }
 
     const { encryptCatalogPayload } = await import("@/lib/client-catalog");
-    return NextResponse.json(encryptCatalogPayload({ servers: catalogServers }));
+    return NextResponse.json(encryptCatalogPayload({ servers: catalogServers }), {
+      headers: {
+        "Cache-Control": "public, max-age=0, must-revalidate",
+        "CDN-Cache-Control": "public, s-maxage=300, stale-while-revalidate=86400",
+      },
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to build server catalog";
     return NextResponse.json({ error: message }, { status: 500 });
