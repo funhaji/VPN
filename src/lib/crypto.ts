@@ -12,12 +12,16 @@ import { getPassphrase } from "@/lib/env";
 const ALGORITHM = "aes-256-gcm";
 const KEY_LENGTH = 32;
 const LEGACY_ITERATIONS = 310_000;
-const CURRENT_ITERATIONS = 600_000;
-const CURRENT_VERSION = 2;
-const RECORD_SALT_LENGTH = 16;
-const AAD = Buffer.from("astro-vpn-config:v2", "utf8");
+const V2_ITERATIONS = 600_000;
+const CURRENT_ITERATIONS = 900_000;
+const CURRENT_VERSION = 3;
+const V2_SALT_LENGTH = 16;
+const RECORD_SALT_LENGTH = 32;
+const V2_AAD = Buffer.from("astro-vpn-config:v2", "utf8");
+const AAD = Buffer.from("astro-vpn-config:v3", "utf8");
 
 let cachedLegacyKey: Buffer | null = null;
+let cachedV2MasterKey: Buffer | null = null;
 let cachedMasterKey: Buffer | null = null;
 
 const getDeploymentSalt = (): string => process.env.ENCRYPTION_SALT ?? "AUGabgabgoag";
@@ -36,6 +40,20 @@ const getLegacyKey = (): Buffer => {
   return cachedLegacyKey;
 };
 
+const getV2MasterKey = (): Buffer => {
+  if (cachedV2MasterKey) {
+    return cachedV2MasterKey;
+  }
+  cachedV2MasterKey = pbkdf2Sync(
+    getPassphrase(),
+    getDeploymentSalt(),
+    V2_ITERATIONS,
+    KEY_LENGTH,
+    "sha256",
+  );
+  return cachedV2MasterKey;
+};
+
 const getMasterKey = (): Buffer => {
   if (cachedMasterKey) {
     return cachedMasterKey;
@@ -49,6 +67,9 @@ const getMasterKey = (): Buffer => {
   );
   return cachedMasterKey;
 };
+
+const deriveV2RecordKey = (salt: Buffer): Buffer =>
+  Buffer.from(hkdfSync("sha256", getV2MasterKey(), salt, "astro-vpn-config", KEY_LENGTH));
 
 const deriveRecordKey = (salt: Buffer): Buffer =>
   Buffer.from(hkdfSync("sha256", getMasterKey(), salt, "astro-vpn-config", KEY_LENGTH));
@@ -112,7 +133,8 @@ export const encryptConfig = (plainText: string): EncryptedConfig => {
 };
 
 export const decryptConfig = (encrypted: EncryptedConfig): string => {
-  if (needsEncryptionUpgrade(encrypted)) {
+  // v1 (legacy) - no salt, no AAD, 310k iterations
+  if (needsEncryptionUpgrade(encrypted) && encrypted.version !== 2) {
     try {
       return decryptLegacyConfig(encrypted);
     } catch {
@@ -127,6 +149,23 @@ export const decryptConfig = (encrypted: EncryptedConfig): string => {
     }
   }
 
+  // v2 - 16-byte salt, v2 AAD, 600k iterations
+  if (encrypted.version === 2) {
+    const decipher = createDecipheriv(
+      ALGORITHM,
+      deriveV2RecordKey(Buffer.from(encrypted.salt ?? "", "base64")),
+      Buffer.from(encrypted.iv, "base64"),
+    );
+    decipher.setAAD(V2_AAD);
+    decipher.setAuthTag(Buffer.from(encrypted.authTag, "base64"));
+    const decrypted = Buffer.concat([
+      decipher.update(Buffer.from(encrypted.cipherText, "base64")),
+      decipher.final(),
+    ]);
+    return decrypted.toString("utf8");
+  }
+
+  // v3 (current) - 32-byte salt, v3 AAD, 900k iterations
   const decipher = createDecipheriv(
     ALGORITHM,
     deriveRecordKey(Buffer.from(encrypted.salt ?? "", "base64")),
