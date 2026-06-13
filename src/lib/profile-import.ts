@@ -127,6 +127,7 @@ export const detectProtocol = (rawConfig: string, fallback = "custom:tcp"): stri
   if (lowered.startsWith("trojan://")) return "v2ray:trojan";
   if (lowered.startsWith("ss://")) return "v2ray:shadowsocks";
   if (lowered.startsWith("hy2://") || lowered.startsWith("hysteria2://")) return "v2ray:hysteria2";
+  if (lowered.startsWith("socks://") || lowered.startsWith("socks5://") || lowered.startsWith("2socks://")) return "v2ray:socks";
   if (lowered.startsWith("ssh://")) return "ssh:direct";
   if (lowered.startsWith("wg://")) return "wireguard:profile";
 

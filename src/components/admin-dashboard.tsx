@@ -87,7 +87,7 @@ const PROTOCOLS: Array<{
   badge: string;
   support: string;
 }> = [
-  { id: "v2ray", label: "V2Ray", badge: "vless / vmess / trojan / ss / hy2", support: "Desktop-ready" },
+  { id: "v2ray", label: "V2Ray", badge: "vless / vmess / trojan / ss / hy2 / socks", support: "Desktop-ready" },
   { id: "ssh", label: "SSH", badge: "direct / dnstt", support: "Direct ready · DNSTT stored" },
   { id: "wireguard", label: "WireGuard", badge: "structured profile", support: "Stored for rollout" },
   { id: "openvpn", label: "OpenVPN", badge: ".ovpn / inline", support: "Stored for rollout" },
@@ -907,7 +907,7 @@ export function AdminDashboard() {
                 {tab === "v2ray" ? (
                   <div className="mt-6 space-y-4">
                     <div className="flex flex-wrap gap-2">
-                      {["vless", "vmess", "trojan", "shadowsocks", "hysteria2"].map((item) => (
+                      {["vless", "vmess", "trojan", "shadowsocks", "hysteria2", "socks"].map((item) => (
                         <ToggleChip key={item} label={item} checked={variant === item} onChange={() => setVariant(item)} />
                       ))}
                     </div>

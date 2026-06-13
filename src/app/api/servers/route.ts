@@ -242,6 +242,7 @@ const normalizeProtocol = (protocol: string, rawConfig: string): string => {
   if (trimmed.startsWith("trojan://")) return "trojan";
   if (trimmed.startsWith("ss://")) return "shadowsocks";
   if (trimmed.startsWith("hy2://") || trimmed.startsWith("hysteria2://")) return "hysteria2";
+  if (trimmed.startsWith("socks://") || trimmed.startsWith("socks5://") || trimmed.startsWith("2socks://")) return "socks";
   if (trimmed.startsWith("ssh://")) return "ssh";
   if (trimmed.startsWith("wg://")) return "wireguard";
   if (lowered.includes("vless")) return "vless";
@@ -249,6 +250,7 @@ const normalizeProtocol = (protocol: string, rawConfig: string): string => {
   if (lowered.includes("trojan")) return "trojan";
   if (lowered.includes("shadowsocks") || lowered.endsWith(":ss") || lowered === "ss") return "shadowsocks";
   if (lowered.includes("hysteria2") || lowered.includes("hy2")) return "hysteria2";
+  if (lowered.includes("socks")) return "socks";
   if (lowered.includes("ssh")) return "ssh";
   if (lowered.includes("wireguard") || lowered === "wg") return "wireguard";
   if (lowered.includes("openvpn")) return "openvpn";
@@ -363,6 +365,41 @@ const buildOutboundFromHysteria2 = (
           }
         : undefined,
     },
+  );
+};
+
+const buildOutboundFromSocks = (
+  rawConfig: string,
+  options: ProtocolOptions,
+): JsonObject => {
+  const url = new URL(rawConfig.replace(/^2?socks5?:\/\//i, "socks5://"));
+  let username = decodeURIComponent(url.username);
+  let password = decodeURIComponent(url.password);
+
+  if (!password && username) {
+    try {
+      const decoded = atob(username);
+      if (decoded.includes(":")) {
+        const parts = decoded.split(":");
+        username = parts[0];
+        password = parts.slice(1).join(":");
+      }
+    } catch (e) {
+      // Not base64
+    }
+  }
+
+  return withOptional(
+    {
+      type: "socks",
+      tag: "proxy",
+      server: url.hostname,
+      server_port: parseNumber(url.port, 1080),
+    },
+    {
+      username: username || undefined,
+      password: password || undefined,
+    }
   );
 };
 
@@ -836,6 +873,10 @@ const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): JsonObjec
   if (normalizedProtocol === "hysteria2") {
     const outbound = buildOutboundFromHysteria2(trimmed, server.options);
     return { engine: requiresXray(outbound) ? "xray-core" : "sing-box", supported: true, outbound };
+  }
+  if (normalizedProtocol === "socks") {
+    const outbound = buildOutboundFromSocks(trimmed, server.options);
+    return { engine: "xray", supported: true, outbound };
   }
   if (normalizedProtocol === "ssh") {
     try {
