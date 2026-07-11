@@ -17,7 +17,7 @@ export const serverInputSchema = z.object({
   port: z.number().int().min(1).max(65535).optional(),
   country: z.string().trim().min(2).max(80),
   isEnabled: z.boolean().default(true),
-  rawConfig: z.string().trim().min(2).max(25_000),
+  rawConfig: z.string().trim().min(2).max(100_000),
   options: protocolOptionsSchema,
 });
 

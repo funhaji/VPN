@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { ServerRecord } from "@/types/server";
 import { detectProfileMetadata, splitImportedProfiles } from "@/lib/profile-import";
@@ -10,6 +10,16 @@ type TabId = "v2ray" | "ssh" | "openvpn" | "wireguard" | "custom" | "bulk" | "ro
 type SshMode = "direct" | "dnstt";
 type SshResolverMode = "udp" | "dot" | "doh";
 type OpenVpnMode = "tcp" | "udp";
+type OpenVpnInputMode = "file" | "paste";
+
+type OvpnFile = {
+  id: string;
+  name: string;
+  content: string;
+  selected: boolean;
+  username: string;
+  password: string;
+};
 
 type FormState = {
   name: string;
@@ -189,15 +199,22 @@ const buildWireGuardProfile = (form: FormState): string =>
     2,
   );
 
-const buildOpenVpnProfile = (form: FormState, mode: OpenVpnMode): string =>
-  JSON.stringify(
+const parseOvpnRemote = (content: string): { host: string; port: number; transport: string } | null => {
+  const match = content.match(/^remote[ \t]+(\S+)[ \t]+(\d+)(?:[ \t]+(udp|tcp))?/im);
+  if (!match) return null;
+  return { host: match[1], port: Number(match[2]), transport: (match[3] ?? "udp").toLowerCase() };
+};
+
+const buildOpenVpnProfile = (form: FormState, mode: OpenVpnMode): string => {
+  const detected = parseOvpnRemote(form.rawConfig);
+  const host = form.host.trim() || detected?.host || "";
+  const port = parseNumber(form.port) ?? detected?.port ?? 1194;
+  const transport = detected?.transport ?? mode;
+  return JSON.stringify(
     {
       type: "openvpn-profile",
-      transport: mode,
-      remote: {
-        host: form.host.trim(),
-        port: parseNumber(form.port) ?? 1194,
-      },
+      transport,
+      remote: { host, port },
       credentials: {
         username: form.openVpnUsername.trim(),
         password: form.openVpnPassword.trim(),
@@ -207,6 +224,7 @@ const buildOpenVpnProfile = (form: FormState, mode: OpenVpnMode): string =>
     null,
     2,
   );
+};
 
 const buildHttpProfile = (form: FormState): string =>
   JSON.stringify(
@@ -338,6 +356,12 @@ export function AdminDashboard() {
   const [sshMode, setSshMode] = useState<SshMode>("direct");
   const [sshResolverMode, setSshResolverMode] = useState<SshResolverMode>("udp");
   const [openVpnMode, setOpenVpnMode] = useState<OpenVpnMode>("udp");
+  const [openVpnInputMode, setOpenVpnInputMode] = useState<OpenVpnInputMode>("paste");
+  const [ovpnFiles, setOvpnFiles] = useState<OvpnFile[]>([]);
+  const [ovpnBulkUsername, setOvpnBulkUsername] = useState("");
+  const [ovpnBulkPassword, setOvpnBulkPassword] = useState("");
+  const [ovpnDragging, setOvpnDragging] = useState(false);
+  const ovpnFileInputRef = useRef<HTMLInputElement>(null);
   const [customProto, setCustomProto] = useState("custom:tcp");
   const [bulk, setBulk] = useState("");
   const [busy, setBusy] = useState(false);
@@ -406,6 +430,28 @@ export function AdminDashboard() {
     void load();
   }, [load]);
 
+  const handleOvpnFiles = useCallback(async (files: File[]) => {
+    const loaded = await Promise.all(
+      files.map(async (file): Promise<OvpnFile> => {
+        const content = await file.text();
+        const name = file.name.replace(/\.ovpn$/i, "");
+        return {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          name: name || file.name,
+          content,
+          selected: true,
+          username: "",
+          password: "",
+        };
+      }),
+    );
+    setOvpnFiles((prev) => {
+      const existingContents = new Set(prev.map((f) => f.content));
+      const fresh = loaded.filter((f) => !existingContents.has(f.content));
+      return [...prev, ...fresh];
+    });
+  }, []);
+
   const reset = useCallback((keepFields?: boolean) => {
     if (keepFields) {
       setForm((prev) => ({
@@ -427,6 +473,7 @@ export function AdminDashboard() {
       setSshMode("direct");
       setSshResolverMode("udp");
       setOpenVpnMode("udp");
+      setOvpnFiles([]);
       setCustomProto("custom:tcp");
     }
     setEditingServerId(null);
@@ -480,6 +527,9 @@ export function AdminDashboard() {
     return form.rawConfig.trim();
   }, [form, openVpnMode, sshMode, sshResolverMode, tab]);
 
+  // Deferred so the big JSON preview doesn't block keystrokes
+  const deferredEffectiveRawConfig = useDeferredValue(effectiveRawConfig);
+
   const parsedImportProfiles = useMemo(
     () => (tab === "v2ray" || tab === "custom" ? splitImportedProfiles(effectiveRawConfig) : []),
     [effectiveRawConfig, tab],
@@ -520,7 +570,9 @@ export function AdminDashboard() {
       return Boolean(form.host.trim() && form.port.trim() && form.wgLocalAddress.trim() && form.wgPrivateKey.trim() && form.wgPeerPublicKey.trim());
     }
     if (tab === "openvpn") {
-      return Boolean(form.host.trim() && form.port.trim() && form.rawConfig.trim());
+      if (openVpnInputMode === "file") return ovpnFiles.length > 0;
+      const detectedRemote = parseOvpnRemote(form.rawConfig);
+      return Boolean(form.name.trim() && form.rawConfig.trim() && (form.host.trim() || detectedRemote));
     }
     if (tab === "http") {
       return Boolean(form.host.trim() && form.port.trim());
@@ -532,6 +584,44 @@ export function AdminDashboard() {
     setBusy(true);
     setMsg(null);
     try {
+      // ── OpenVPN file-upload bulk submit ──────────────────────────────────
+      if (tab === "openvpn" && openVpnInputMode === "file") {
+        const payloads = ovpnFiles.map((file) => {
+          const detected = parseOvpnRemote(file.content);
+          const transport = detected?.transport ?? openVpnMode;
+          const rawConfig = JSON.stringify({
+            type: "openvpn-profile",
+            transport,
+            remote: {
+              host: detected?.host ?? "embedded-config",
+              port: detected?.port ?? 1194,
+            },
+            credentials: { username: file.username, password: file.password },
+            profile: file.content,
+          });
+          const safeName = (file.name || `OpenVPN ${detected?.host ?? "Config"}`).trim();
+          return {
+            name: safeName.length >= 2 ? safeName : `${safeName} Config`,
+            protocol: `openvpn:${transport}`,
+            country: safeName.length >= 2 ? safeName : "Imported",
+            rawConfig,
+            isEnabled: true,
+            options: { mux: false, fragment: false, sniffing: false, allowInsecure: false, extra: {} },
+            host: detected?.host ?? "embedded-config",
+            port: detected?.port ?? 1194,
+          };
+        });
+        await api("/api/admin/servers", {
+          method: "POST",
+          body: JSON.stringify({ servers: payloads }),
+        });
+        setMsg({ ok: true, text: `Imported ${payloads.length} OpenVPN profile${payloads.length !== 1 ? "s" : ""}` });
+        setOvpnFiles([]);
+        await load();
+        return;
+      }
+      // ── End OpenVPN file-upload ──────────────────────────────────────────
+
       const importableProfiles =
         tab === "v2ray" || tab === "custom" ? splitImportedProfiles(effectiveRawConfig) : [];
 
@@ -544,7 +634,7 @@ export function AdminDashboard() {
           body: JSON.stringify({ servers: payloads }),
         });
         setMsg({ ok: true, text: `Imported ${payloads.length} profiles` });
-        reset();
+        reset(false);
         await load();
         return;
       }
@@ -571,7 +661,7 @@ export function AdminDashboard() {
       if (editingServerId) {
         await api(`/api/admin/servers/${editingServerId}`, { method: "PATCH", body: JSON.stringify(payload) });
         setMsg({ ok: true, text: `Server updated successfully` });
-        reset();
+        reset(false);
       } else {
         await api("/api/admin/servers", { method: "POST", body: JSON.stringify(payload) });
         setMsg({ ok: true, text: `${String(payload.name)} saved successfully` });
@@ -583,7 +673,7 @@ export function AdminDashboard() {
     } finally {
       setBusy(false);
     }
-  }, [api, editingServerId, effectiveRawConfig, form, load, payloadHost, payloadPort, protocol, tab, reset]);
+  }, [api, editingServerId, effectiveRawConfig, form, load, openVpnInputMode, openVpnMode, ovpnFiles, payloadHost, payloadPort, protocol, tab, reset]);
 
   const submitBulk = useCallback(async () => {
     setBusy(true);
@@ -1122,24 +1212,227 @@ export function AdminDashboard() {
                 ) : null}
 
                 {tab === "openvpn" ? (
-                  <div className="mt-6 space-y-4">
-                    <div className="flex flex-wrap gap-2">
+                  <div className="mt-6 space-y-5">
+                    {/* Mode + transport toggles */}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <ToggleChip label="Upload .ovpn files" checked={openVpnInputMode === "file"} onChange={() => { setOpenVpnInputMode("file"); }} />
+                      <ToggleChip label="Paste config" checked={openVpnInputMode === "paste"} onChange={() => setOpenVpnInputMode("paste")} />
+                      <span className="h-5 w-px bg-zinc-800" />
                       <ToggleChip label="UDP" checked={openVpnMode === "udp"} onChange={() => setOpenVpnMode("udp")} />
                       <ToggleChip label="TCP" checked={openVpnMode === "tcp"} onChange={() => setOpenVpnMode("tcp")} />
                     </div>
-                    <div className="grid gap-4 md:grid-cols-2">
-                      <Field label="Remote host" value={form.host} onChange={(value) => set("host", value)} placeholder="vpn.example.com" />
-                      <Field label="Remote port" value={form.port} onChange={(value) => set("port", value)} placeholder="1194" />
-                      <Field label="Profile username" value={form.openVpnUsername} onChange={(value) => set("openVpnUsername", value)} placeholder="Optional" />
-                      <Field label="Profile password" value={form.openVpnPassword} onChange={(value) => set("openVpnPassword", value)} placeholder="Optional" />
-                    </div>
-                    <TextArea
-                      label="OpenVPN profile"
-                      value={form.rawConfig}
-                      onChange={(value) => set("rawConfig", value)}
-                      rows={10}
-                      placeholder="Paste the .ovpn file contents or inline profile."
-                    />
+
+                    {openVpnInputMode === "file" ? (
+                      <div className="space-y-4">
+                        {/* Drop zone */}
+                        <div
+                          onDragOver={(e) => { e.preventDefault(); setOvpnDragging(true); }}
+                          onDragLeave={() => setOvpnDragging(false)}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            setOvpnDragging(false);
+                            const files = Array.from(e.dataTransfer.files).filter((f) => f.name.toLowerCase().endsWith(".ovpn"));
+                            void handleOvpnFiles(files);
+                          }}
+                          onClick={() => ovpnFileInputRef.current?.click()}
+                          className={`cursor-pointer select-none rounded-2xl border-2 border-dashed px-6 py-12 text-center transition ${
+                            ovpnDragging
+                              ? "border-cyan-400/80 bg-cyan-400/10"
+                              : "border-zinc-700 hover:border-zinc-600 hover:bg-zinc-900/40"
+                          }`}
+                        >
+                          <input
+                            ref={ovpnFileInputRef}
+                            type="file"
+                            accept=".ovpn"
+                            multiple
+                            className="hidden"
+                            onChange={(e) => {
+                              const files = Array.from(e.target.files ?? []);
+                              void handleOvpnFiles(files);
+                              e.target.value = "";
+                            }}
+                          />
+                          <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full border border-zinc-700 bg-zinc-900 text-zinc-400 text-lg">
+                            ↑
+                          </div>
+                          <p className="text-sm font-medium text-zinc-300">Drop .ovpn files here or click to browse</p>
+                          <p className="mt-1 text-xs text-zinc-600">Multiple files supported — filename becomes the config name</p>
+                        </div>
+
+                        {ovpnFiles.length > 0 && (
+                          <div className="space-y-3">
+                            {/* Select-all header */}
+                            <div className="flex items-center justify-between gap-3 px-1">
+                              <label className="flex cursor-pointer items-center gap-2">
+                                <input
+                                  type="checkbox"
+                                  className="accent-cyan-400"
+                                  checked={ovpnFiles.every((f) => f.selected)}
+                                  onChange={(e) =>
+                                    setOvpnFiles((prev) => prev.map((f) => ({ ...f, selected: e.target.checked })))
+                                  }
+                                />
+                                <span className="text-xs text-zinc-400">
+                                  {ovpnFiles.filter((f) => f.selected).length} of {ovpnFiles.length} selected
+                                </span>
+                              </label>
+                              <button
+                                type="button"
+                                onClick={() => setOvpnFiles([])}
+                                className="text-xs text-zinc-600 transition hover:text-rose-400"
+                              >
+                                Clear all
+                              </button>
+                            </div>
+
+                            {/* File rows */}
+                            <div className="space-y-2">
+                              {ovpnFiles.map((file) => {
+                                const detectedR = parseOvpnRemote(file.content);
+                                return (
+                                  <div
+                                    key={file.id}
+                                    className={`rounded-2xl border px-4 py-3 transition ${
+                                      file.selected
+                                        ? "border-cyan-400/30 bg-cyan-400/5"
+                                        : "border-zinc-800 bg-zinc-950"
+                                    }`}
+                                  >
+                                    <div className="flex items-center gap-3">
+                                      <input
+                                        type="checkbox"
+                                        className="flex-shrink-0 accent-cyan-400"
+                                        checked={file.selected}
+                                        onChange={(e) =>
+                                          setOvpnFiles((prev) =>
+                                            prev.map((f) =>
+                                              f.id === file.id ? { ...f, selected: e.target.checked } : f,
+                                            ),
+                                          )
+                                        }
+                                      />
+                                      <div className="min-w-0 flex-1">
+                                        <input
+                                          value={file.name}
+                                          onChange={(e) =>
+                                            setOvpnFiles((prev) =>
+                                              prev.map((f) =>
+                                                f.id === file.id ? { ...f, name: e.target.value } : f,
+                                              ),
+                                            )
+                                          }
+                                          className="w-full bg-transparent text-sm font-medium text-zinc-100 outline-none placeholder-zinc-600"
+                                          placeholder="Config name"
+                                        />
+                                        {detectedR ? (
+                                          <p className="mt-0.5 text-xs text-zinc-600">
+                                            {detectedR.host}:{detectedR.port} · {detectedR.transport.toUpperCase()}
+                                          </p>
+                                        ) : (
+                                          <p className="mt-0.5 text-xs text-amber-600/80">No remote directive detected</p>
+                                        )}
+                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={() => setOvpnFiles((prev) => prev.filter((f) => f.id !== file.id))}
+                                        className="flex-shrink-0 px-1 text-zinc-600 transition hover:text-rose-400"
+                                      >
+                                        ✕
+                                      </button>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+
+                            {/* Bulk credentials panel — only shown when ≥1 file is selected */}
+                            {ovpnFiles.some((f) => f.selected) && (
+                              <div className="rounded-2xl border border-cyan-400/20 bg-cyan-400/5 p-5 space-y-4">
+                                <div>
+                                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300/80">Apply credentials to selected</p>
+                                  <p className="mt-0.5 text-xs text-zinc-500">
+                                    Set username &amp; password for the {ovpnFiles.filter((f) => f.selected).length} checked
+                                    {ovpnFiles.filter((f) => f.selected).length === 1 ? " profile" : " profiles"} at once
+                                  </p>
+                                </div>
+                                <div className="grid gap-3 md:grid-cols-2">
+                                  <label className="block">
+                                    <span className="mb-1 block text-xs text-zinc-500">Username</span>
+                                    <input
+                                      type="text"
+                                      value={ovpnBulkUsername}
+                                      onChange={(e) => setOvpnBulkUsername(e.target.value)}
+                                      placeholder="VPN username (optional)"
+                                      className="w-full rounded-2xl border border-zinc-800 bg-zinc-950/80 px-3 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none transition focus:border-cyan-500"
+                                    />
+                                  </label>
+                                  <label className="block">
+                                    <span className="mb-1 block text-xs text-zinc-500">Password</span>
+                                    <input
+                                      type="text"
+                                      value={ovpnBulkPassword}
+                                      onChange={(e) => setOvpnBulkPassword(e.target.value)}
+                                      placeholder="VPN password (optional)"
+                                      className="w-full rounded-2xl border border-zinc-800 bg-zinc-950/80 px-3 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none transition focus:border-cyan-500"
+                                    />
+                                  </label>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setOvpnFiles((prev) =>
+                                      prev.map((f) =>
+                                        f.selected
+                                          ? { ...f, username: ovpnBulkUsername, password: ovpnBulkPassword }
+                                          : f,
+                                      ),
+                                    )
+                                  }
+                                  className="rounded-xl border border-cyan-400/40 bg-cyan-400/10 px-5 py-2.5 text-xs font-semibold text-cyan-200 transition hover:border-cyan-400/70 hover:bg-cyan-400/15"
+                                >
+                                  Apply to {ovpnFiles.filter((f) => f.selected).length} selected
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      /* Paste mode */
+                      <div className="space-y-4">
+                        <div className="grid gap-4 md:grid-cols-2">
+                          <Field label="Config name" value={form.name} onChange={(value) => set("name", value)} placeholder="My OpenVPN Server" />
+                          <Field label="Country / label" value={form.country} onChange={(value) => set("country", value)} placeholder="Germany" />
+                          <Field label="Username (optional)" value={form.openVpnUsername} onChange={(value) => set("openVpnUsername", value)} placeholder="VPN username" />
+                          <Field label="Password (optional)" value={form.openVpnPassword} onChange={(value) => set("openVpnPassword", value)} placeholder="VPN password" />
+                        </div>
+                        <TextArea
+                          label="Paste .ovpn config"
+                          value={form.rawConfig}
+                          onChange={(value) => set("rawConfig", value)}
+                          rows={12}
+                          placeholder={"dev tun\n\nremote 188.132.173.34 443 udp\n\n<ca>\n-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n</ca>\n\n<tls-auth>\n...\n</tls-auth>"}
+                        />
+                        {parseOvpnRemote(form.rawConfig) ? (
+                          <div className="rounded-2xl border border-emerald-700/30 bg-emerald-500/8 px-4 py-3 text-sm text-emerald-200">
+                            ✓ Remote detected:{" "}
+                            <span className="font-mono">
+                              {parseOvpnRemote(form.rawConfig)!.host}:{parseOvpnRemote(form.rawConfig)!.port}
+                            </span>
+                            {" ·"} {parseOvpnRemote(form.rawConfig)!.transport.toUpperCase()}
+                          </div>
+                        ) : form.rawConfig.trim() ? (
+                          <div className="rounded-2xl border border-amber-700/30 bg-amber-500/8 px-4 py-3 text-sm text-amber-200">
+                            ⚠ No <span className="font-mono">remote</span> directive found — add a host in the field below or check the config.
+                            <div className="mt-2 grid gap-2 md:grid-cols-2">
+                              <Field label="Remote host (override)" value={form.host} onChange={(value) => set("host", value)} placeholder="vpn.example.com" />
+                              <Field label="Remote port (override)" value={form.port} onChange={(value) => set("port", value)} placeholder="1194" />
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    )}
                   </div>
                 ) : null}
 
@@ -1216,7 +1509,7 @@ export function AdminDashboard() {
                     <button
                       type="button"
                       onClick={() => {
-                        reset();
+                        reset(false);
                         setMsg(null);
                       }}
                       className="rounded-2xl border border-zinc-800 bg-zinc-950 px-6 py-3 text-sm text-zinc-400 transition hover:border-zinc-700 hover:text-zinc-100"
@@ -1227,7 +1520,7 @@ export function AdminDashboard() {
                   {!editingServerId && (
                     <button
                       type="button"
-                      onClick={() => reset()}
+                      onClick={() => reset(false)}
                       className="rounded-2xl border border-zinc-800 bg-zinc-950 px-6 py-3 text-sm text-zinc-400 transition hover:border-zinc-700 hover:text-zinc-100"
                     >
                       Reset form
@@ -1425,7 +1718,7 @@ or
                 <div className="mt-4">
                   <TextArea
                     label="Raw config preview"
-                    value={effectiveRawConfig}
+                    value={deferredEffectiveRawConfig}
                     onChange={() => undefined}
                     rows={18}
                     readOnly
