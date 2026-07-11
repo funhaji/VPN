@@ -74,6 +74,7 @@ const prettifyProtocol = (protocol: string): string => {
   if (normalized.includes("wireguard") || normalized === "wg") return "WireGuard";
   if (normalized.includes("openvpn")) return "OpenVPN";
   if (normalized.includes("ssh")) return "SSH";
+  if (normalized === "http") return "HTTP";
   return "Imported";
 };
 
@@ -95,6 +96,7 @@ const detectProtocolFromParsed = (parsed: JsonObject): string | undefined => {
   }
   if (type === "dnstt-ssh") return "ssh:dnstt";
   if (type === "ssh") return "ssh:direct";
+  if (type === "http") return "http";
   if (type && ["vless", "vmess", "trojan", "shadowsocks", "hysteria2"].includes(type)) {
     return `v2ray:${type}`;
   }

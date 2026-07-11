@@ -6,7 +6,7 @@ import type { ServerRecord } from "@/types/server";
 import { detectProfileMetadata, splitImportedProfiles } from "@/lib/profile-import";
 import { RoutingRulesPanel } from "@/components/routing-rules-panel";
 
-type TabId = "v2ray" | "ssh" | "openvpn" | "wireguard" | "custom" | "bulk" | "routing";
+type TabId = "v2ray" | "ssh" | "openvpn" | "wireguard" | "custom" | "bulk" | "routing" | "http";
 type SshMode = "direct" | "dnstt";
 type SshResolverMode = "udp" | "dot" | "doh";
 type OpenVpnMode = "tcp" | "udp";
@@ -44,6 +44,8 @@ type FormState = {
   wgMtu: string;
   openVpnUsername: string;
   openVpnPassword: string;
+  httpUsername: string;
+  httpPassword: string;
 };
 
 const BLANK: FormState = {
@@ -79,6 +81,8 @@ const BLANK: FormState = {
   wgMtu: "1408",
   openVpnUsername: "",
   openVpnPassword: "",
+  httpUsername: "",
+  httpPassword: "",
 };
 
 const PROTOCOLS: Array<{
@@ -89,6 +93,7 @@ const PROTOCOLS: Array<{
 }> = [
   { id: "v2ray", label: "V2Ray", badge: "vless / vmess / trojan / ss / hy2 / socks", support: "Desktop-ready" },
   { id: "ssh", label: "SSH", badge: "direct / dnstt", support: "Direct ready · DNSTT stored" },
+  { id: "http", label: "HTTP", badge: "http proxy", support: "Desktop-ready" },
   { id: "wireguard", label: "WireGuard", badge: "structured profile", support: "Stored for rollout" },
   { id: "openvpn", label: "OpenVPN", badge: ".ovpn / inline", support: "Stored for rollout" },
   { id: "custom", label: "Custom", badge: "sing-box / xray / URI", support: "Advanced" },
@@ -198,6 +203,19 @@ const buildOpenVpnProfile = (form: FormState, mode: OpenVpnMode): string =>
         password: form.openVpnPassword.trim(),
       },
       profile: form.rawConfig.trim(),
+    },
+    null,
+    2,
+  );
+
+const buildHttpProfile = (form: FormState): string =>
+  JSON.stringify(
+    {
+      type: "http",
+      server: form.host.trim(),
+      server_port: parseNumber(form.port) ?? 8080,
+      ...(form.httpUsername.trim() ? { username: form.httpUsername.trim() } : {}),
+      ...(form.httpPassword.trim() ? { password: form.httpPassword.trim() } : {}),
     },
     null,
     2,
@@ -418,6 +436,7 @@ export function AdminDashboard() {
     if (tab === "ssh") return `ssh:${sshMode}`;
     if (tab === "openvpn") return `openvpn:${openVpnMode}`;
     if (tab === "wireguard") return "wireguard:profile";
+    if (tab === "http") return "http";
     return `${tab}:${variant}`;
   }, [customProto, openVpnMode, sshMode, tab, variant]);
 
@@ -438,6 +457,9 @@ export function AdminDashboard() {
     }
     if (tab === "openvpn") {
       return buildOpenVpnProfile(form, openVpnMode);
+    }
+    if (tab === "http") {
+      return buildHttpProfile(form);
     }
     return form.rawConfig.trim();
   }, [form, openVpnMode, sshMode, sshResolverMode, tab]);
@@ -464,6 +486,7 @@ export function AdminDashboard() {
     if (tab === "ssh" && sshMode === "direct") return "Direct SSH can be serialized into sing-box outbound JSON.";
     if (tab === "ssh" && sshMode === "dnstt") return "DNSTT-SSH outbound is stored as-is and executed by the desktop runtime.";
     if (tab === "custom") return "Use this for raw sing-box JSON, xray JSON, or custom URIs. Multiple entries are split when possible.";
+    if (tab === "http") return "Standard HTTP proxy outbound for sing-box/xray.";
     return "This profile is stored cleanly in admin, but the current desktop runtime path is not enabled yet.";
   }, [sshMode, tab]);
 
@@ -482,6 +505,9 @@ export function AdminDashboard() {
     }
     if (tab === "openvpn") {
       return Boolean(form.host.trim() && form.port.trim() && form.rawConfig.trim());
+    }
+    if (tab === "http") {
+      return Boolean(form.host.trim() && form.port.trim());
     }
     return effectiveRawConfig.trim().length > 0;
   }, [bulk, effectiveRawConfig, form, sshMode, tab]);
@@ -754,6 +780,8 @@ export function AdminDashboard() {
       } else if (proto.startsWith("openvpn:")) {
         newTab = "openvpn";
         newOpenVpnMode = proto.includes("tcp") ? "tcp" : "udp";
+      } else if (proto === "http") {
+        newTab = "http";
       } else {
         newTab = "custom";
         newCustomProto = proto;
@@ -765,9 +793,21 @@ export function AdminDashboard() {
       setOpenVpnMode(newOpenVpnMode);
       setCustomProto(newCustomProto);
       
-      if (newTab !== "v2ray" && newTab !== "openvpn") {
+      if (newTab !== "v2ray" && newTab !== "openvpn" && newTab !== "http") {
         setTab("custom");
         setCustomProto(proto);
+      }
+
+      let httpUsername = "";
+      let httpPassword = "";
+      if (newTab === "http") {
+        try {
+          const parsed = JSON.parse(data.rawConfig);
+          httpUsername = parsed.username || "";
+          httpPassword = parsed.password || "";
+        } catch {
+          // ignore
+        }
       }
       
       setForm({
@@ -777,6 +817,8 @@ export function AdminDashboard() {
         host: s.host,
         port: String(s.port),
         rawConfig: data.rawConfig,
+        httpUsername,
+        httpPassword,
         mux: s.options.mux,
         fragment: s.options.fragment,
         sniffing: s.options.sniffing,
@@ -1081,6 +1123,17 @@ export function AdminDashboard() {
                       rows={10}
                       placeholder="Paste the .ovpn file contents or inline profile."
                     />
+                  </div>
+                ) : null}
+
+                {tab === "http" ? (
+                  <div className="mt-6 space-y-4">
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <Field label="Proxy host / IP" value={form.host} onChange={(value) => set("host", value)} placeholder="192.168.1.1" />
+                      <Field label="Proxy port" value={form.port} onChange={(value) => set("port", value)} placeholder="8080" />
+                      <Field label="Username (Optional)" value={form.httpUsername} onChange={(value) => set("httpUsername", value)} placeholder="Optional" />
+                      <Field label="Password (Optional)" value={form.httpPassword} onChange={(value) => set("httpPassword", value)} placeholder="Optional" />
+                    </div>
                   </div>
                 ) : null}
 
