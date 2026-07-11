@@ -132,6 +132,7 @@ export const detectProtocol = (rawConfig: string, fallback = "custom:tcp"): stri
   if (lowered.startsWith("socks://") || lowered.startsWith("socks5://") || lowered.startsWith("2socks://")) return "v2ray:socks";
   if (lowered.startsWith("ssh://")) return "ssh:direct";
   if (lowered.startsWith("wg://")) return "wireguard:profile";
+  if (lowered.startsWith("http://") || lowered.startsWith("https://")) return "http";
 
   const parsed = parseJson(trimmed);
   if (isObject(parsed)) {

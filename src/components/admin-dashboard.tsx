@@ -406,15 +406,31 @@ export function AdminDashboard() {
     void load();
   }, [load]);
 
-  const reset = () => {
-    setForm(BLANK);
-    setVariant("vless");
-    setSshMode("direct");
-    setSshResolverMode("udp");
-    setOpenVpnMode("udp");
-    setCustomProto("custom:tcp");
+  const reset = useCallback((keepFields?: boolean) => {
+    if (keepFields) {
+      setForm((prev) => ({
+        ...BLANK,
+        name: prev.name,
+        country: prev.country,
+        host: prev.host,
+        port: prev.port,
+        httpUsername: prev.httpUsername,
+        httpPassword: prev.httpPassword,
+        sshUser: prev.sshUser,
+        sshPassword: prev.sshPassword,
+        openVpnUsername: prev.openVpnUsername,
+        openVpnPassword: prev.openVpnPassword,
+      }));
+    } else {
+      setForm(BLANK);
+      setVariant("vless");
+      setSshMode("direct");
+      setSshResolverMode("udp");
+      setOpenVpnMode("udp");
+      setCustomProto("custom:tcp");
+    }
     setEditingServerId(null);
-  };
+  }, []);
 
   const selectSshMode = useCallback(
     (next: SshMode) => {
@@ -555,18 +571,19 @@ export function AdminDashboard() {
       if (editingServerId) {
         await api(`/api/admin/servers/${editingServerId}`, { method: "PATCH", body: JSON.stringify(payload) });
         setMsg({ ok: true, text: `Server updated successfully` });
+        reset();
       } else {
         await api("/api/admin/servers", { method: "POST", body: JSON.stringify(payload) });
         setMsg({ ok: true, text: `${String(payload.name)} saved successfully` });
+        reset(true);
       }
-      reset();
       await load();
     } catch (error) {
       setMsg({ ok: false, text: error instanceof Error ? error.message : "Failed" });
     } finally {
       setBusy(false);
     }
-  }, [api, editingServerId, effectiveRawConfig, form, load, payloadHost, payloadPort, protocol, tab]);
+  }, [api, editingServerId, effectiveRawConfig, form, load, payloadHost, payloadPort, protocol, tab, reset]);
 
   const submitBulk = useCallback(async () => {
     setBusy(true);

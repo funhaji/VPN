@@ -403,6 +403,24 @@ const buildOutboundFromSocks = (
   );
 };
 
+const buildOutboundFromHttpUri = (
+  rawConfig: string,
+): JsonObject => {
+  const url = new URL(rawConfig);
+  return withOptional(
+    {
+      type: "http",
+      tag: "proxy",
+      server: url.hostname,
+      server_port: parseNumber(url.port, 8080),
+    },
+    {
+      username: url.username ? decodeURIComponent(url.username) : undefined,
+      password: url.password ? decodeURIComponent(url.password) : undefined,
+    },
+  );
+};
+
 const buildOutboundFromSsh = (
   rawConfig: string,
 ): JsonObject => {
@@ -877,6 +895,10 @@ const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): JsonObjec
   if (normalizedProtocol === "socks") {
     const outbound = buildOutboundFromSocks(trimmed, server.options);
     return { engine: "xray", supported: true, outbound };
+  }
+  if (normalizedProtocol === "http") {
+    const outbound = buildOutboundFromHttpUri(trimmed);
+    return { engine: requiresXray(outbound) ? "xray-core" : "sing-box", supported: true, outbound };
   }
   if (normalizedProtocol === "ssh") {
     try {
