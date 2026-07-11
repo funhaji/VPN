@@ -1227,7 +1227,7 @@ export function AdminDashboard() {
                   {!editingServerId && (
                     <button
                       type="button"
-                      onClick={reset}
+                      onClick={() => reset()}
                       className="rounded-2xl border border-zinc-800 bg-zinc-950 px-6 py-3 text-sm text-zinc-400 transition hover:border-zinc-700 hover:text-zinc-100"
                     >
                       Reset form
