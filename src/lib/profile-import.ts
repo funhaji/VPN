@@ -259,10 +259,61 @@ const detectFromJson = (rawConfig: string, fallbackProtocol: string): ImportedPr
   };
 };
 
-export const detectProfileMetadata = (
-  rawConfig: string,
-  fallbackProtocol = "custom:tcp",
-): ImportedProfileMetadata => {
+const detectFromOpenVpn = (rawConfig: string, filename?: string): ImportedProfileMetadata | null => {
+  const lowered = rawConfig.toLowerCase();
+  
+  // Check if it looks like an OpenVPN config
+  if (!lowered.includes("proto ") && !lowered.includes("remote ") && !lowered.includes("client")) {
+    return null;
+  }
+
+  // Extract server info from remote line
+  let host: string | undefined;
+  let port: number | undefined;
+  
+  for (const line of rawConfig.split("\n")) {
+    const trimmed = line.trim().toLowerCase();
+    if (trimmed.startsWith("remote ")) {
+      const parts = trimmed.replace(/^remote\s+/, "").split(/\s+/);
+      if (parts.length >= 1) host = parts[0];
+      if (parts.length >= 2) port = pickNumber(parts[1]);
+      break;
+    }
+  }
+
+  // Extract name from comments or filename
+  let label: string | undefined;
+  
+  // Try to extract from file-level comments (# lines at the top)
+  const lines = rawConfig.split("\n");
+  for (const line of lines.slice(0, 10)) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("#") && trimmed.length > 1) {
+      const comment = trimmed.replace(/^#+\s*/, "").trim();
+      // Skip common comment patterns
+      if (comment && !comment.toLowerCase().includes("config") && !comment.toLowerCase().includes("generated")) {
+        label = comment;
+        break;
+      }
+    }
+  }
+
+  // Fall back to filename if available
+  if (!label && filename) {
+    const name = filename.replace(/\.ovpn$/i, "").replace(/[_-]/g, " ").trim();
+    if (name.length > 0) label = name;
+  }
+
+  const name = buildFallbackName("openvpn:udp", host, label);
+  return {
+    rawConfig: rawConfig.trim(),
+    protocol: "openvpn:udp",
+    name,
+    country: buildCountryLabel(name, host),
+    host,
+    port,
+  };
+};\n\nexport const detectProfileMetadata = (\n  rawConfig: string,\n  fallbackProtocol = \"custom:tcp\",\n  filename?: string,\n): ImportedProfileMetadata => {
   let trimmed = rawConfig.trim();
 
   try {
@@ -294,6 +345,12 @@ export const detectProfileMetadata = (
   const parsedJson = detectFromJson(trimmed, fallbackProtocol.toLowerCase());
   if (parsedJson) {
     return parsedJson;
+  }
+
+  // Check for OpenVPN config (text-based, not JSON URI)
+  const openVpnDetected = detectFromOpenVpn(trimmed, filename);
+  if (openVpnDetected) {
+    return openVpnDetected;
   }
 
   const detectedProtocol = detectProtocol(trimmed, fallbackProtocol);
