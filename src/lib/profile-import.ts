@@ -312,8 +312,14 @@ const detectFromOpenVpn = (rawConfig: string, filename?: string): ImportedProfil
     country: buildCountryLabel(name, host),
     host,
     port,
-  };
-};\n\nexport const detectProfileMetadata = (\n  rawConfig: string,\n  fallbackProtocol = \"custom:tcp\",\n  filename?: string,\n): ImportedProfileMetadata => {
+};
+};
+
+export const detectProfileMetadata = (
+  rawConfig: string,
+  fallbackProtocol = "custom:tcp",
+  filename?: string,
+): ImportedProfileMetadata => {
   let trimmed = rawConfig.trim();
 
   try {
