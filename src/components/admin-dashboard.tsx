@@ -559,6 +559,9 @@ export function AdminDashboard() {
   const canSubmit = useMemo(() => {
     if (tab === "bulk") return bulk.trim().length > 0;
     if (tab === "v2ray" || tab === "custom") return effectiveRawConfig.trim().length > 0;
+    if (tab === "openvpn" && openVpnInputMode === "file") {
+      return ovpnFiles.some((file) => file.selected);
+    }
     if (!form.name.trim() || !form.country.trim()) return false;
     if (tab === "ssh" && sshMode === "direct") {
       return Boolean(form.host.trim() && form.port.trim() && form.sshUser.trim() && (form.sshPassword.trim() || form.sshPrivateKey.trim()));
@@ -570,7 +573,6 @@ export function AdminDashboard() {
       return Boolean(form.host.trim() && form.port.trim() && form.wgLocalAddress.trim() && form.wgPrivateKey.trim() && form.wgPeerPublicKey.trim());
     }
     if (tab === "openvpn") {
-      if (openVpnInputMode === "file") return ovpnFiles.length > 0;
       const detectedRemote = parseOvpnRemote(form.rawConfig);
       return Boolean(form.name.trim() && form.rawConfig.trim() && (form.host.trim() || detectedRemote));
     }
@@ -578,7 +580,7 @@ export function AdminDashboard() {
       return Boolean(form.host.trim() && form.port.trim());
     }
     return effectiveRawConfig.trim().length > 0;
-  }, [bulk, effectiveRawConfig, form, sshMode, tab]);
+  }, [bulk, effectiveRawConfig, form, openVpnInputMode, ovpnFiles, sshMode, tab]);
 
   const submit = useCallback(async () => {
     setBusy(true);
@@ -586,9 +588,15 @@ export function AdminDashboard() {
     try {
       // ── OpenVPN file-upload bulk submit ──────────────────────────────────
       if (tab === "openvpn" && openVpnInputMode === "file") {
-        const payloads = ovpnFiles.map((file) => {
+        const selectedFiles = ovpnFiles.filter((file) => file.selected);
+        if (selectedFiles.length === 0) {
+          throw new Error("Select at least one OpenVPN file");
+        }
+        const payloads = selectedFiles.map((file) => {
           const detected = parseOvpnRemote(file.content);
           const transport = detected?.transport ?? openVpnMode;
+          const username = file.username || ovpnBulkUsername;
+          const password = file.password || ovpnBulkPassword;
           const rawConfig = JSON.stringify({
             type: "openvpn-profile",
             transport,
@@ -596,7 +604,7 @@ export function AdminDashboard() {
               host: detected?.host ?? "embedded-config",
               port: detected?.port ?? 1194,
             },
-            credentials: { username: file.username, password: file.password },
+            credentials: { username, password },
             profile: file.content,
           });
           const safeName = (file.name || `OpenVPN ${detected?.host ?? "Config"}`).trim();
@@ -673,7 +681,7 @@ export function AdminDashboard() {
     } finally {
       setBusy(false);
     }
-  }, [api, editingServerId, effectiveRawConfig, form, load, openVpnInputMode, openVpnMode, ovpnFiles, payloadHost, payloadPort, protocol, tab, reset]);
+  }, [api, editingServerId, effectiveRawConfig, form, load, openVpnInputMode, openVpnMode, ovpnBulkPassword, ovpnBulkUsername, ovpnFiles, payloadHost, payloadPort, protocol, tab, reset]);
 
   const submitBulk = useCallback(async () => {
     setBusy(true);
@@ -1313,18 +1321,7 @@ export function AdminDashboard() {
                                         }
                                       />
                                       <div className="min-w-0 flex-1">
-                                        <input
-                                          value={file.name}
-                                          onChange={(e) =>
-                                            setOvpnFiles((prev) =>
-                                              prev.map((f) =>
-                                                f.id === file.id ? { ...f, name: e.target.value } : f,
-                                              ),
-                                            )
-                                          }
-                                          className="w-full bg-transparent text-sm font-medium text-zinc-100 outline-none placeholder-zinc-600"
-                                          placeholder="Config name"
-                                        />
+                                        <p className="truncate text-sm font-medium text-zinc-100">{file.name}</p>
                                         {detectedR ? (
                                           <p className="mt-0.5 text-xs text-zinc-600">
                                             {detectedR.host}:{detectedR.port} · {detectedR.transport.toUpperCase()}
@@ -1350,10 +1347,9 @@ export function AdminDashboard() {
                             {ovpnFiles.some((f) => f.selected) && (
                               <div className="rounded-2xl border border-cyan-400/20 bg-cyan-400/5 p-5 space-y-4">
                                 <div>
-                                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300/80">Apply credentials to selected</p>
+                                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300/80">Credentials</p>
                                   <p className="mt-0.5 text-xs text-zinc-500">
-                                    Set username &amp; password for the {ovpnFiles.filter((f) => f.selected).length} checked
-                                    {ovpnFiles.filter((f) => f.selected).length === 1 ? " profile" : " profiles"} at once
+                                    Used for the selected uploaded profile{ovpnFiles.filter((f) => f.selected).length === 1 ? "" : "s"} when you click Save profile.
                                   </p>
                                 </div>
                                 <div className="grid gap-3 md:grid-cols-2">
@@ -1378,21 +1374,6 @@ export function AdminDashboard() {
                                     />
                                   </label>
                                 </div>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setOvpnFiles((prev) =>
-                                      prev.map((f) =>
-                                        f.selected
-                                          ? { ...f, username: ovpnBulkUsername, password: ovpnBulkPassword }
-                                          : f,
-                                      ),
-                                    )
-                                  }
-                                  className="rounded-xl border border-cyan-400/40 bg-cyan-400/10 px-5 py-2.5 text-xs font-semibold text-cyan-200 transition hover:border-cyan-400/70 hover:bg-cyan-400/15"
-                                >
-                                  Apply to {ovpnFiles.filter((f) => f.selected).length} selected
-                                </button>
                               </div>
                             )}
                           </div>
