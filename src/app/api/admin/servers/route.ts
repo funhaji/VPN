@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
-import { createServer, createServers, deleteAllServers, listServers, setAllServersEnabled } from "@/lib/db";
-import { encryptConfig } from "@/lib/crypto";
+import { createServer, createServers, deleteAllServers, getServer, listServers, setAllServersEnabled, updateServer } from "@/lib/db";
+import { encryptConfig, decryptConfig } from "@/lib/crypto";
 import { isAuthorized, limitRequest } from "@/lib/auth";
+import { applyStoredCredentials } from "@/lib/credentials";
 import { detectProfileMetadata } from "@/lib/profile-import";
 import { serverInputSchema } from "@/lib/validation";
 
@@ -116,8 +117,59 @@ export async function PATCH(request: NextRequest) {
   }
 
   try {
-    const payload = (await request.json()) as { action?: unknown };
+    const payload = (await request.json()) as {
+      action?: unknown;
+      ids?: unknown;
+      username?: unknown;
+      password?: unknown;
+    };
     const action = typeof payload.action === "string" ? payload.action : "";
+
+    if (action === "update-credentials") {
+      if (!Array.isArray(payload.ids) || payload.ids.length === 0) {
+        return NextResponse.json({ error: "Select at least one server" }, { status: 400 });
+      }
+      const username = typeof payload.username === "string" ? payload.username : undefined;
+      const password = typeof payload.password === "string" ? payload.password : undefined;
+      if (username === undefined && password === undefined) {
+        return NextResponse.json({ error: "Provide a username and/or password to update" }, { status: 400 });
+      }
+
+      let updated = 0;
+      const errors: string[] = [];
+      for (const rawId of payload.ids) {
+        if (typeof rawId !== "string" || !/^[0-9a-f-]{36}$/i.test(rawId)) {
+          continue;
+        }
+        const server = await getServer(rawId);
+        if (!server) continue;
+        try {
+          const rawConfig = decryptConfig(server.encryptedConfig);
+          const nextConfig = applyStoredCredentials(rawConfig, server.protocol, { username, password });
+          await updateServer(rawId, { encryptedConfig: encryptConfig(nextConfig) });
+          updated += 1;
+        } catch (error) {
+          errors.push(
+            `${server.name}: ${error instanceof Error ? error.message : "Credential update failed"}`,
+          );
+        }
+      }
+
+      if (updated === 0) {
+        return NextResponse.json(
+          { error: errors[0] ?? "No servers were updated" },
+          { status: 400 },
+        );
+      }
+
+      revalidateServerCatalog();
+      return NextResponse.json({
+        ok: true,
+        updated,
+        ...(errors.length > 0 ? { warnings: errors } : {}),
+      });
+    }
+
     if (action !== "enable-all" && action !== "disable-all") {
       return NextResponse.json({ error: "Invalid action" }, { status: 400 });
     }

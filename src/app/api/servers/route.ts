@@ -474,6 +474,16 @@ const buildOutboundFromWireguardProfile = (rawConfig: string): JsonObject => {
   );
 };
 
+const unwrapOpenVpnProfileContent = (profile: string): string => {
+  const trimmed = profile.trim();
+  const parsed = parseJson(trimmed);
+  if (!isObject(parsed) || pickString(parsed.type)?.toLowerCase() !== "openvpn-profile") {
+    return trimmed;
+  }
+  const nested = pickString(parsed.profile);
+  return nested ? unwrapOpenVpnProfileContent(nested) : trimmed;
+};
+
 const buildOpenVpnRuntimeProfile = (rawConfig: string): JsonObject => {
   const parsed = parseJson(rawConfig);
   if (!isObject(parsed) || !isObject(parsed.remote)) {
@@ -481,6 +491,10 @@ const buildOpenVpnRuntimeProfile = (rawConfig: string): JsonObject => {
   }
   const remote = parsed.remote;
   const credentials = isObject(parsed.credentials) ? parsed.credentials : {};
+  const profile = unwrapOpenVpnProfileContent(pickString(parsed.profile) ?? "");
+  if (!profile.trim()) {
+    throw new Error("Invalid OpenVPN profile");
+  }
   return {
     engine: "openvpn",
     supported: true,
@@ -490,7 +504,7 @@ const buildOpenVpnRuntimeProfile = (rawConfig: string): JsonObject => {
         host: pickString(remote.host) ?? "",
         port: pickNumber(remote.port) ?? 1194,
         transport: pickString(parsed.transport) ?? "udp",
-        profile: pickString(parsed.profile) ?? "",
+        profile,
       },
       {
         credentials:

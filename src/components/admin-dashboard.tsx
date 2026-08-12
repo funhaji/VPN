@@ -4,6 +4,7 @@ import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } f
 import { useRouter } from "next/navigation";
 import type { ServerRecord } from "@/types/server";
 import { detectProfileMetadata, splitImportedProfiles } from "@/lib/profile-import";
+import { protocolSupportsCredentials, unwrapOpenVpnProfileContent } from "@/lib/credentials";
 import { RoutingRulesPanel } from "@/components/routing-rules-panel";
 
 type TabId = "v2ray" | "ssh" | "openvpn" | "wireguard" | "custom" | "bulk" | "routing" | "http";
@@ -206,7 +207,8 @@ const parseOvpnRemote = (content: string): { host: string; port: number; transpo
 };
 
 const buildOpenVpnProfile = (form: FormState, mode: OpenVpnMode): string => {
-  const detected = parseOvpnRemote(form.rawConfig);
+  const profileContent = unwrapOpenVpnProfileContent(form.rawConfig);
+  const detected = parseOvpnRemote(profileContent);
   const host = form.host.trim() || detected?.host || "";
   const port = parseNumber(form.port) ?? detected?.port ?? 1194;
   const transport = detected?.transport ?? mode;
@@ -219,7 +221,7 @@ const buildOpenVpnProfile = (form: FormState, mode: OpenVpnMode): string => {
         username: form.openVpnUsername.trim(),
         password: form.openVpnPassword.trim(),
       },
-      profile: form.rawConfig.trim(),
+      profile: profileContent,
     },
     null,
     2,
@@ -371,6 +373,9 @@ export function AdminDashboard() {
   const [pendingServerId, setPendingServerId] = useState<string | null>(null);
   const [editingServerId, setEditingServerId] = useState<string | null>(null);
   const [serversPage, setServersPage] = useState(0);
+  const [selectedServerIds, setSelectedServerIds] = useState<Set<string>>(new Set());
+  const [bulkCredUsername, setBulkCredUsername] = useState("");
+  const [bulkCredPassword, setBulkCredPassword] = useState("");
   const [dnsttDefaults, setDnsttDefaults] = useState<{ dns: string; querySize: string; mtu: string }>({
     dns: "8.8.8.8:53",
     querySize: "1232",
@@ -508,6 +513,36 @@ export function AdminDashboard() {
     () => servers.slice(serversPage * PAGE_SIZE, (serversPage + 1) * PAGE_SIZE),
     [servers, serversPage],
   );
+
+  const credentialServers = useMemo(
+    () => servers.filter((server) => protocolSupportsCredentials(server.protocol)),
+    [servers],
+  );
+
+  const selectedCredentialCount = useMemo(
+    () => credentialServers.filter((server) => selectedServerIds.has(server.id)).length,
+    [credentialServers, selectedServerIds],
+  );
+
+  const toggleServerSelection = useCallback((id: string, checked: boolean) => {
+    setSelectedServerIds((current) => {
+      const next = new Set(current);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
+
+  const toggleAllCredentialServers = useCallback((checked: boolean) => {
+    setSelectedServerIds((current) => {
+      const next = new Set(current);
+      for (const server of credentialServers) {
+        if (checked) next.add(server.id);
+        else next.delete(server.id);
+      }
+      return next;
+    });
+  }, [credentialServers]);
 
   const effectiveRawConfig = useMemo(() => {
     if (tab === "ssh") {
@@ -798,6 +833,7 @@ export function AdminDashboard() {
     try {
       if (action === "delete-all") {
         const res = await api<{ deleted: number }>("/api/admin/servers", { method: "DELETE" });
+        setSelectedServerIds(new Set());
         setMsg({ ok: true, text: `Deleted ${res.deleted} servers` });
       } else {
         const res = await api<{ changed: number }>("/api/admin/servers", {
@@ -816,6 +852,48 @@ export function AdminDashboard() {
       setBusy(false);
     }
   }, [api, load]);
+
+  const bulkUpdateCredentials = useCallback(async () => {
+    const ids = credentialServers
+      .filter((server) => selectedServerIds.has(server.id))
+      .map((server) => server.id);
+    if (ids.length === 0) {
+      setMsg({ ok: false, text: "Select at least one OpenVPN, HTTP, or SSH server" });
+      return;
+    }
+    if (!bulkCredUsername.trim() && !bulkCredPassword.trim()) {
+      setMsg({ ok: false, text: "Enter a username and/or password to apply" });
+      return;
+    }
+
+    setBusy(true);
+    setMsg(null);
+    try {
+      const res = await api<{ updated: number; warnings?: string[] }>("/api/admin/servers", {
+        method: "PATCH",
+        body: JSON.stringify({
+          action: "update-credentials",
+          ids,
+          username: bulkCredUsername,
+          password: bulkCredPassword,
+        }),
+      });
+      const warningText =
+        res.warnings && res.warnings.length > 0 ? ` (${res.warnings.length} skipped with warnings)` : "";
+      setMsg({
+        ok: true,
+        text: `Updated credentials on ${res.updated} server${res.updated === 1 ? "" : "s"}${warningText}`,
+      });
+      setBulkCredUsername("");
+      setBulkCredPassword("");
+      setSelectedServerIds(new Set());
+      await load();
+    } catch (error) {
+      setMsg({ ok: false, text: error instanceof Error ? error.message : "Bulk credential update failed" });
+    } finally {
+      setBusy(false);
+    }
+  }, [api, bulkCredPassword, bulkCredUsername, credentialServers, load, selectedServerIds]);
 
   const logout = async () => {
     await fetch("/api/admin/auth/logout", { method: "POST" });
@@ -915,11 +993,28 @@ export function AdminDashboard() {
 
       let httpUsername = "";
       let httpPassword = "";
+      let openVpnUsername = "";
+      let openVpnPassword = "";
+      let rawConfig = data.rawConfig;
+
       if (newTab === "http") {
         try {
           const parsed = JSON.parse(data.rawConfig);
           httpUsername = parsed.username || "";
           httpPassword = parsed.password || "";
+        } catch {
+          // ignore
+        }
+      }
+
+      if (newTab === "openvpn") {
+        try {
+          const parsed = JSON.parse(data.rawConfig);
+          if (parsed?.type === "openvpn-profile") {
+            rawConfig = unwrapOpenVpnProfileContent(data.rawConfig);
+            openVpnUsername = parsed.credentials?.username || "";
+            openVpnPassword = parsed.credentials?.password || "";
+          }
         } catch {
           // ignore
         }
@@ -931,9 +1026,11 @@ export function AdminDashboard() {
         country: s.country,
         host: s.host,
         port: String(s.port),
-        rawConfig: data.rawConfig,
+        rawConfig,
         httpUsername,
         httpPassword,
+        openVpnUsername,
+        openVpnPassword,
         mux: s.options.mux,
         fragment: s.options.fragment,
         sniffing: s.options.sniffing,
@@ -1589,22 +1686,87 @@ or
                   </div>
                 </div>
               </div>
+
+              {credentialServers.length > 0 ? (
+                <div className="mb-4 rounded-2xl border border-zinc-900 bg-zinc-950 px-4 py-4">
+                  <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                    <label className="flex items-center gap-2 text-sm text-zinc-400">
+                      <input
+                        type="checkbox"
+                        checked={
+                          credentialServers.length > 0 &&
+                          credentialServers.every((server) => selectedServerIds.has(server.id))
+                        }
+                        onChange={(e) => toggleAllCredentialServers(e.target.checked)}
+                        className="rounded border-zinc-700 bg-zinc-900"
+                      />
+                      Select credential-backed servers ({selectedCredentialCount} selected)
+                    </label>
+                    <div className="grid flex-1 gap-3 md:grid-cols-2 lg:max-w-2xl">
+                      <Field
+                        label="Bulk username"
+                        value={bulkCredUsername}
+                        onChange={setBulkCredUsername}
+                        placeholder="Leave blank to keep existing"
+                      />
+                      <Field
+                        label="Bulk password"
+                        value={bulkCredPassword}
+                        onChange={setBulkCredPassword}
+                        placeholder="Leave blank to keep existing"
+                        type="password"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void bulkUpdateCredentials()}
+                      disabled={busy || selectedCredentialCount === 0}
+                      className="rounded-xl bg-cyan-400 px-4 py-2 text-xs font-semibold text-cyan-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {busy ? "Updating..." : "Update selected credentials"}
+                    </button>
+                  </div>
+                  <p className="mt-3 text-xs leading-6 text-zinc-500">
+                    Applies to selected OpenVPN, HTTP proxy, and SSH profiles. Empty fields are left unchanged on each server.
+                  </p>
+                </div>
+              ) : null}
+
               <div className="grid gap-3">
                 {displayedServers.map((server, i) => {
                   const absoluteIndex = serversPage * PAGE_SIZE + i;
+                  const supportsCredentials = protocolSupportsCredentials(server.protocol);
                   return (
                   <div key={server.id} className="rounded-2xl border border-zinc-900 bg-zinc-950 px-4 py-4">
                     <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-                      <div className="min-w-0">
+                      <div className="flex min-w-0 items-start gap-3">
+                        {supportsCredentials ? (
+                          <input
+                            type="checkbox"
+                            checked={selectedServerIds.has(server.id)}
+                            onChange={(e) => toggleServerSelection(server.id, e.target.checked)}
+                            className="mt-1 rounded border-zinc-700 bg-zinc-900"
+                            aria-label={`Select ${server.name}`}
+                          />
+                        ) : (
+                          <span className="mt-1 inline-block h-4 w-4" aria-hidden="true" />
+                        )}
+                        <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
                           <p className="truncate text-sm font-semibold text-zinc-100">{server.name}</p>
                           <span className={`rounded-full px-2 py-0.5 text-[10px] uppercase tracking-[0.18em] ${server.isEnabled ? "bg-emerald-500/15 text-emerald-300" : "bg-zinc-800 text-zinc-500"}`}>
                             {server.isEnabled ? "Enabled" : "Disabled"}
                           </span>
+                          {supportsCredentials ? (
+                            <span className="rounded-full bg-zinc-800 px-2 py-0.5 text-[10px] uppercase tracking-[0.18em] text-zinc-500">
+                              Credentials
+                            </span>
+                          ) : null}
                         </div>
                         <p className="mt-1 text-xs text-zinc-500">
                           {server.protocol.toUpperCase()} · {server.country} · {server.host}:{server.port}
                         </p>
+                        </div>
                       </div>
                       <div className="flex flex-wrap gap-2">
                         <button
