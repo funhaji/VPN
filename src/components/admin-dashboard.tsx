@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { ServerRecord } from "@/types/server";
 import { detectProfileMetadata, splitImportedProfiles } from "@/lib/profile-import";
@@ -119,22 +119,41 @@ const PROTOCOLS: Array<{
   { id: "routing", label: "Routing Rules", badge: "Iran Direct", support: "Geo IP bypass" },
 ];
 
-const COUNTRIES = [
-  { code: "US", flag: "🇺🇸", name: "United States" },
-  { code: "GB", flag: "🇬🇧", name: "United Kingdom" },
-  { code: "DE", flag: "🇩🇪", name: "Germany" },
-  { code: "FR", flag: "🇫🇷", name: "France" },
-  { code: "NL", flag: "🇳🇱", name: "Netherlands" },
-  { code: "FI", flag: "🇫🇮", name: "Finland" },
-  { code: "TR", flag: "🇹🇷", name: "Turkey" },
-  { code: "IR", flag: "🇮🇷", name: "Iran" },
-  { code: "RU", flag: "🇷🇺", name: "Russia" },
-  { code: "CA", flag: "🇨🇦", name: "Canada" },
-  { code: "AU", flag: "🇦🇺", name: "Australia" },
-  { code: "JP", flag: "🇯🇵", name: "Japan" },
-  { code: "SG", flag: "🇸🇬", name: "Singapore" },
-  { code: "AE", flag: "🇦🇪", name: "UAE" },
-];
+const ISO_REGION_CODES = [
+  "AD", "AE", "AF", "AG", "AI", "AL", "AM", "AO", "AQ", "AR", "AS", "AT", "AU", "AW", "AX",
+  "AZ", "BA", "BB", "BD", "BE", "BF", "BG", "BH", "BI", "BJ", "BL", "BM", "BN", "BO", "BQ",
+  "BR", "BS", "BT", "BV", "BW", "BY", "BZ", "CA", "CC", "CD", "CF", "CG", "CH", "CI", "CK",
+  "CL", "CM", "CN", "CO", "CR", "CU", "CV", "CW", "CX", "CY", "CZ", "DE", "DJ", "DK", "DM",
+  "DO", "DZ", "EC", "EE", "EG", "EH", "ER", "ES", "ET", "FI", "FJ", "FK", "FM", "FO", "FR",
+  "GA", "GB", "GD", "GE", "GF", "GG", "GH", "GI", "GL", "GM", "GN", "GP", "GQ", "GR", "GS",
+  "GT", "GU", "GW", "GY", "HK", "HM", "HN", "HR", "HT", "HU", "ID", "IE", "IL", "IM", "IN",
+  "IO", "IQ", "IR", "IS", "IT", "JE", "JM", "JO", "JP", "KE", "KG", "KH", "KI", "KM", "KN",
+  "KP", "KR", "KW", "KY", "KZ", "LA", "LB", "LC", "LI", "LK", "LR", "LS", "LT", "LU", "LV",
+  "LY", "MA", "MC", "MD", "ME", "MF", "MG", "MH", "MK", "ML", "MM", "MN", "MO", "MP", "MQ",
+  "MR", "MS", "MT", "MU", "MV", "MW", "MX", "MY", "MZ", "NA", "NC", "NE", "NF", "NG", "NI",
+  "NL", "NO", "NP", "NR", "NU", "NZ", "OM", "PA", "PE", "PF", "PG", "PH", "PK", "PL", "PM",
+  "PN", "PR", "PS", "PT", "PW", "PY", "QA", "RE", "RO", "RS", "RU", "RW", "SA", "SB", "SC",
+  "SD", "SE", "SG", "SH", "SI", "SJ", "SK", "SL", "SM", "SN", "SO", "SR", "SS", "ST", "SV",
+  "SX", "SY", "SZ", "TC", "TD", "TF", "TG", "TH", "TJ", "TK", "TL", "TM", "TN", "TO", "TR",
+  "TT", "TV", "TW", "TZ", "UA", "UG", "UM", "US", "UY", "UZ", "VA", "VC", "VE", "VG", "VI",
+  "VN", "VU", "WF", "WS", "YE", "YT", "ZA", "ZM", "ZW",
+] as const;
+
+const countryDisplayNames = new Intl.DisplayNames(["en"], { type: "region" });
+
+const flagFromCountryCode = (code: string): string =>
+  code
+    .toUpperCase()
+    .replace(/[A-Z]/g, (letter) => String.fromCodePoint(127397 + letter.charCodeAt(0)));
+
+const COUNTRIES = ISO_REGION_CODES.map((code) => ({
+  code,
+  flag: flagFromCountryCode(code),
+  name: countryDisplayNames.of(code) ?? code,
+})).sort((a, b) => a.name.localeCompare(b.name));
+
+const stripLeadingCountryFlag = (value: string): string =>
+  value.replace(/^(?:[\u{1F1E6}-\u{1F1FF}]{2}|[\p{Emoji_Presentation}\p{Extended_Pictographic}])\s*/u, "");
 
 const parseNumber = (value: string): number | undefined => {
   const parsed = Number(value.trim());
@@ -366,34 +385,88 @@ function CountrySelector(props: {
   name: string;
   set: (key: keyof FormState, value: string) => void;
 }) {
+  const [query, setQuery] = useState("");
+  const [isOpen, setIsOpen] = useState(false);
+  const listId = useId();
+  const selectedCountry = COUNTRIES.find((country) => country.code === props.country);
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredCountries = useMemo(
+    () =>
+      normalizedQuery
+        ? COUNTRIES.filter(
+            (country) =>
+              country.name.toLowerCase().includes(normalizedQuery) ||
+              country.code.toLowerCase().includes(normalizedQuery),
+          )
+        : COUNTRIES,
+    [normalizedQuery],
+  );
+
+  const chooseCountry = (country: (typeof COUNTRIES)[number]) => {
+    props.set("country", country.code);
+    if (props.name) {
+      props.set("name", `${country.flag} ${stripLeadingCountryFlag(props.name)}`);
+    }
+    setQuery("");
+    setIsOpen(false);
+  };
+
   return (
-    <label className="block">
+    <div className="relative">
       <span className="mb-1 block text-xs text-zinc-500">Country (adds flag to name)</span>
-      <select
-        value={props.country}
-        onChange={(e) => {
-          const val = e.target.value;
-          const country = COUNTRIES.find(c => c.code === val);
-          props.set("country", val);
-          if (country && props.name) {
-            // Remove any existing flag from the start if it exists, to avoid duplicates
-            // A simple heuristic is to check if it already starts with the flag
-            if (!props.name.startsWith(country.flag)) {
-              // We'll just prepend it. If they already had another flag, they might have to delete it manually.
-              props.set("name", `${country.flag} ${props.name.replace(/^[\p{Emoji_Presentation}\p{Extended_Pictographic}]\s*/u, "")}`);
-            }
-          }
+      <input
+        type="text"
+        value={isOpen ? query : selectedCountry ? `${selectedCountry.flag} ${selectedCountry.name}` : props.country}
+        onFocus={() => {
+          setIsOpen(true);
+          setQuery("");
         }}
-        className="w-full rounded-2xl border border-zinc-800 bg-zinc-950/80 px-3 py-3 text-sm text-zinc-100 outline-none transition focus:border-cyan-500 appearance-none"
-      >
-        <option value="">Select country...</option>
-        {COUNTRIES.map((c) => (
-          <option key={c.code} value={c.code}>
-            {c.flag} {c.name}
-          </option>
-        ))}
-      </select>
-    </label>
+        onChange={(e) => {
+          setQuery(e.target.value);
+          setIsOpen(true);
+        }}
+        onBlur={() => setIsOpen(false)}
+        placeholder="Search countries..."
+        role="combobox"
+        aria-expanded={isOpen}
+        aria-controls={listId}
+        aria-autocomplete="list"
+        className="w-full rounded-2xl border border-zinc-800 bg-zinc-950/80 px-3 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none transition focus:border-cyan-500"
+      />
+      {isOpen ? (
+        <div
+          id={listId}
+          role="listbox"
+          className="absolute z-30 mt-2 max-h-64 w-full overflow-y-auto rounded-2xl border border-zinc-800 bg-zinc-950 p-1 shadow-2xl shadow-black/40"
+        >
+          {filteredCountries.length > 0 ? (
+            filteredCountries.map((country) => (
+              <button
+                key={country.code}
+                type="button"
+                role="option"
+                aria-selected={country.code === props.country}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => chooseCountry(country)}
+                className={`flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition ${
+                  country.code === props.country
+                    ? "bg-cyan-400/12 text-cyan-100"
+                    : "text-zinc-200 hover:bg-white/6"
+                }`}
+              >
+                <span className="min-w-0 truncate">
+                  <span className="mr-2">{country.flag}</span>
+                  {country.name}
+                </span>
+                <span className="font-mono text-xs text-zinc-500">{country.code}</span>
+              </button>
+            ))
+          ) : (
+            <div className="px-3 py-4 text-sm text-zinc-500">No countries found</div>
+          )}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
