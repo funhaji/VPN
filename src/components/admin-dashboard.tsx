@@ -373,7 +373,7 @@ function CountrySelector(props: {
         value={props.country}
         onChange={(e) => {
           const val = e.target.value;
-          const country = COUNTRIES.find(c => c.name === val);
+          const country = COUNTRIES.find(c => c.code === val);
           props.set("country", val);
           if (country && props.name) {
             // Remove any existing flag from the start if it exists, to avoid duplicates
@@ -388,7 +388,7 @@ function CountrySelector(props: {
       >
         <option value="">Select country...</option>
         {COUNTRIES.map((c) => (
-          <option key={c.code} value={c.name}>
+          <option key={c.code} value={c.code}>
             {c.flag} {c.name}
           </option>
         ))}
