@@ -7,7 +7,7 @@ import { detectProfileMetadata, splitImportedProfiles } from "@/lib/profile-impo
 import { protocolSupportsCredentials, unwrapOpenVpnProfileContent } from "@/lib/credentials";
 import { RoutingRulesPanel } from "@/components/routing-rules-panel";
 
-type TabId = "v2ray" | "ssh" | "openvpn" | "wireguard" | "custom" | "bulk" | "routing" | "http";
+type TabId = "v2ray" | "ssh" | "openvpn" | "wireguard" | "custom" | "bulk" | "routing" | "http" | "l2tp";
 type SshMode = "direct" | "dnstt";
 type SshResolverMode = "udp" | "dot" | "doh";
 type OpenVpnMode = "tcp" | "udp";
@@ -57,6 +57,9 @@ type FormState = {
   openVpnPassword: string;
   httpUsername: string;
   httpPassword: string;
+  l2tpUsername: string;
+  l2tpPassword: string;
+  l2tpPsk: string;
 };
 
 const BLANK: FormState = {
@@ -94,6 +97,9 @@ const BLANK: FormState = {
   openVpnPassword: "",
   httpUsername: "",
   httpPassword: "",
+  l2tpUsername: "",
+  l2tpPassword: "",
+  l2tpPsk: "",
 };
 
 const PROTOCOLS: Array<{
@@ -103,13 +109,31 @@ const PROTOCOLS: Array<{
   support: string;
 }> = [
   { id: "v2ray", label: "V2Ray", badge: "vless / vmess / trojan / ss / hy2 / socks", support: "Desktop-ready" },
-  { id: "ssh", label: "SSH", badge: "direct / dnstt", support: "Direct ready · DNSTT stored" },
+  { id: "ssh", label: "SSH", badge: "direct / dnstt", support: "Direct ready & DNSTT stored" },
   { id: "http", label: "HTTP", badge: "http proxy", support: "Desktop-ready" },
   { id: "wireguard", label: "WireGuard", badge: "structured profile", support: "Stored for rollout" },
   { id: "openvpn", label: "OpenVPN", badge: ".ovpn / inline", support: "Stored for rollout" },
+  { id: "l2tp", label: "L2TP IPsec", badge: "native windows l2tp", support: "Desktop-ready" },
   { id: "custom", label: "Custom", badge: "sing-box / xray / URI", support: "Advanced" },
   { id: "bulk", label: "Bulk", badge: "JSON array import", support: "Import" },
   { id: "routing", label: "Routing Rules", badge: "Iran Direct", support: "Geo IP bypass" },
+];
+
+const COUNTRIES = [
+  { code: "US", flag: "🇺🇸", name: "United States" },
+  { code: "GB", flag: "🇬🇧", name: "United Kingdom" },
+  { code: "DE", flag: "🇩🇪", name: "Germany" },
+  { code: "FR", flag: "🇫🇷", name: "France" },
+  { code: "NL", flag: "🇳🇱", name: "Netherlands" },
+  { code: "FI", flag: "🇫🇮", name: "Finland" },
+  { code: "TR", flag: "🇹🇷", name: "Turkey" },
+  { code: "IR", flag: "🇮🇷", name: "Iran" },
+  { code: "RU", flag: "🇷🇺", name: "Russia" },
+  { code: "CA", flag: "🇨🇦", name: "Canada" },
+  { code: "AU", flag: "🇦🇺", name: "Australia" },
+  { code: "JP", flag: "🇯🇵", name: "Japan" },
+  { code: "SG", flag: "🇸🇬", name: "Singapore" },
+  { code: "AE", flag: "🇦🇪", name: "UAE" },
 ];
 
 const parseNumber = (value: string): number | undefined => {
@@ -241,6 +265,18 @@ const buildHttpProfile = (form: FormState): string =>
     2,
   );
 
+const buildL2tpProfile = (form: FormState): string =>
+  JSON.stringify(
+    {
+      server: form.host.trim(),
+      username: form.l2tpUsername.trim(),
+      password: form.l2tpPassword.trim(),
+      psk: form.l2tpPsk.trim(),
+    },
+    null,
+    2,
+  );
+
 const buildImportedPayload = (
   rawConfig: string,
   fallbackProtocol: string,
@@ -321,6 +357,42 @@ function Field(props: {
         placeholder={placeholder}
         className={`w-full rounded-2xl border border-zinc-800 bg-zinc-950/80 px-3 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none transition focus:border-cyan-500 ${mono ? "font-mono" : ""}`}
       />
+    </label>
+  );
+}
+
+function CountrySelector(props: {
+  country: string;
+  name: string;
+  set: (key: keyof FormState, value: string) => void;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1 block text-xs text-zinc-500">Country (adds flag to name)</span>
+      <select
+        value={props.country}
+        onChange={(e) => {
+          const val = e.target.value;
+          const country = COUNTRIES.find(c => c.name === val);
+          props.set("country", val);
+          if (country && props.name) {
+            // Remove any existing flag from the start if it exists, to avoid duplicates
+            // A simple heuristic is to check if it already starts with the flag
+            if (!props.name.startsWith(country.flag)) {
+              // We'll just prepend it. If they already had another flag, they might have to delete it manually.
+              props.set("name", `${country.flag} ${props.name.replace(/^[\p{Emoji_Presentation}\p{Extended_Pictographic}]\s*/u, "")}`);
+            }
+          }
+        }}
+        className="w-full rounded-2xl border border-zinc-800 bg-zinc-950/80 px-3 py-3 text-sm text-zinc-100 outline-none transition focus:border-cyan-500 appearance-none"
+      >
+        <option value="">Select country...</option>
+        {COUNTRIES.map((c) => (
+          <option key={c.code} value={c.name}>
+            {c.flag} {c.name}
+          </option>
+        ))}
+      </select>
     </label>
   );
 }
@@ -559,6 +631,9 @@ export function AdminDashboard() {
     if (tab === "http") {
       return buildHttpProfile(form);
     }
+    if (tab === "l2tp") {
+      return buildL2tpProfile(form);
+    }
     return form.rawConfig.trim();
   }, [form, openVpnMode, sshMode, sshResolverMode, tab]);
 
@@ -613,6 +688,9 @@ export function AdminDashboard() {
     }
     if (tab === "http") {
       return Boolean(form.host.trim() && form.port.trim());
+    }
+    if (tab === "l2tp") {
+      return Boolean(form.host.trim() && form.l2tpUsername.trim() && form.l2tpPassword.trim() && form.l2tpPsk.trim());
     }
     return effectiveRawConfig.trim().length > 0;
   }, [bulk, effectiveRawConfig, form, openVpnInputMode, ovpnFiles, sshMode, tab]);
@@ -995,6 +1073,9 @@ export function AdminDashboard() {
       let httpPassword = "";
       let openVpnUsername = "";
       let openVpnPassword = "";
+      let l2tpUsername = "";
+      let l2tpPassword = "";
+      let l2tpPsk = "";
       let rawConfig = data.rawConfig;
 
       if (newTab === "http") {
@@ -1002,6 +1083,17 @@ export function AdminDashboard() {
           const parsed = JSON.parse(data.rawConfig);
           httpUsername = parsed.username || "";
           httpPassword = parsed.password || "";
+        } catch {
+          // ignore
+        }
+      }
+      
+      if (newTab === "l2tp") {
+        try {
+          const parsed = JSON.parse(data.rawConfig);
+          l2tpUsername = parsed.username || "";
+          l2tpPassword = parsed.password || "";
+          l2tpPsk = parsed.psk || "";
         } catch {
           // ignore
         }
@@ -1029,6 +1121,9 @@ export function AdminDashboard() {
         rawConfig,
         httpUsername,
         httpPassword,
+        l2tpUsername,
+        l2tpPassword,
+        l2tpPsk,
         openVpnUsername,
         openVpnPassword,
         mux: s.options.mux,
@@ -1150,7 +1245,7 @@ export function AdminDashboard() {
               <div className="rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-6">
                 <div className="grid gap-4 md:grid-cols-2">
                   <Field label="Server name" value={form.name} onChange={(value) => set("name", value)} placeholder="Germany Premium #1" />
-                  <Field label="Country / label" value={form.country} onChange={(value) => set("country", value)} placeholder="Germany" />
+                  <CountrySelector country={form.country} name={form.name} set={set} />
                 </div>
                 {(tab === "v2ray" || tab === "custom") ? (
                   <p className="mt-3 text-xs leading-6 text-zinc-500">
@@ -1481,7 +1576,7 @@ export function AdminDashboard() {
                       <div className="space-y-4">
                         <div className="grid gap-4 md:grid-cols-2">
                           <Field label="Config name" value={form.name} onChange={(value) => set("name", value)} placeholder="My OpenVPN Server" />
-                          <Field label="Country / label" value={form.country} onChange={(value) => set("country", value)} placeholder="Germany" />
+                          <CountrySelector country={form.country} name={form.name} set={set} />
                           <Field label="Username (optional)" value={form.openVpnUsername} onChange={(value) => set("openVpnUsername", value)} placeholder="VPN username" />
                           <Field label="Password (optional)" value={form.openVpnPassword} onChange={(value) => set("openVpnPassword", value)} placeholder="VPN password" />
                         </div>
@@ -1521,6 +1616,17 @@ export function AdminDashboard() {
                       <Field label="Proxy port" value={form.port} onChange={(value) => set("port", value)} placeholder="8080" />
                       <Field label="Username (Optional)" value={form.httpUsername} onChange={(value) => set("httpUsername", value)} placeholder="Optional" />
                       <Field label="Password (Optional)" value={form.httpPassword} onChange={(value) => set("httpPassword", value)} placeholder="Optional" />
+                    </div>
+                  </div>
+                ) : null}
+
+                {tab === "l2tp" ? (
+                  <div className="mt-6 space-y-4">
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <Field label="Server host / IP" value={form.host} onChange={(value) => set("host", value)} placeholder="vpn.example.com" />
+                      <Field label="IPsec Pre-Shared Key (PSK)" value={form.l2tpPsk} onChange={(value) => set("l2tpPsk", value)} placeholder="IPsec PSK" />
+                      <Field label="Username" value={form.l2tpUsername} onChange={(value) => set("l2tpUsername", value)} placeholder="L2TP Username" />
+                      <Field label="Password" value={form.l2tpPassword} onChange={(value) => set("l2tpPassword", value)} placeholder="L2TP Password" />
                     </div>
                   </div>
                 ) : null}
