@@ -1828,53 +1828,55 @@ or
 
               {credentialServers.length > 0 ? (
                 <div className="mb-4 rounded-2xl border border-white/6 bg-white/3 px-5 py-4">
-                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                    <div>
-                      <label className="flex items-center gap-2.5 text-sm text-zinc-300 font-medium cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={
-                            credentialServers.length > 0 &&
-                            credentialServers.every((server) => selectedServerIds.has(server.id))
-                          }
-                          onChange={(e) => toggleAllCredentialServers(e.target.checked)}
-                          className="rounded border-zinc-700 bg-zinc-900 accent-cyan-400"
-                        />
-                        Bulk credentials
-                      </label>
-                      <p className="mt-1 ml-6 text-xs text-zinc-500">
-                        {selectedCredentialCount} of {credentialServers.length} selected (OpenVPN, HTTP, SSH, L2TP)
-                      </p>
-                    </div>
-                    <div className="grid flex-1 gap-2 md:grid-cols-3 lg:max-w-2xl">
-                      <Field
-                        label="Bulk username"
-                        value={bulkCredUsername}
-                        onChange={setBulkCredUsername}
-                        placeholder="Leave blank to keep"
+                  {/* Header row: checkbox + button */}
+                  <div className="flex items-start justify-between gap-4">
+                    <label className="flex cursor-pointer items-center gap-2.5">
+                      <input
+                        type="checkbox"
+                        checked={
+                          credentialServers.length > 0 &&
+                          credentialServers.every((server) => selectedServerIds.has(server.id))
+                        }
+                        onChange={(e) => toggleAllCredentialServers(e.target.checked)}
+                        className="rounded border-zinc-700 bg-zinc-900 accent-cyan-400"
                       />
-                      <Field
-                        label="Bulk password"
-                        value={bulkCredPassword}
-                        onChange={setBulkCredPassword}
-                        placeholder="Leave blank to keep"
-                        type="password"
-                      />
-                      <Field
-                        label="L2TP PSK"
-                        value={bulkCredPsk}
-                        onChange={setBulkCredPsk}
-                        placeholder="L2TP only"
-                      />
-                    </div>
+                      <div>
+                        <p className="text-sm font-medium text-zinc-200">Bulk credentials</p>
+                        <p className="text-xs text-zinc-500">
+                          {selectedCredentialCount} of {credentialServers.length} selected · OpenVPN, HTTP, SSH, L2TP
+                        </p>
+                      </div>
+                    </label>
                     <button
                       type="button"
                       onClick={() => void bulkUpdateCredentials()}
                       disabled={busy || selectedCredentialCount === 0}
-                      className="self-end rounded-xl bg-cyan-400 px-4 py-2 text-xs font-semibold text-cyan-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-40"
+                      className="flex-shrink-0 rounded-xl bg-cyan-400 px-4 py-2 text-xs font-semibold text-cyan-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       {busy ? "Updating..." : "Update selected"}
                     </button>
+                  </div>
+                  {/* Fields row - below the header */}
+                  <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                    <Field
+                      label="Bulk username"
+                      value={bulkCredUsername}
+                      onChange={setBulkCredUsername}
+                      placeholder="Leave blank to keep"
+                    />
+                    <Field
+                      label="Bulk password"
+                      value={bulkCredPassword}
+                      onChange={setBulkCredPassword}
+                      placeholder="Leave blank to keep"
+                      type="password"
+                    />
+                    <Field
+                      label="L2TP PSK (L2TP only)"
+                      value={bulkCredPsk}
+                      onChange={setBulkCredPsk}
+                      placeholder="Leave blank to keep"
+                    />
                   </div>
                 </div>
               ) : null}
