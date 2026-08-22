@@ -834,7 +834,7 @@ const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): JsonObjec
     };
   }
 
-  if (loweredProtocol === "l2tp") {
+  if (loweredProtocol.startsWith("l2tp")) {
     return {
       engine: "l2tp",
       supported: true,

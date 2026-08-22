@@ -577,6 +577,7 @@ export function AdminDashboard() {
     if (tab === "openvpn") return `openvpn:${openVpnMode}`;
     if (tab === "wireguard") return "wireguard:profile";
     if (tab === "http") return "http";
+    if (tab === "l2tp") return "l2tp";
     return `${tab}:${variant}`;
   }, [customProto, openVpnMode, sshMode, tab, variant]);
 
