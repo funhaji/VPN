@@ -131,8 +131,9 @@ export async function PATCH(request: NextRequest) {
       }
       const username = typeof payload.username === "string" ? payload.username : undefined;
       const password = typeof payload.password === "string" ? payload.password : undefined;
-      if (username === undefined && password === undefined) {
-        return NextResponse.json({ error: "Provide a username and/or password to update" }, { status: 400 });
+      const psk = typeof (payload as { psk?: unknown }).psk === "string" ? (payload as { psk?: string }).psk : undefined;
+      if (username === undefined && password === undefined && psk === undefined) {
+        return NextResponse.json({ error: "Provide a username, password, and/or PSK to update" }, { status: 400 });
       }
 
       let updated = 0;
@@ -145,7 +146,7 @@ export async function PATCH(request: NextRequest) {
         if (!server) continue;
         try {
           const rawConfig = decryptConfig(server.encryptedConfig);
-          const nextConfig = applyStoredCredentials(rawConfig, server.protocol, { username, password });
+          const nextConfig = applyStoredCredentials(rawConfig, server.protocol, { username, password, psk } as Parameters<typeof applyStoredCredentials>[2] & { psk?: string });
           await updateServer(rawId, { encryptedConfig: encryptConfig(nextConfig) });
           updated += 1;
         } catch (error) {

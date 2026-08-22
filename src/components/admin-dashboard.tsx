@@ -448,6 +448,7 @@ export function AdminDashboard() {
   const [selectedServerIds, setSelectedServerIds] = useState<Set<string>>(new Set());
   const [bulkCredUsername, setBulkCredUsername] = useState("");
   const [bulkCredPassword, setBulkCredPassword] = useState("");
+  const [bulkCredPsk, setBulkCredPsk] = useState("");
   const [dnsttDefaults, setDnsttDefaults] = useState<{ dns: string; querySize: string; mtu: string }>({
     dns: "8.8.8.8:53",
     querySize: "1232",
@@ -937,11 +938,11 @@ export function AdminDashboard() {
       .filter((server) => selectedServerIds.has(server.id))
       .map((server) => server.id);
     if (ids.length === 0) {
-      setMsg({ ok: false, text: "Select at least one OpenVPN, HTTP, or SSH server" });
+      setMsg({ ok: false, text: "Select at least one OpenVPN, HTTP, SSH, or L2TP server" });
       return;
     }
-    if (!bulkCredUsername.trim() && !bulkCredPassword.trim()) {
-      setMsg({ ok: false, text: "Enter a username and/or password to apply" });
+    if (!bulkCredUsername.trim() && !bulkCredPassword.trim() && !bulkCredPsk.trim()) {
+      setMsg({ ok: false, text: "Enter a username, password, and/or PSK to apply" });
       return;
     }
 
@@ -955,6 +956,7 @@ export function AdminDashboard() {
           ids,
           username: bulkCredUsername,
           password: bulkCredPassword,
+          psk: bulkCredPsk,
         }),
       });
       const warningText =
@@ -965,6 +967,7 @@ export function AdminDashboard() {
       });
       setBulkCredUsername("");
       setBulkCredPassword("");
+      setBulkCredPsk("");
       setSelectedServerIds(new Set());
       await load();
     } catch (error) {
@@ -972,7 +975,7 @@ export function AdminDashboard() {
     } finally {
       setBusy(false);
     }
-  }, [api, bulkCredPassword, bulkCredUsername, credentialServers, load, selectedServerIds]);
+  }, [api, bulkCredPassword, bulkCredUsername, bulkCredPsk, credentialServers, load, selectedServerIds]);
 
   const logout = async () => {
     await fetch("/api/admin/auth/logout", { method: "POST" });
@@ -1148,81 +1151,108 @@ export function AdminDashboard() {
     setForm((current) => ({ ...current, [key]: value }));
 
   return (
-    <div className="mx-auto flex min-h-[calc(100vh-6rem)] w-full max-w-7xl overflow-hidden rounded-[28px] border border-zinc-800 bg-zinc-950/85 text-zinc-100 shadow-[0_24px_80px_rgba(0,0,0,0.35)] backdrop-blur">
-      <aside className="w-72 flex-shrink-0 border-r border-zinc-900 bg-zinc-950/90">
-        <div className="border-b border-zinc-900 p-6">
-          <div className="rounded-3xl border border-cyan-400/15 bg-[linear-gradient(145deg,rgba(34,211,238,0.14),rgba(10,10,15,0.2))] p-5">
-            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-cyan-300/80">Astro VPN</p>
-            <h2 className="mt-3 text-xl font-semibold text-zinc-50">Protocol Studio</h2>
-            <p className="mt-2 text-sm leading-6 text-zinc-400">
-              Build profiles that actually match the runtime instead of dumping everything into one raw box.
-            </p>
-          </div>
+    <div className="flex min-h-[calc(100vh-3.5rem)] overflow-hidden rounded-[24px] border border-white/6 bg-zinc-950/80 text-zinc-100 shadow-2xl backdrop-blur-xl">
+      {/* Sidebar */}
+      <aside className="flex w-64 flex-shrink-0 flex-col border-r border-white/5 bg-black/20">
+        {/* Brand */}
+        <div className="border-b border-white/5 px-5 py-5">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-cyan-400/70">Protocol Studio</p>
+          <p className="mt-1 text-sm text-zinc-400">Build & manage VPN profiles</p>
         </div>
 
-        <div className="space-y-6 p-5">
-          <div>
-            <p className="mb-3 px-2 text-[11px] font-semibold uppercase tracking-[0.22em] text-zinc-600">Builders</p>
-            <div className="space-y-1.5">
-              {PROTOCOLS.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => {
-                    setTab(item.id);
-                    setMsg(null);
-                  }}
-                  className={`w-full rounded-2xl border px-4 py-3 text-left transition ${
-                    tab === item.id
-                      ? "border-cyan-400/50 bg-cyan-400/12 text-zinc-50"
-                      : "border-zinc-900 bg-zinc-950 text-zinc-400 hover:border-zinc-800 hover:text-zinc-200"
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="text-sm font-medium">{item.label}</span>
-                    <span className="rounded-full border border-current/20 px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] opacity-80">
-                      {item.support}
-                    </span>
-                  </div>
-                  <p className="mt-1 text-xs opacity-75">{item.badge}</p>
-                </button>
-              ))}
+        {/* Protocol nav */}
+        <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4">
+          <p className="mb-2 px-2 text-[10px] font-semibold uppercase tracking-[0.22em] text-zinc-600">Builders</p>
+          {PROTOCOLS.map((item) => {
+            const isActive = tab === item.id;
+            const protocolColors: Record<string, string> = {
+              v2ray: "text-cyan-300",
+              ssh: "text-purple-300",
+              http: "text-rose-300",
+              wireguard: "text-blue-300",
+              openvpn: "text-orange-300",
+              l2tp: "text-emerald-300",
+              custom: "text-zinc-300",
+              bulk: "text-amber-300",
+              routing: "text-pink-300",
+            };
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => { setTab(item.id); setMsg(null); }}
+                className={`group w-full rounded-xl px-3 py-2.5 text-left transition-all ${
+                  isActive
+                    ? "bg-white/8 shadow-sm ring-1 ring-white/10"
+                    : "hover:bg-white/4"
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className={`text-sm font-medium transition ${isActive ? "text-zinc-50" : "text-zinc-400 group-hover:text-zinc-200"}`}>
+                    {item.label}
+                  </span>
+                  <span className={`rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${
+                    isActive
+                      ? `${protocolColors[item.id] ?? "text-zinc-300"} bg-current/10`
+                      : "text-zinc-600"
+                  }`}>
+                    {item.support.split(" ")[0]}
+                  </span>
+                </div>
+                <p className={`mt-0.5 text-[11px] transition ${isActive ? "text-zinc-400" : "text-zinc-600 group-hover:text-zinc-500"}`}>
+                  {item.badge}
+                </p>
+              </button>
+            );
+          })}
+        </nav>
+
+        {/* Stats + actions */}
+        <div className="border-t border-white/5 px-4 py-4 space-y-3">
+          {/* Server count */}
+          <div className="rounded-xl border border-white/6 bg-white/3 p-3">
+            <div className="flex items-center justify-between">
+              <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Live servers</p>
+              <span className="text-xs text-zinc-400">{stats.enabled}/{stats.total}</span>
+            </div>
+            <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-zinc-800">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-cyan-400 transition-all"
+                style={{ width: stats.total > 0 ? `${(stats.enabled / stats.total) * 100}%` : "0%" }}
+              />
             </div>
           </div>
 
-          <div className="grid gap-3">
-            <div className="rounded-2xl border border-zinc-900 bg-zinc-950 p-4">
-              <p className="text-[11px] uppercase tracking-[0.2em] text-zinc-600">Live servers</p>
-              <p className="mt-2 text-2xl font-semibold text-zinc-50">{stats.enabled}</p>
-              <p className="text-sm text-zinc-500">enabled out of {stats.total}</p>
-            </div>
+          {/* Action buttons */}
+          <div className="grid grid-cols-2 gap-2">
             <button
               type="button"
               onClick={() => void autoSort()}
               disabled={busy}
-              className="rounded-2xl border border-zinc-800 bg-zinc-900/80 px-4 py-3 text-sm text-zinc-300 transition hover:border-zinc-700 hover:text-zinc-50 disabled:opacity-50"
+              className="rounded-xl border border-white/8 bg-white/3 px-3 py-2 text-xs text-zinc-400 transition hover:bg-white/6 hover:text-zinc-200 disabled:opacity-40"
             >
-              Auto sort servers
+              Auto sort
             </button>
             <button
               type="button"
               onClick={() => void load()}
               disabled={busy}
-              className="rounded-2xl border border-zinc-800 bg-zinc-900/80 px-4 py-3 text-sm text-zinc-300 transition hover:border-zinc-700 hover:text-zinc-50 disabled:opacity-50"
+              className="rounded-xl border border-white/8 bg-white/3 px-3 py-2 text-xs text-zinc-400 transition hover:bg-white/6 hover:text-zinc-200 disabled:opacity-40"
             >
-              Refresh inventory
-            </button>
-            <button
-              type="button"
-              onClick={logout}
-              className="rounded-2xl border border-zinc-900 bg-zinc-950 px-4 py-3 text-sm text-zinc-500 transition hover:border-zinc-800 hover:text-zinc-300"
-            >
-              Lock session
+              Refresh
             </button>
           </div>
+          <button
+            type="button"
+            onClick={logout}
+            className="w-full rounded-xl border border-rose-900/40 px-3 py-2 text-xs text-rose-500/80 transition hover:border-rose-700/50 hover:text-rose-400"
+          >
+            Lock session
+          </button>
         </div>
       </aside>
 
+      {/* Main content */}
       <main className="flex-1 overflow-y-auto">
         <div className="border-b border-zinc-900 bg-zinc-950/60 px-8 py-6">
           <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
@@ -1797,92 +1827,108 @@ or
               </div>
 
               {credentialServers.length > 0 ? (
-                <div className="mb-4 rounded-2xl border border-zinc-900 bg-zinc-950 px-4 py-4">
-                  <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                    <label className="flex items-center gap-2 text-sm text-zinc-400">
-                      <input
-                        type="checkbox"
-                        checked={
-                          credentialServers.length > 0 &&
-                          credentialServers.every((server) => selectedServerIds.has(server.id))
-                        }
-                        onChange={(e) => toggleAllCredentialServers(e.target.checked)}
-                        className="rounded border-zinc-700 bg-zinc-900"
-                      />
-                      Select credential-backed servers ({selectedCredentialCount} selected)
-                    </label>
-                    <div className="grid flex-1 gap-3 md:grid-cols-2 lg:max-w-2xl">
+                <div className="mb-4 rounded-2xl border border-white/6 bg-white/3 px-5 py-4">
+                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                    <div>
+                      <label className="flex items-center gap-2.5 text-sm text-zinc-300 font-medium cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={
+                            credentialServers.length > 0 &&
+                            credentialServers.every((server) => selectedServerIds.has(server.id))
+                          }
+                          onChange={(e) => toggleAllCredentialServers(e.target.checked)}
+                          className="rounded border-zinc-700 bg-zinc-900 accent-cyan-400"
+                        />
+                        Bulk credentials
+                      </label>
+                      <p className="mt-1 ml-6 text-xs text-zinc-500">
+                        {selectedCredentialCount} of {credentialServers.length} selected (OpenVPN, HTTP, SSH, L2TP)
+                      </p>
+                    </div>
+                    <div className="grid flex-1 gap-2 md:grid-cols-3 lg:max-w-2xl">
                       <Field
                         label="Bulk username"
                         value={bulkCredUsername}
                         onChange={setBulkCredUsername}
-                        placeholder="Leave blank to keep existing"
+                        placeholder="Leave blank to keep"
                       />
                       <Field
                         label="Bulk password"
                         value={bulkCredPassword}
                         onChange={setBulkCredPassword}
-                        placeholder="Leave blank to keep existing"
+                        placeholder="Leave blank to keep"
                         type="password"
+                      />
+                      <Field
+                        label="L2TP PSK"
+                        value={bulkCredPsk}
+                        onChange={setBulkCredPsk}
+                        placeholder="L2TP only"
                       />
                     </div>
                     <button
                       type="button"
                       onClick={() => void bulkUpdateCredentials()}
                       disabled={busy || selectedCredentialCount === 0}
-                      className="rounded-xl bg-cyan-400 px-4 py-2 text-xs font-semibold text-cyan-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-40"
+                      className="self-end rounded-xl bg-cyan-400 px-4 py-2 text-xs font-semibold text-cyan-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-40"
                     >
-                      {busy ? "Updating..." : "Update selected credentials"}
+                      {busy ? "Updating..." : "Update selected"}
                     </button>
                   </div>
-                  <p className="mt-3 text-xs leading-6 text-zinc-500">
-                    Applies to selected OpenVPN, HTTP proxy, and SSH profiles. Empty fields are left unchanged on each server.
-                  </p>
                 </div>
               ) : null}
 
-              <div className="grid gap-3">
+              <div className="grid gap-2">
                 {displayedServers.map((server, i) => {
                   const absoluteIndex = serversPage * PAGE_SIZE + i;
                   const supportsCredentials = protocolSupportsCredentials(server.protocol);
+                  const protoBadgeColor = (() => {
+                    const p = server.protocol.toLowerCase();
+                    if (p.startsWith("v2ray") || p.startsWith("vless") || p.startsWith("vmess") || p.startsWith("trojan") || p.startsWith("ss:") || p.startsWith("hysteria")) return "bg-cyan-500/15 text-cyan-300";
+                    if (p.startsWith("ssh")) return "bg-purple-500/15 text-purple-300";
+                    if (p.startsWith("openvpn")) return "bg-orange-500/15 text-orange-300";
+                    if (p.startsWith("wireguard") || p === "wg") return "bg-blue-500/15 text-blue-300";
+                    if (p.startsWith("l2tp")) return "bg-emerald-500/15 text-emerald-300";
+                    if (p === "http") return "bg-rose-500/15 text-rose-300";
+                    return "bg-zinc-800 text-zinc-400";
+                  })();
                   return (
-                  <div key={server.id} className="rounded-2xl border border-zinc-900 bg-zinc-950 px-4 py-4">
-                    <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                  <div key={server.id} className="group rounded-xl border border-white/5 bg-white/3 px-4 py-3 transition hover:border-white/8 hover:bg-white/4">
+                    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                       <div className="flex min-w-0 items-start gap-3">
                         {supportsCredentials ? (
                           <input
                             type="checkbox"
                             checked={selectedServerIds.has(server.id)}
                             onChange={(e) => toggleServerSelection(server.id, e.target.checked)}
-                            className="mt-1 rounded border-zinc-700 bg-zinc-900"
+                            className="mt-0.5 rounded border-zinc-700 bg-zinc-900 accent-cyan-400"
                             aria-label={`Select ${server.name}`}
                           />
                         ) : (
-                          <span className="mt-1 inline-block h-4 w-4" aria-hidden="true" />
+                          <span className="mt-0.5 inline-block h-4 w-4" aria-hidden="true" />
                         )}
-                        <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <p className="truncate text-sm font-semibold text-zinc-100">{server.name}</p>
-                          <span className={`rounded-full px-2 py-0.5 text-[10px] uppercase tracking-[0.18em] ${server.isEnabled ? "bg-emerald-500/15 text-emerald-300" : "bg-zinc-800 text-zinc-500"}`}>
-                            {server.isEnabled ? "Enabled" : "Disabled"}
-                          </span>
-                          {supportsCredentials ? (
-                            <span className="rounded-full bg-zinc-800 px-2 py-0.5 text-[10px] uppercase tracking-[0.18em] text-zinc-500">
-                              Credentials
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="truncate text-sm font-semibold text-zinc-100">{server.name}</p>
+                            <span className={`rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${protoBadgeColor}`}>
+                              {server.protocol.toUpperCase()}
                             </span>
-                          ) : null}
-                        </div>
-                        <p className="mt-1 text-xs text-zinc-500">
-                          {server.protocol.toUpperCase()} · {server.country} · {server.host}:{server.port}
-                        </p>
+                            <span className={`rounded-full px-2 py-0.5 text-[9px] uppercase tracking-[0.16em] ${server.isEnabled ? "bg-emerald-500/12 text-emerald-400" : "bg-zinc-800 text-zinc-500"}`}>
+                              {server.isEnabled ? "Live" : "Off"}
+                            </span>
+                          </div>
+                          <p className="mt-0.5 text-xs text-zinc-500">
+                            {server.country ? `${server.country} · ` : ""}{server.host}:{server.port}
+                          </p>
                         </div>
                       </div>
-                      <div className="flex flex-wrap gap-2">
+                      <div className="flex flex-wrap gap-1.5 md:flex-nowrap">
                         <button
                           type="button"
                           onClick={() => void moveServer(absoluteIndex, 'up')}
                           disabled={absoluteIndex === 0 || busy}
-                          className="rounded-xl border border-zinc-800 px-3 py-2 text-xs font-semibold text-zinc-400 transition hover:bg-zinc-900 hover:text-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed"
+                          className="rounded-lg border border-white/8 px-2.5 py-1.5 text-xs text-zinc-500 transition hover:bg-white/6 hover:text-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed"
                         >
                           ↑
                         </button>
@@ -1890,7 +1936,7 @@ or
                           type="button"
                           onClick={() => void moveServer(absoluteIndex, 'down')}
                           disabled={absoluteIndex === servers.length - 1 || busy}
-                          className="rounded-xl border border-zinc-800 px-3 py-2 text-xs font-semibold text-zinc-400 transition hover:bg-zinc-900 hover:text-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed"
+                          className="rounded-lg border border-white/8 px-2.5 py-1.5 text-xs text-zinc-500 transition hover:bg-white/6 hover:text-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed"
                         >
                           ↓
                         </button>
@@ -1898,7 +1944,7 @@ or
                           type="button"
                           onClick={() => void editServer(server.id)}
                           disabled={pendingServerId === server.id}
-                          className="rounded-xl border border-zinc-800 px-3 py-2 text-xs font-semibold text-zinc-400 transition hover:bg-zinc-900 hover:text-zinc-200"
+                          className="rounded-lg border border-white/8 px-3 py-1.5 text-xs text-zinc-400 transition hover:bg-white/6 hover:text-zinc-100"
                         >
                           Edit
                         </button>
@@ -1906,28 +1952,28 @@ or
                           type="button"
                           onClick={() => void toggle(server.id, !server.isEnabled)}
                           disabled={pendingServerId === server.id}
-                          className={`rounded-xl border px-3 py-2 text-xs font-semibold transition ${
+                          className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
                             server.isEnabled
-                              ? "border-emerald-700 text-emerald-300 hover:bg-emerald-500/10"
-                              : "border-zinc-800 text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200"
+                              ? "border-emerald-700/40 text-emerald-400 hover:bg-emerald-500/10"
+                              : "border-white/8 text-zinc-400 hover:bg-white/6 hover:text-zinc-100"
                           }`}
                         >
-                          {pendingServerId === server.id ? "Working..." : server.isEnabled ? "Disable" : "Enable"}
+                          {pendingServerId === server.id ? "..." : server.isEnabled ? "Disable" : "Enable"}
                         </button>
                         <button
                           type="button"
                           onClick={() => void remove(server.id)}
                           disabled={pendingServerId === server.id}
-                          className="rounded-xl border border-rose-700/50 px-3 py-2 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/10"
+                          className="rounded-lg border border-rose-700/30 px-3 py-1.5 text-xs text-rose-400/80 transition hover:bg-rose-500/10 hover:text-rose-300"
                         >
-                          {pendingServerId === server.id ? "Working..." : "Delete"}
+                          {pendingServerId === server.id ? "..." : "Delete"}
                         </button>
                       </div>
                     </div>
                   </div>
                 )})}
                 {servers.length === 0 ? (
-                  <div className="rounded-2xl border border-dashed border-zinc-800 px-4 py-10 text-center text-sm text-zinc-600">
+                  <div className="rounded-xl border border-dashed border-white/8 px-4 py-10 text-center text-sm text-zinc-600">
                     No servers yet — use one of the builders above to create the first profile.
                   </div>
                 ) : null}

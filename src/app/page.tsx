@@ -13,33 +13,29 @@ export default async function Home() {
 
   return (
     <main className="space-bg min-h-screen">
-      <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-6 py-8 md:px-8">
-        <section className="relative overflow-hidden rounded-[28px] border border-white/10 bg-white/6 px-6 py-5 shadow-[0_20px_80px_rgba(2,6,23,0.45)] backdrop-blur-xl">
-          <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-cyan-300/50 to-transparent" />
-          <div className="flex flex-col gap-5 md:flex-row md:items-center md:justify-between">
-            <div className="flex flex-col gap-2">
-              <div className="inline-flex w-fit items-center gap-2 rounded-full border border-cyan-300/20 bg-cyan-400/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.22em] text-cyan-200/90">
-                Astro Theme
-              </div>
-              <h1 className="text-2xl font-semibold tracking-tight text-zinc-50 md:text-4xl">Astro VPN</h1>
-              <p className="max-w-2xl text-sm leading-6 text-zinc-300">
-                Mission control for protocol routing, runtime readiness, encrypted inventory, and cleaner multi-profile imports.
-              </p>
+      {/* Slim top nav */}
+      <header className="sticky top-0 z-50 border-b border-white/6 bg-zinc-950/80 backdrop-blur-xl">
+        <div className="mx-auto flex h-14 max-w-7xl items-center justify-between px-6">
+          <div className="flex items-center gap-3">
+            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-cyan-400 to-blue-500 shadow shadow-cyan-500/30">
+              <svg className="h-4 w-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.955 11.955 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
+              </svg>
             </div>
-            <div className="grid gap-3 text-sm text-zinc-300 md:grid-cols-2">
-              <div className="rounded-2xl border border-white/10 bg-zinc-950/35 px-4 py-3">
-                <div className="text-[11px] uppercase tracking-[0.18em] text-zinc-500">Stack</div>
-                <div className="mt-1 font-medium text-zinc-100">Next.js + Neon</div>
-              </div>
-              <div className="rounded-2xl border border-white/10 bg-zinc-950/35 px-4 py-3">
-                <div className="text-[11px] uppercase tracking-[0.18em] text-zinc-500">Focus</div>
-                <div className="mt-1 font-medium text-zinc-100">Bulk import + runtime-ready profiles</div>
-              </div>
-            </div>
+            <span className="text-sm font-semibold text-zinc-100">Astro VPN</span>
+            <span className="hidden text-zinc-700 sm:block">·</span>
+            <span className="hidden text-xs font-medium text-zinc-500 sm:block">Admin Panel</span>
           </div>
-        </section>
+          <div className="flex items-center gap-2">
+            <div className="flex h-2 w-2 rounded-full bg-emerald-400 shadow shadow-emerald-400/50" />
+            <span className="text-xs text-zinc-500">Connected</span>
+          </div>
+        </div>
+      </header>
+
+      <div className="mx-auto max-w-7xl px-4 py-6 md:px-6">
+        <AdminDashboard />
       </div>
-      <AdminDashboard />
     </main>
   );
 }

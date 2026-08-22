@@ -19,6 +19,7 @@ export const protocolSupportsCredentials = (protocol: string): boolean => {
   if (lowered === "http") return true;
   if (lowered.startsWith("openvpn:")) return true;
   if (lowered.startsWith("ssh:")) return true;
+  if (lowered.startsWith("l2tp")) return true;
   return false;
 };
 
@@ -76,6 +77,13 @@ export const readStoredCredentials = (
         password: pickString(parsed.password) ?? "",
       };
     }
+  }
+
+  if (lowered.startsWith("l2tp")) {
+    return {
+      username: pickString(parsed.username) ?? "",
+      password: pickString(parsed.password) ?? "",
+    };
   }
 
   return null;
@@ -137,6 +145,19 @@ export const applyStoredCredentials = (
       }
       return JSON.stringify(parsed, null, 2);
     }
+  }
+
+  if (lowered.startsWith("l2tp")) {
+    if (nextUsername !== undefined) parsed.username = nextUsername;
+    if (nextPassword !== undefined) {
+      if (nextPassword) parsed.password = nextPassword;
+      else delete parsed.password;
+    }
+    if (typeof (update as { psk?: string }).psk === "string") {
+      const nextPsk = ((update as { psk?: string }).psk ?? "").trim();
+      if (nextPsk) parsed.psk = nextPsk;
+    }
+    return JSON.stringify(parsed, null, 2);
   }
 
   throw new Error(`Protocol ${protocol} does not support credential updates`);
