@@ -834,6 +834,14 @@ const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): JsonObjec
     };
   }
 
+  if (loweredProtocol === "l2tp") {
+    return {
+      engine: "l2tp",
+      supported: true,
+      outbound: parsedJson as JsonObject,
+    };
+  }
+
   if (isObject(parsedJson)) {
     if (Array.isArray(parsedJson.outbounds)) {
       const singBoxOutbound = parsedJson.outbounds.find((entry) => {
