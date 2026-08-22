@@ -1153,62 +1153,30 @@ export function AdminDashboard() {
   return (
     <div className="flex min-h-[calc(100vh-3.5rem)] overflow-hidden rounded-[24px] border border-white/6 bg-zinc-950/80 text-zinc-100 shadow-2xl backdrop-blur-xl">
       {/* Sidebar */}
-      <aside className="flex w-64 flex-shrink-0 flex-col border-r border-white/5 bg-black/20">
-        {/* Brand */}
-        <div className="border-b border-white/5 px-5 py-5">
-          <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-cyan-400/70">Protocol Studio</p>
-          <p className="mt-1 text-sm text-zinc-400">Build & manage VPN profiles</p>
-        </div>
-
+      <aside className="flex w-52 flex-shrink-0 flex-col border-r border-white/5 bg-black/20">
         {/* Protocol nav */}
-        <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4">
-          <p className="mb-2 px-2 text-[10px] font-semibold uppercase tracking-[0.22em] text-zinc-600">Builders</p>
+        <nav className="flex-1 space-y-0.5 overflow-y-auto px-2 py-3">
           {PROTOCOLS.map((item) => {
             const isActive = tab === item.id;
-            const protocolColors: Record<string, string> = {
-              v2ray: "text-cyan-300",
-              ssh: "text-purple-300",
-              http: "text-rose-300",
-              wireguard: "text-blue-300",
-              openvpn: "text-orange-300",
-              l2tp: "text-emerald-300",
-              custom: "text-zinc-300",
-              bulk: "text-amber-300",
-              routing: "text-pink-300",
-            };
             return (
               <button
                 key={item.id}
                 type="button"
                 onClick={() => { setTab(item.id); setMsg(null); }}
-                className={`group w-full rounded-xl px-3 py-2.5 text-left transition-all ${
-                  isActive
-                    ? "bg-white/8 shadow-sm ring-1 ring-white/10"
-                    : "hover:bg-white/4"
+                className={`group w-full rounded-lg px-3 py-2 text-left transition-all ${
+                  isActive ? "bg-white/8 ring-1 ring-white/10" : "hover:bg-white/4"
                 }`}
               >
-                <div className="flex items-center justify-between gap-2">
-                  <span className={`text-sm font-medium transition ${isActive ? "text-zinc-50" : "text-zinc-400 group-hover:text-zinc-200"}`}>
-                    {item.label}
-                  </span>
-                  <span className={`rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${
-                    isActive
-                      ? `${protocolColors[item.id] ?? "text-zinc-300"} bg-current/10`
-                      : "text-zinc-600"
-                  }`}>
-                    {item.support.split(" ")[0]}
-                  </span>
-                </div>
-                <p className={`mt-0.5 text-[11px] transition ${isActive ? "text-zinc-400" : "text-zinc-600 group-hover:text-zinc-500"}`}>
-                  {item.badge}
-                </p>
+                <span className={`text-sm font-medium transition ${isActive ? "text-zinc-50" : "text-zinc-400 group-hover:text-zinc-200"}`}>
+                  {item.label}
+                </span>
               </button>
             );
           })}
         </nav>
 
         {/* Stats + actions */}
-        <div className="border-t border-white/5 px-4 py-4 space-y-3">
+        <div className="border-t border-white/5 px-3 py-3 space-y-2">
           {/* Server count */}
           <div className="rounded-xl border border-white/6 bg-white/3 p-3">
             <div className="flex items-center justify-between">
@@ -1254,19 +1222,12 @@ export function AdminDashboard() {
 
       {/* Main content */}
       <main className="flex-1 overflow-y-auto">
-        <div className="border-b border-zinc-900 bg-zinc-950/60 px-8 py-6">
-          <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-            <div>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-zinc-600">Profile builder</p>
-              <h3 className="mt-2 text-2xl font-semibold text-zinc-50">
-                {PROTOCOLS.find((item) => item.id === tab)?.label} profile
-              </h3>
-              <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-400">{supportTone}</p>
-            </div>
-            <div className="rounded-2xl border border-cyan-400/20 bg-cyan-400/10 px-4 py-3 text-sm text-cyan-200">
-              <div className="text-[11px] uppercase tracking-[0.18em] text-cyan-300/80">Stored protocol</div>
-              <div className="mt-1 font-mono">{protocol}</div>
-            </div>
+        <div className="border-b border-white/5 px-6 py-4">
+          <div className="flex items-center justify-between gap-4">
+            <h3 className="text-base font-semibold text-zinc-100">
+              {PROTOCOLS.find((item) => item.id === tab)?.label}
+            </h3>
+            <span className="rounded-full border border-white/8 px-3 py-1 font-mono text-xs text-zinc-400">{protocol}</span>
           </div>
         </div>
 
@@ -1790,11 +1751,8 @@ or
             ) : null}
 
             <div className="rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-6">
-              <div className="mb-4 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-                <div>
-                  <h4 className="text-lg font-semibold text-zinc-50">Stored servers</h4>
-                  <p className="mt-1 text-sm text-zinc-500">Inventory synced from encrypted storage.</p>
-                </div>
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <h4 className="text-sm font-semibold text-zinc-100">Stored servers <span className="ml-1 text-zinc-600">({stats.total})</span></h4>
                 <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
@@ -1820,9 +1778,6 @@ or
                   >
                     Delete all
                   </button>
-                  <div className="rounded-full border border-zinc-800 px-3 py-1 text-xs text-zinc-400">
-                    {stats.total} total
-                  </div>
                 </div>
               </div>
 
@@ -2007,17 +1962,13 @@ or
             </div>
           </section>
 
-          <aside className="space-y-6">
-            <div className="rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-6">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-zinc-600">What gets stored</p>
-              <h4 className="mt-3 text-lg font-semibold text-zinc-50">Generated payload preview</h4>
-              <p className="mt-2 text-sm leading-6 text-zinc-500">
-                This is the exact raw config encrypted into storage for the current builder.
-              </p>
+          <aside className="space-y-4">
+            <div className="rounded-2xl border border-white/6 bg-white/3 p-4">
+              <p className="text-xs font-medium text-zinc-400">Config preview</p>
               {tab !== "bulk" ? (
-                <div className="mt-4">
+                <div className="mt-3">
                   <TextArea
-                    label="Raw config preview"
+                    label=""
                     value={deferredEffectiveRawConfig}
                     onChange={() => undefined}
                     rows={18}
@@ -2025,32 +1976,8 @@ or
                   />
                 </div>
               ) : (
-                <div className="mt-4 rounded-2xl border border-zinc-900 bg-zinc-950 px-4 py-6 text-sm text-zinc-500">
-                  Bulk mode stores every item exactly as provided in the import array.
-                </div>
+                <p className="mt-2 text-xs text-zinc-600">Bulk mode — no preview.</p>
               )}
-            </div>
-
-            <div className="rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-6">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-zinc-600">Protocol notes</p>
-              <div className="mt-4 space-y-4 text-sm leading-6 text-zinc-400">
-                <div className="rounded-2xl border border-zinc-900 bg-zinc-950 px-4 py-4">
-                  <p className="font-medium text-zinc-200">V2Ray family</p>
-                  <p className="mt-1">Paste the full share link or JSON so transport settings stay intact.</p>
-                </div>
-                <div className="rounded-2xl border border-zinc-900 bg-zinc-950 px-4 py-4">
-                  <p className="font-medium text-zinc-200">SSH direct</p>
-                  <p className="mt-1">Supports password or private key auth, host key pinning, and custom client version.</p>
-                </div>
-                <div className="rounded-2xl border border-zinc-900 bg-zinc-950 px-4 py-4">
-                  <p className="font-medium text-zinc-200">SSH DNSTT</p>
-                  <p className="mt-1">Requires the tunnel domain, resolver target, and the server public key. The panel now stores all of them.</p>
-                </div>
-                <div className="rounded-2xl border border-zinc-900 bg-zinc-950 px-4 py-4">
-                  <p className="font-medium text-zinc-200">WireGuard / OpenVPN</p>
-                  <p className="mt-1">These builders now store structured metadata cleanly so the runtime can be added later without re-entering every server.</p>
-                </div>
-              </div>
             </div>
           </aside>
         </div>
