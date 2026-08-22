@@ -1053,6 +1053,8 @@ export function AdminDashboard() {
         newOpenVpnMode = proto.includes("tcp") ? "tcp" : "udp";
       } else if (proto === "http") {
         newTab = "http";
+      } else if (proto === "l2tp") {
+        newTab = "l2tp";
       } else {
         newTab = "custom";
         newCustomProto = proto;
@@ -1064,7 +1066,7 @@ export function AdminDashboard() {
       setOpenVpnMode(newOpenVpnMode);
       setCustomProto(newCustomProto);
       
-      if (newTab !== "v2ray" && newTab !== "openvpn" && newTab !== "http") {
+      if (newTab !== "v2ray" && newTab !== "openvpn" && newTab !== "http" && newTab !== "ssh" && newTab !== "wireguard" && newTab !== "l2tp") {
         setTab("custom");
         setCustomProto(proto);
       }
