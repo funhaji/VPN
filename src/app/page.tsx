@@ -1,6 +1,16 @@
-import React from 'react';
+"use client";
+
+import React, { useState } from 'react';
 
 export default function DownloadPage() {
+  const downloadFile = (url: string) => {
+    const a = document.createElement('a');
+    a.href = url;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
   return (
     <main className="space-bg min-h-screen flex flex-col items-center justify-center p-6 text-white">
       <div className="absolute inset-0 bg-zinc-950/80 -z-10" />
@@ -22,9 +32,12 @@ export default function DownloadPage() {
           <div className="text-4xl mb-4">??</div>
           <h2 className="text-xl font-semibold mb-2">Windows</h2>
           <p className="text-zinc-500 text-sm mb-6 text-center">Windows 10 / 11 (64-bit)</p>
-          <a href="https://github.com/funhaji/AstroVPN/releases/download/Main/AstroVPN_setup.exe" className="w-full text-center rounded-lg bg-gradient-to-r from-blue-500 to-blue-600 px-4 py-2 font-medium text-white shadow-lg shadow-blue-500/25 hover:from-blue-400 hover:to-blue-500 transition-all">
+          <button 
+            onClick={() => downloadFile("https://github.com/funhaji/AstroVPN/raw/main/Astro%20VPN_setup.exe")}
+            className="w-full text-center rounded-lg bg-gradient-to-r from-blue-500 to-blue-600 px-4 py-2 font-medium text-white shadow-lg shadow-blue-500/25 hover:from-blue-400 hover:to-blue-500 transition-all"
+          >
             Download for Windows
-          </a>
+          </button>
         </div>
 
         {/* Linux */}
@@ -33,15 +46,24 @@ export default function DownloadPage() {
           <h2 className="text-xl font-semibold mb-2">Linux</h2>
           <p className="text-zinc-500 text-sm mb-6 text-center">Debian, Ubuntu, Fedora, Arch</p>
           <div className="flex flex-col gap-2 w-full">
-            <a href="https://github.com/funhaji/AstroVPN/raw/main/linux/AstroVPN.deb" className="w-full text-center rounded-lg bg-white/10 px-4 py-2 font-medium text-white hover:bg-white/20 transition-all">
+            <button 
+              onClick={() => downloadFile("https://github.com/funhaji/AstroVPN/raw/main/linux/AstroVPN.deb")}
+              className="w-full text-center rounded-lg bg-white/10 px-4 py-2 font-medium text-white hover:bg-white/20 transition-all"
+            >
               .DEB (Debian/Ubuntu)
-            </a>
-            <a href="https://github.com/funhaji/AstroVPN/raw/main/linux/AstroVPN.rpm" className="w-full text-center rounded-lg bg-white/10 px-4 py-2 font-medium text-white hover:bg-white/20 transition-all">
+            </button>
+            <button 
+              onClick={() => downloadFile("https://github.com/funhaji/AstroVPN/raw/main/linux/AstroVPN.rpm")}
+              className="w-full text-center rounded-lg bg-white/10 px-4 py-2 font-medium text-white hover:bg-white/20 transition-all"
+            >
               .RPM (Fedora/RHEL)
-            </a>
-            <a href="https://github.com/funhaji/AstroVPN/releases/download/Main/AstroVPN.AppImage" className="w-full text-center rounded-lg bg-white/10 px-4 py-2 font-medium text-white hover:bg-white/20 transition-all">
+            </button>
+            <button 
+              onClick={() => downloadFile("https://github.com/funhaji/AstroVPN/releases/download/Main/AstroVPN.AppImage")}
+              className="w-full text-center rounded-lg bg-white/10 px-4 py-2 font-medium text-white hover:bg-white/20 transition-all"
+            >
               .AppImage (Portable)
-            </a>
+            </button>
           </div>
         </div>
       </div>
