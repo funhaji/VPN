@@ -513,6 +513,7 @@ export function AdminDashboard() {
   const [bulk, setBulk] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [hasPendingReorder, setHasPendingReorder] = useState(false);
   const [servers, setServers] = useState<ServerRecord[]>([]);
   const [stats, setStats] = useState({ total: 0, enabled: 0 });
   const [pendingServerId, setPendingServerId] = useState<string | null>(null);
@@ -565,7 +566,7 @@ export function AdminDashboard() {
     try {
       const data = await api<{ servers: ServerRecord[] }>("/api/admin/servers");
       setServers(data.servers);
-      setServersPage(0);
+      setServersPage((p) => Math.min(p, Math.max(0, Math.ceil(data.servers.length / PAGE_SIZE) - 1)));
       setStats({
         total: data.servers.length,
         enabled: data.servers.filter((server) => server.isEnabled).length,
@@ -1082,22 +1083,27 @@ export function AdminDashboard() {
     if (direction === 'up' && indexInList === 0) return;
     if (direction === 'down' && indexInList === servers.length - 1) return;
 
+    const newServers = [...servers];
+    const targetIndex = direction === 'up' ? indexInList - 1 : indexInList + 1;
+    const temp = newServers[indexInList];
+    newServers[indexInList] = newServers[targetIndex];
+    newServers[targetIndex] = temp;
+    setServers(newServers);
+    setHasPendingReorder(true);
+  }, [servers]);
+
+  const saveOrder = useCallback(async () => {
     setBusy(true);
     try {
-      const newServers = [...servers];
-      const targetIndex = direction === 'up' ? indexInList - 1 : indexInList + 1;
-      const temp = newServers[indexInList];
-      newServers[indexInList] = newServers[targetIndex];
-      newServers[targetIndex] = temp;
-
-      const orders = newServers.map((s, idx) => ({ id: s.id, sort_order: idx }));
+      const orders = servers.map((s, idx) => ({ id: s.id, sort_order: idx }));
       await api("/api/admin/servers/reorder", {
         method: "POST",
         body: JSON.stringify(orders),
       });
+      setHasPendingReorder(false);
       await load();
     } catch {
-      setMsg({ ok: false, text: "Reorder failed" });
+      setMsg({ ok: false, text: "Save Order failed" });
     } finally {
       setBusy(false);
     }
@@ -1827,6 +1833,16 @@ or
               <div className="mb-4 flex items-center justify-between gap-3">
                 <h4 className="text-sm font-semibold text-zinc-100">Stored servers <span className="ml-1 text-zinc-600">({stats.total})</span></h4>
                 <div className="flex flex-wrap items-center gap-2">
+                  {hasPendingReorder && (
+                    <button
+                      type="button"
+                      onClick={() => void saveOrder()}
+                      disabled={busy}
+                      className="rounded-xl border border-cyan-500/50 bg-cyan-500/10 px-3 py-2 text-xs font-semibold text-cyan-300 transition hover:bg-cyan-500/20 shadow-[0_0_15px_rgba(34,211,238,0.2)]"
+                    >
+                      Save Order
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => void bulkServerAction("enable-all")}
