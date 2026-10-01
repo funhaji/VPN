@@ -95,6 +95,12 @@ const detectProtocolFromParsed = (parsed: JsonObject): string | undefined => {
     return `openvpn:${pickString(parsed.transport)?.toLowerCase() ?? "udp"}`;
   }
   if (type === "dnstt-ssh") return "ssh:dnstt";
+  if (type === "ssh-profile") {
+    const connType = pickString(parsed.connectionType)?.toLowerCase() ?? "";
+    if (connType.includes("payload") || parsed.proxyHost) return "ssh:proxy-payload";
+    if (connType.includes("ssl") || connType.includes("tls")) return "ssh:tls";
+    return "ssh:direct";
+  }
   if (type === "ssh") return "ssh:direct";
   if (type === "http") return "http";
   if (type && ["vless", "vmess", "trojan", "shadowsocks", "hysteria2"].includes(type)) {
@@ -220,6 +226,12 @@ const detectFromJson = (rawConfig: string, fallbackProtocol: string): ImportedPr
     label = pickString(tunnel.domain) ?? pickString(ssh.host) ?? label;
   }
 
+  if (pickString(parsed.type)?.toLowerCase() === "ssh-profile") {
+    host = pickString(parsed.server) ?? pickString(parsed.host) ?? host;
+    port = pickNumber(parsed.port) ?? pickNumber(parsed.server_port) ?? port;
+    label = pickString(parsed.name) ?? label;
+  }
+
   const outbounds = Array.isArray(parsed.outbounds) ? parsed.outbounds : [];
   const outbound = outbounds.find((entry) => isObject(entry));
   if (isObject(outbound)) {
@@ -310,12 +322,185 @@ export const detectProfileMetadata = (
   };
 };
 
+const KNOWN_SSH_KEYS = new Map<string, string>([
+  ["protocol", "protocol"],
+  ["connection type", "connectionType"],
+  ["connection_type", "connectionType"],
+  ["ssh server", "server"],
+  ["ssh host", "server"],
+  ["server", "server"],
+  ["ssh port", "port"],
+  ["port", "port"],
+  ["username", "username"],
+  ["user", "username"],
+  ["password", "password"],
+  ["pass", "password"],
+  ["http proxy", "proxyHost"],
+  ["proxy host", "proxyHost"],
+  ["proxy ip", "proxyHost"],
+  ["proxy port", "proxyPort"],
+  ["proxy_port", "proxyPort"],
+  ["proxy authentication", "proxyAuth"],
+  ["proxy auth", "proxyAuth"],
+  ["payload", "payload"],
+  ["http payload", "payload"],
+  ["sni", "sni"],
+  ["server name indication", "sni"],
+  ["bug host", "sni"],
+  ["tls", "tls"],
+  ["ssl", "tls"],
+  ["udp gateway", "udpGateway"],
+  ["udpgw", "udpGateway"],
+  ["udp port", "udpGateway"],
+  ["dns mode", "dnsMode"],
+  ["dns", "dnsMode"],
+  ["domain", "domain"],
+  ["tunnel domain", "domain"],
+  ["public key", "publicKey"],
+  ["resolver", "resolver"],
+  ["nameserver", "resolver"],
+  ["ns", "resolver"],
+]);
+
+export const parseSshTableBlocks = (raw: string): JsonObject[] => {
+  const lines = raw.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+  const blocks: Array<{ name: string; subtitle: string; props: Record<string, string> }> = [];
+  let currentBlock: { name: string; subtitle: string; props: Record<string, string> } | null = null;
+  let pendingName = "";
+  let pendingSubtitle = "";
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const lowered = line.toLowerCase();
+
+    let inlineKey: string | null = null;
+    let inlineVal: string | null = null;
+
+    for (const [k, field] of KNOWN_SSH_KEYS.entries()) {
+      if (lowered.startsWith(k + ":") || lowered.startsWith(k + "\t") || lowered.startsWith(k + "   ")) {
+        inlineKey = field;
+        inlineVal = line.substring(k.length + 1).trim().replace(/^[:\t]+/, "").trim();
+        break;
+      }
+    }
+
+    if (inlineKey) {
+      if (!currentBlock) {
+        currentBlock = { name: pendingName || "SSH Server", subtitle: pendingSubtitle, props: {} };
+        pendingName = "";
+        pendingSubtitle = "";
+      }
+      currentBlock.props[inlineKey] = inlineVal || "";
+      continue;
+    }
+
+    if (lowered === "setting") {
+      if (i + 1 < lines.length && lines[i + 1].toLowerCase() === "value") {
+        i++;
+      }
+      continue;
+    }
+
+    if (KNOWN_SSH_KEYS.has(lowered)) {
+      const field = KNOWN_SSH_KEYS.get(lowered)!;
+      let val = "";
+      if (i + 1 < lines.length) {
+        val = lines[i + 1];
+        i++;
+      }
+      if (!currentBlock) {
+        currentBlock = { name: pendingName || "SSH Server", subtitle: pendingSubtitle, props: {} };
+        pendingName = "";
+        pendingSubtitle = "";
+      }
+      currentBlock.props[field] = val;
+      continue;
+    }
+
+    if (currentBlock && (currentBlock.props.server || currentBlock.props.protocol)) {
+      blocks.push(currentBlock);
+      currentBlock = null;
+      pendingName = line;
+      pendingSubtitle = "";
+      continue;
+    }
+
+    if (!pendingName) {
+      pendingName = line;
+    } else if (!pendingSubtitle) {
+      pendingSubtitle = line;
+    } else {
+      pendingName = line;
+      pendingSubtitle = "";
+    }
+  }
+
+  if (currentBlock && (currentBlock.props.server || currentBlock.props.protocol)) {
+    blocks.push(currentBlock);
+  }
+
+  return blocks.map((b) => {
+    const props = b.props;
+    const server = props.server || "";
+    const port = parseInt(props.port || "22", 10) || 22;
+    const username = props.username || "root";
+    const password = props.password || "";
+    const connType = props.connectionType || (props.proxyHost ? "SSH-Proxy-Payload" : "Direct");
+
+    const out: JsonObject = {
+      type: "ssh-profile",
+      name: b.name,
+      protocol: "SSH",
+      connectionType: connType,
+      server,
+      port,
+      username,
+      password,
+    };
+
+    if (props.proxyHost) {
+      out.proxyHost = props.proxyHost;
+      out.proxyPort = parseInt(props.proxyPort || "8880", 10) || 8880;
+    }
+    if (props.sni && props.sni.toLowerCase() !== "empty") {
+      out.sni = props.sni;
+    }
+    if (props.tls && props.tls.toLowerCase() !== "default" && props.tls.toLowerCase() !== "disabled") {
+      out.tls = true;
+    }
+    if (props.udpGateway) {
+      out.udpGateway = parseInt(props.udpGateway, 10) || 7300;
+    }
+    if (props.dnsMode) {
+      out.dnsMode = props.dnsMode;
+    }
+    if (props.domain) {
+      out.domain = props.domain;
+    }
+    if (props.publicKey) {
+      out.publicKey = props.publicKey;
+    }
+    return out;
+  });
+};
+
 export const splitImportedProfiles = (raw: string): string[] => {
   const trimmed = raw.trim();
   if (!trimmed) return [];
 
   if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
     return [trimmed];
+  }
+
+  if (
+    trimmed.toLowerCase().includes("ssh server") ||
+    trimmed.toLowerCase().includes("connection type") ||
+    trimmed.toLowerCase().includes("ssh-proxy-payload")
+  ) {
+    const tableConfigs = parseSshTableBlocks(trimmed);
+    if (tableConfigs.length > 0) {
+      return tableConfigs.map((c) => JSON.stringify(c, null, 2));
+    }
   }
 
   return trimmed

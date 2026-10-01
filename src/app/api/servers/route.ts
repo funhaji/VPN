@@ -424,6 +424,58 @@ const buildOutboundFromHttpUri = (
 const buildOutboundFromSsh = (
   rawConfig: string,
 ): JsonObject => {
+  const parsed = parseJson(rawConfig);
+  if (isObject(parsed) && pickString(parsed.type)?.toLowerCase() === "ssh-profile") {
+    const server = pickString(parsed.server) ?? pickString(parsed.host) ?? "";
+    const port = pickNumber(parsed.port) ?? pickNumber(parsed.server_port) ?? 22;
+    const user = pickString(parsed.username) ?? pickString(parsed.user) ?? "root";
+    const password = pickString(parsed.password) ?? pickString(parsed.pass);
+    const proxyHost = pickString(parsed.proxyHost) ?? pickString(parsed.httpProxy);
+    const proxyPort = pickNumber(parsed.proxyPort) ?? 8880;
+    const sni = pickString(parsed.sni);
+    const isTls = Boolean(parsed.tls);
+
+    const baseOutbound: JsonObject = {
+      type: "ssh",
+      tag: "proxy",
+      server,
+      server_port: port,
+      user,
+    };
+    if (password) {
+      baseOutbound.password = password;
+    }
+
+    if (proxyHost) {
+      baseOutbound.detour = "http-proxy";
+      const extraOutbounds: JsonObject[] = [
+        withOptional(
+          {
+            type: "http",
+            tag: "http-proxy",
+            server: proxyHost,
+            server_port: proxyPort,
+          },
+          {
+            tls: isTls
+              ? withOptional(
+                  { enabled: true },
+                  { server_name: sni && sni.toLowerCase() !== "empty" ? sni : undefined },
+                )
+              : undefined,
+            headers: {
+              Host: `${server}:${port}`,
+            },
+          },
+        ),
+      ];
+      baseOutbound._extra_outbounds = extraOutbounds;
+    }
+
+    baseOutbound._ssh_profile = parsed;
+    return baseOutbound;
+  }
+
   const url = new URL(rawConfig);
   return withOptional(
     {
@@ -818,6 +870,13 @@ const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): JsonObjec
         supported: true,
         // Admin stores the full sing-box outbound payload for DNSTT-SSH.
         outbound: { ...(parsedJson as JsonObject), tag: "proxy" },
+      };
+    }
+    if (parsedType && parsedType.toLowerCase() === "ssh-profile") {
+      return {
+        engine: "sing-box",
+        supported: true,
+        outbound: buildOutboundFromSsh(trimmed),
       };
     }
   }
