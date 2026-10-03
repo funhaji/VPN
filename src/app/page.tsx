@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import React, { useEffect, useRef, useState, useCallback } from "react";
 
@@ -8,6 +8,8 @@ const DEB_URL = "https://github.com/funhaji/AstroVPN/raw/main/linux/AstroVPN.deb
 const RPM_URL = "https://github.com/funhaji/AstroVPN/raw/main/linux/AstroVPN.rpm";
 const APPIMAGE_URL =
   "https://github.com/funhaji/AstroVPN/releases/download/Main/AstroVPN.AppImage";
+const ANDROID_URL =
+  "https://github.com/funhaji/AstroVPN/releases/download/Android/app-universal-release.apk";
 
 type Lang = "en" | "fa";
 
@@ -21,6 +23,8 @@ const COPY: Record<
     winCta: string;
     linuxTitle: string;
     linuxSub: string;
+    androidTitle: string;
+    androidSub: string;
     footnote: string;
   }
 > = {
@@ -39,6 +43,8 @@ const COPY: Record<
     winCta: "Download .exe",
     linuxTitle: "Linux",
     linuxSub: "Debian, Ubuntu, Fedora, Arch",
+    androidTitle: "Android",
+    androidSub: "8.0+, Universal APK",
     footnote: "keys are generated on your device and never leave it",
   },
   fa: {
@@ -56,6 +62,8 @@ const COPY: Record<
     winCta: "دریافت نسخه ویندوز",
     linuxTitle: "لینوکس",
     linuxSub: "دبیان، اوبونتو، فدورا، آرچ",
+    androidTitle: "اندروید",
+    androidSub: "اندروید ۸ به بالا، فایل APK",
     footnote: "کلیدها روی دستگاه شما ساخته می‌شوند و هرگز خارج نمی‌شوند",
   },
 };
@@ -330,6 +338,21 @@ export default function DownloadPage() {
               </button>
             </div>
           </div>
+
+          <div className="card card-secondary">
+            <div className="card-top">
+              <OsIconAndroid />
+            </div>
+            <div className="card-body">
+              <h2>{c.androidTitle}</h2>
+              <p>{c.androidSub}</p>
+            </div>
+            <div className="linux-links">
+              <button onClick={() => downloadFile(ANDROID_URL)} className="linux-link" style={{cursor: 'pointer'}}>
+                .apk
+              </button>
+            </div>
+          </div>
         </div>
 
         <div className="footnote">{c.footnote}</div>
@@ -411,7 +434,7 @@ export default function DownloadPage() {
           flex-direction: column;
           align-items: center;
           text-align: center;
-          max-width: 42rem;
+          max-width: 54rem;
           width: 100%;
           opacity: 0;
           transform: translateY(14px);
@@ -523,10 +546,10 @@ export default function DownloadPage() {
           max-width: 30rem;
         }
 
-        @media (min-width: 640px) {
+        @media (min-width: 768px) {
           .downloads {
-            grid-template-columns: 1fr 1fr;
-            max-width: 38rem;
+            grid-template-columns: repeat(3, 1fr);
+            max-width: 52rem;
           }
         }
 
@@ -682,6 +705,18 @@ function OsIconLinux() {
       <circle cx="12" cy="12" r="9" />
       <path d="M8 10c0-2 1.5-4 4-4s4 2 4 4" />
       <path d="M7 16c1.5 1.5 3 2 5 2s3.5-.5 5-2" />
+    </svg>
+  );
+}
+
+function OsIconAndroid() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M5 16v-6a7 7 0 0 1 14 0v6" />
+      <path d="M6 9l-2-3" />
+      <path d="M18 9l2-3" />
+      <circle cx="9" cy="11.5" r="1" fill="currentColor" />
+      <circle cx="15" cy="11.5" r="1" fill="currentColor" />
     </svg>
   );
 }
