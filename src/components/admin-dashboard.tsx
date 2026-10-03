@@ -3,7 +3,7 @@
 import { useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { ServerRecord } from "@/types/server";
-import { detectProfileMetadata, splitImportedProfiles } from "@/lib/profile-import";
+import { detectProfileMetadata, splitImportedProfiles, parseWireGuardConf, type ParsedWireGuardProfile } from "@/lib/profile-import";
 import { protocolSupportsCredentials, unwrapOpenVpnProfileContent } from "@/lib/credentials";
 import { RoutingRulesPanel } from "@/components/routing-rules-panel";
 
@@ -12,6 +12,15 @@ type SshMode = "direct" | "dnstt";
 type SshResolverMode = "udp" | "dot" | "doh";
 type OpenVpnMode = "tcp" | "udp";
 type OpenVpnInputMode = "file" | "paste";
+type WireGuardInputMode = "form" | "file" | "paste";
+
+type WgConfigFile = {
+  id: string;
+  name: string;
+  content: string;
+  selected: boolean;
+  parsed: ParsedWireGuardProfile | null;
+};
 
 type OvpnFile = {
   id: string;
@@ -509,6 +518,11 @@ export function AdminDashboard() {
   const [ovpnBulkPassword, setOvpnBulkPassword] = useState("");
   const [ovpnDragging, setOvpnDragging] = useState(false);
   const ovpnFileInputRef = useRef<HTMLInputElement>(null);
+  const [wgInputMode, setWgInputMode] = useState<WireGuardInputMode>("form");
+  const [wgFiles, setWgFiles] = useState<WgConfigFile[]>([]);
+  const [wgDragging, setWgDragging] = useState(false);
+  const wgFileInputRef = useRef<HTMLInputElement>(null);
+  const [wgPastedText, setWgPastedText] = useState("");
   const [customProto, setCustomProto] = useState("custom:tcp");
   const [bulk, setBulk] = useState("");
   const [busy, setBusy] = useState(false);
@@ -598,6 +612,28 @@ export function AdminDashboard() {
       }),
     );
     setOvpnFiles((prev) => {
+      const existingContents = new Set(prev.map((f) => f.content));
+      const fresh = loaded.filter((f) => !existingContents.has(f.content));
+      return [...prev, ...fresh];
+    });
+  }, []);
+
+  const handleWgFiles = useCallback(async (files: File[]) => {
+    const loaded = await Promise.all(
+      files.map(async (file): Promise<WgConfigFile> => {
+        const content = await file.text();
+        const name = file.name.replace(/\.conf$/i, "");
+        const parsed = parseWireGuardConf(content);
+        return {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          name: name || file.name,
+          content,
+          selected: true,
+          parsed,
+        };
+      }),
+    );
+    setWgFiles((prev) => {
       const existingContents = new Set(prev.map((f) => f.content));
       const fresh = loaded.filter((f) => !existingContents.has(f.content));
       return [...prev, ...fresh];
@@ -756,6 +792,9 @@ export function AdminDashboard() {
       return Boolean(form.host.trim() && form.sshUser.trim() && form.sshDomain.trim() && form.sshPublicKey.trim() && form.sshResolver.trim());
     }
     if (tab === "wireguard") {
+      if (wgInputMode === "file") {
+        return wgFiles.some((f) => f.selected && f.parsed != null);
+      }
       return Boolean(form.host.trim() && form.port.trim() && form.wgLocalAddress.trim() && form.wgPrivateKey.trim() && form.wgPeerPublicKey.trim());
     }
     if (tab === "openvpn") {
@@ -769,12 +808,47 @@ export function AdminDashboard() {
       return Boolean(form.host.trim() && form.l2tpUsername.trim() && form.l2tpPassword.trim() && form.l2tpPsk.trim());
     }
     return effectiveRawConfig.trim().length > 0;
-  }, [bulk, effectiveRawConfig, form, openVpnInputMode, ovpnFiles, sshMode, tab]);
+  }, [bulk, effectiveRawConfig, form, openVpnInputMode, ovpnFiles, sshMode, tab, wgFiles, wgInputMode]);
 
   const submit = useCallback(async () => {
     setBusy(true);
     setMsg(null);
     try {
+      // ── WireGuard file-upload bulk submit ────────────────────────────────
+      if (tab === "wireguard" && wgInputMode === "file") {
+        const selectedFiles = wgFiles.filter((file) => file.selected);
+        if (selectedFiles.length === 0) {
+          throw new Error("Select at least one WireGuard .conf file");
+        }
+        const payloads = selectedFiles.map((file) => {
+          const parsed = file.parsed ?? parseWireGuardConf(file.content);
+          if (!parsed) {
+            throw new Error(`Could not parse WireGuard configuration in ${file.name}`);
+          }
+          const rawConfig = JSON.stringify(parsed, null, 2);
+          const safeName = (file.name || `WireGuard ${parsed.endpoint.host}`).trim();
+          return {
+            name: safeName.length >= 2 ? safeName : `${safeName} Profile`,
+            protocol: "wireguard:profile",
+            country: safeName.length >= 2 ? safeName : "Imported",
+            rawConfig,
+            isEnabled: true,
+            options: { mux: false, fragment: false, sniffing: false, allowInsecure: false, extra: {} },
+            host: parsed.endpoint.host,
+            port: parsed.endpoint.port,
+          };
+        });
+        await api("/api/admin/servers", {
+          method: "POST",
+          body: JSON.stringify({ servers: payloads }),
+        });
+        setMsg({ ok: true, text: `Imported ${payloads.length} WireGuard profile${payloads.length !== 1 ? "s" : ""}` });
+        setWgFiles([]);
+        await load();
+        return;
+      }
+      // ── End WireGuard file-upload ────────────────────────────────────────
+
       // ── OpenVPN file-upload bulk submit ──────────────────────────────────
       if (tab === "openvpn" && openVpnInputMode === "file") {
         const selectedFiles = ovpnFiles.filter((file) => file.selected);
@@ -1467,20 +1541,183 @@ export function AdminDashboard() {
                 ) : null}
 
                 {tab === "wireguard" ? (
-                  <div className="mt-6 space-y-4">
-                    <div className="grid gap-4 md:grid-cols-2">
-                      <Field label="Endpoint host" value={form.host} onChange={(value) => set("host", value)} placeholder="162.159.193.10" />
-                      <Field label="Endpoint port" value={form.port} onChange={(value) => set("port", value)} placeholder="51820" />
-                      <Field label="Local address" value={form.wgLocalAddress} onChange={(value) => set("wgLocalAddress", value)} placeholder="10.0.0.2/32" mono />
-                      <Field label="MTU" value={form.wgMtu} onChange={(value) => set("wgMtu", value)} placeholder="1408" />
+                  <div className="mt-6 space-y-5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <ToggleChip label="Manual form" checked={wgInputMode === "form"} onChange={() => setWgInputMode("form")} />
+                      <ToggleChip label="Upload .conf files" checked={wgInputMode === "file"} onChange={() => setWgInputMode("file")} />
+                      <ToggleChip label="Paste .conf text" checked={wgInputMode === "paste"} onChange={() => setWgInputMode("paste")} />
                     </div>
-                    <TextArea label="Private key" value={form.wgPrivateKey} onChange={(value) => set("wgPrivateKey", value)} rows={4} placeholder="Base64 private key" />
-                    <TextArea label="Peer public key" value={form.wgPeerPublicKey} onChange={(value) => set("wgPeerPublicKey", value)} rows={3} placeholder="Base64 peer public key" />
-                    <div className="grid gap-4 md:grid-cols-2">
-                      <Field label="Pre-shared key" value={form.wgPresharedKey} onChange={(value) => set("wgPresharedKey", value)} placeholder="Optional" mono />
-                      <Field label="Reserved bytes" value={form.wgReserved} onChange={(value) => set("wgReserved", value)} placeholder="0,0,0" mono />
-                    </div>
-                    <Field label="Allowed IPs" value={form.wgAllowedIps} onChange={(value) => set("wgAllowedIps", value)} placeholder="0.0.0.0/0, ::/0" mono />
+
+                    {wgInputMode === "file" ? (
+                      <div className="space-y-4">
+                        <div
+                          onDragOver={(e) => { e.preventDefault(); setWgDragging(true); }}
+                          onDragLeave={() => setWgDragging(false)}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            setWgDragging(false);
+                            const files = Array.from(e.dataTransfer.files).filter((f) => f.name.toLowerCase().endsWith(".conf"));
+                            void handleWgFiles(files);
+                          }}
+                          onClick={() => wgFileInputRef.current?.click()}
+                          className={`cursor-pointer select-none rounded-2xl border-2 border-dashed px-6 py-12 text-center transition ${
+                            wgDragging
+                              ? "border-cyan-400/80 bg-cyan-400/10"
+                              : "border-zinc-700 hover:border-zinc-600 hover:bg-zinc-900/40"
+                          }`}
+                        >
+                          <input
+                            ref={wgFileInputRef}
+                            type="file"
+                            accept=".conf"
+                            multiple
+                            className="hidden"
+                            onChange={(e) => {
+                              const files = Array.from(e.target.files ?? []);
+                              void handleWgFiles(files);
+                              e.target.value = "";
+                            }}
+                          />
+                          <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full border border-zinc-700 bg-zinc-900 text-zinc-400 text-lg">
+                            ↑
+                          </div>
+                          <p className="text-sm font-medium text-zinc-300">Drop .conf files here or click to browse</p>
+                          <p className="mt-1 text-xs text-zinc-600">Multiple files supported: filename becomes the server name</p>
+                        </div>
+
+                        {wgFiles.length > 0 && (
+                          <div className="space-y-3">
+                            <div className="flex items-center justify-between gap-3 px-1">
+                              <label className="flex cursor-pointer items-center gap-2">
+                                <input
+                                  type="checkbox"
+                                  className="accent-cyan-400"
+                                  checked={wgFiles.every((f) => f.selected)}
+                                  onChange={(e) =>
+                                    setWgFiles((prev) => prev.map((f) => ({ ...f, selected: e.target.checked })))
+                                  }
+                                />
+                                <span className="text-xs text-zinc-400">
+                                  {wgFiles.filter((f) => f.selected).length} of {wgFiles.length} selected
+                                </span>
+                              </label>
+                              <button
+                                type="button"
+                                onClick={() => setWgFiles([])}
+                                className="text-xs text-zinc-600 transition hover:text-rose-400"
+                              >
+                                Clear all
+                              </button>
+                            </div>
+
+                            <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
+                              {wgFiles.map((file) => (
+                                <div
+                                  key={file.id}
+                                  className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-3 space-y-2"
+                                >
+                                  <div className="flex items-center gap-2.5">
+                                    <input
+                                      type="checkbox"
+                                      className="accent-cyan-400"
+                                      checked={file.selected}
+                                      onChange={(e) =>
+                                        setWgFiles((prev) =>
+                                          prev.map((f) => (f.id === file.id ? { ...f, selected: e.target.checked } : f)),
+                                        )
+                                      }
+                                    />
+                                    <input
+                                      type="text"
+                                      value={file.name}
+                                      onChange={(e) =>
+                                        setWgFiles((prev) =>
+                                          prev.map((f) => (f.id === file.id ? { ...f, name: e.target.value } : f)),
+                                        )
+                                      }
+                                      className="flex-1 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1 text-xs text-zinc-200 outline-none focus:border-cyan-500"
+                                    />
+                                    <span className="font-mono text-[10px] text-zinc-500">
+                                      {file.parsed ? `${file.parsed.endpoint.host}:${file.parsed.endpoint.port}` : "parse error"}
+                                    </span>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ) : wgInputMode === "paste" ? (
+                      <div className="space-y-4">
+                        <TextArea
+                          label="Paste WireGuard .conf content"
+                          value={wgPastedText}
+                          onChange={(val) => {
+                            setWgPastedText(val);
+                            const parsed = parseWireGuardConf(val);
+                            if (parsed) {
+                              setForm((prev) => ({
+                                ...prev,
+                                host: parsed.endpoint.host,
+                                port: String(parsed.endpoint.port),
+                                wgLocalAddress: parsed.local_address.join(", "),
+                                wgPrivateKey: parsed.private_key,
+                                wgPeerPublicKey: parsed.peer_public_key,
+                                wgPresharedKey: parsed.pre_shared_key ?? "",
+                                wgAllowedIps: parsed.allowed_ips ? parsed.allowed_ips.join(", ") : "0.0.0.0/0",
+                                wgMtu: parsed.mtu ? String(parsed.mtu) : "1408",
+                                wgReserved: parsed.reserved ? parsed.reserved.join(", ") : "",
+                              }));
+                            }
+                          }}
+                          rows={8}
+                          placeholder={"[Interface]\nPrivateKey = ...\nAddress = 10.0.0.2/32\n\n[Peer]\nPublicKey = ...\nEndpoint = 192.0.2.1:51820"}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const parsed = parseWireGuardConf(wgPastedText);
+                            if (parsed) {
+                              setForm((prev) => ({
+                                ...prev,
+                                host: parsed.endpoint.host,
+                                port: String(parsed.endpoint.port),
+                                wgLocalAddress: parsed.local_address.join(", "),
+                                wgPrivateKey: parsed.private_key,
+                                wgPeerPublicKey: parsed.peer_public_key,
+                                wgPresharedKey: parsed.pre_shared_key ?? "",
+                                wgAllowedIps: parsed.allowed_ips ? parsed.allowed_ips.join(", ") : "0.0.0.0/0",
+                                wgMtu: parsed.mtu ? String(parsed.mtu) : "1408",
+                                wgReserved: parsed.reserved ? parsed.reserved.join(", ") : "",
+                              }));
+                              setWgInputMode("form");
+                              setMsg({ ok: true, text: "Configuration parsed into form fields." });
+                            } else {
+                              setMsg({ ok: false, text: "Could not parse WireGuard configuration. Make sure [Interface] and [Peer] are present." });
+                            }
+                          }}
+                          className="rounded-xl border border-cyan-500/40 bg-cyan-500/10 px-4 py-2 text-xs font-medium text-cyan-300 hover:bg-cyan-500/20 transition"
+                        >
+                          Populate form from pasted config
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        <div className="grid gap-4 md:grid-cols-2">
+                          <Field label="Endpoint host" value={form.host} onChange={(value) => set("host", value)} placeholder="162.159.193.10" />
+                          <Field label="Endpoint port" value={form.port} onChange={(value) => set("port", value)} placeholder="51820" />
+                          <Field label="Local address" value={form.wgLocalAddress} onChange={(value) => set("wgLocalAddress", value)} placeholder="10.0.0.2/32" mono />
+                          <Field label="MTU" value={form.wgMtu} onChange={(value) => set("wgMtu", value)} placeholder="1408" />
+                        </div>
+                        <TextArea label="Private key" value={form.wgPrivateKey} onChange={(value) => set("wgPrivateKey", value)} rows={4} placeholder="Base64 private key" />
+                        <TextArea label="Peer public key" value={form.wgPeerPublicKey} onChange={(value) => set("wgPeerPublicKey", value)} rows={3} placeholder="Base64 peer public key" />
+                        <div className="grid gap-4 md:grid-cols-2">
+                          <Field label="Pre-shared key" value={form.wgPresharedKey} onChange={(value) => set("wgPresharedKey", value)} placeholder="Optional" mono />
+                          <Field label="Reserved bytes" value={form.wgReserved} onChange={(value) => set("wgReserved", value)} placeholder="0,0,0" mono />
+                        </div>
+                        <Field label="Allowed IPs" value={form.wgAllowedIps} onChange={(value) => set("wgAllowedIps", value)} placeholder="0.0.0.0/0, ::/0" mono />
+                      </div>
+                    )}
                   </div>
                 ) : null}
 

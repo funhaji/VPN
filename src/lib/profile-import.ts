@@ -271,6 +271,112 @@ const detectFromJson = (rawConfig: string, fallbackProtocol: string): ImportedPr
   };
 };
 
+export type ParsedWireGuardProfile = {
+  type: "wireguard-profile";
+  endpoint: { host: string; port: number };
+  local_address: string[];
+  private_key: string;
+  peer_public_key: string;
+  pre_shared_key?: string;
+  allowed_ips?: string[];
+  reserved?: number[];
+  mtu?: number;
+};
+
+export const isWireGuardConf = (raw: string): boolean => {
+  const lowered = raw.toLowerCase();
+  return (
+    lowered.includes("[interface]") &&
+    (lowered.includes("privatekey") || lowered.includes("[peer]") || lowered.includes("endpoint"))
+  );
+};
+
+export const parseWireGuardConf = (raw: string): ParsedWireGuardProfile | null => {
+  const lines = raw.split(/\r?\n/);
+  let section = "";
+  let privateKey = "";
+  const localAddresses: string[] = [];
+  let mtu: number | undefined;
+  let peerPublicKey = "";
+  let preSharedKey = "";
+  let endpointHost = "";
+  let endpointPort = 51820;
+  const allowedIps: string[] = [];
+  const reserved: number[] = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith(";")) continue;
+
+    if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+      section = trimmed.slice(1, -1).trim().toLowerCase();
+      continue;
+    }
+
+    const eqIdx = trimmed.indexOf("=");
+    if (eqIdx === -1) continue;
+
+    const key = trimmed.slice(0, eqIdx).trim().toLowerCase();
+    const val = trimmed.slice(eqIdx + 1).trim();
+
+    if (section === "interface") {
+      if (key === "privatekey") {
+        privateKey = val;
+      } else if (key === "address") {
+        for (const part of val.split(",")) {
+          const addr = part.trim();
+          if (addr) localAddresses.push(addr);
+        }
+      } else if (key === "mtu") {
+        const parsedMtu = parseInt(val, 10);
+        if (Number.isFinite(parsedMtu) && parsedMtu > 0) mtu = parsedMtu;
+      }
+    } else if (section === "peer") {
+      if (key === "publickey") {
+        peerPublicKey = val;
+      } else if (key === "presharedkey") {
+        preSharedKey = val;
+      } else if (key === "endpoint") {
+        const lastColon = val.lastIndexOf(":");
+        if (lastColon !== -1) {
+          endpointHost = val.slice(0, lastColon).trim().replace(/^\[|\]$/g, "");
+          const p = parseInt(val.slice(lastColon + 1).trim(), 10);
+          if (Number.isFinite(p) && p > 0) endpointPort = p;
+        } else {
+          endpointHost = val.trim();
+        }
+      } else if (key === "allowedips") {
+        for (const part of val.split(",")) {
+          const ip = part.trim();
+          if (ip) allowedIps.push(ip);
+        }
+      } else if (key === "reserved") {
+        for (const part of val.split(",")) {
+          const num = parseInt(part.trim(), 10);
+          if (Number.isFinite(num)) reserved.push(num);
+        }
+      }
+    }
+  }
+
+  if (!privateKey && !peerPublicKey && !endpointHost) return null;
+
+  return {
+    type: "wireguard-profile",
+    endpoint: {
+      host: endpointHost,
+      port: endpointPort,
+    },
+    local_address: localAddresses.length > 0 ? localAddresses : ["10.0.0.2/32"],
+    private_key: privateKey,
+    peer_public_key: peerPublicKey,
+    ...(preSharedKey ? { pre_shared_key: preSharedKey } : {}),
+    ...(allowedIps.length > 0 ? { allowed_ips: allowedIps } : {}),
+    ...(reserved.length > 0 ? { reserved } : {}),
+    ...(mtu ? { mtu } : {}),
+  };
+};
+
 export const detectProfileMetadata = (
   rawConfig: string,
   fallbackProtocol = "custom:tcp",
@@ -306,6 +412,21 @@ export const detectProfileMetadata = (
   const parsedJson = detectFromJson(trimmed, fallbackProtocol.toLowerCase());
   if (parsedJson) {
     return parsedJson;
+  }
+
+  if (isWireGuardConf(trimmed)) {
+    const wg = parseWireGuardConf(trimmed);
+    if (wg) {
+      const name = buildFallbackName("wireguard:profile", wg.endpoint.host);
+      return {
+        rawConfig: JSON.stringify(wg, null, 2),
+        protocol: "wireguard:profile",
+        name,
+        country: buildCountryLabel(name, wg.endpoint.host),
+        host: wg.endpoint.host,
+        port: wg.endpoint.port,
+      };
+    }
   }
 
   const detectedProtocol = detectProtocol(trimmed, fallbackProtocol);
@@ -490,6 +611,13 @@ export const splitImportedProfiles = (raw: string): string[] => {
 
   if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
     return [trimmed];
+  }
+
+  if (isWireGuardConf(trimmed)) {
+    const wg = parseWireGuardConf(trimmed);
+    if (wg) {
+      return [JSON.stringify(wg, null, 2)];
+    }
   }
 
   if (
