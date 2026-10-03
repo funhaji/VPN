@@ -887,7 +887,7 @@ const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): JsonObjec
 
   if (loweredProtocol.includes("wireguard") || loweredProtocol === "wg") {
     return {
-      engine: "sing-box",
+      engine: "wireguard",
       supported: true,
       outbound: buildOutboundFromWireguardProfile(trimmed),
     };
