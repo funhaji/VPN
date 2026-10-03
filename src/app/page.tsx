@@ -44,7 +44,7 @@ const COPY: Record<
     linuxTitle: "Linux",
     linuxSub: "Debian, Ubuntu, Fedora, Arch",
     androidTitle: "Android",
-    androidSub: "8.0+, Universal APK",
+    androidSub: "Universal APK",
     footnote: "keys are generated on your device and never leave it",
   },
   fa: {
@@ -63,7 +63,7 @@ const COPY: Record<
     linuxTitle: "لینوکس",
     linuxSub: "دبیان، اوبونتو، فدورا، آرچ",
     androidTitle: "اندروید",
-    androidSub: "اندروید ۸ به بالا، فایل APK",
+    androidSub: "Universal APK",
     footnote: "کلیدها روی دستگاه شما ساخته می‌شوند و هرگز خارج نمی‌شوند",
   },
 };
