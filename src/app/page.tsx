@@ -7,7 +7,7 @@ const DEB_URL = "/api/download/deb";
 const RPM_URL = "/api/download/rpm";
 const APPIMAGE_URL = "/api/download/appimage";
 const ANDROID_URL = "/api/download/android";
-
+const ANDROID_ARM64_URL = "/api/download/arm64";
 
 type Lang = "en" | "fa";
 
@@ -42,7 +42,7 @@ const COPY: Record<
     linuxTitle: "Linux",
     linuxSub: "Debian, Ubuntu, Fedora, Arch",
     androidTitle: "Android",
-    androidSub: "Universal APK",
+    androidSub: "Universal & ARM64-v8a",
     footnote: "keys are generated on your device and never leave it",
   },
   fa: {
@@ -61,7 +61,7 @@ const COPY: Record<
     linuxTitle: "لینوکس",
     linuxSub: "دبیان، اوبونتو، فدورا، آرچ",
     androidTitle: "اندروید",
-    androidSub: "Universal APK",
+    androidSub: "Universal و ARM64-v8a",
     footnote: "کلیدها روی دستگاه شما ساخته می‌شوند و هرگز خارج نمی‌شوند",
   },
 };
@@ -345,25 +345,31 @@ export default function DownloadPage() {
             </div>
           </div>
 
-          <a
-            href={ANDROID_URL}
-            download="app-universal-release.apk"
-            className="card card-secondary"
-          >
+          <div className="card card-secondary">
             <div className="card-top">
               <OsIconAndroid />
-              <span className="card-arrow">{isRtl ? "←" : "→"}</span>
             </div>
             <div className="card-body">
               <h2>{c.androidTitle}</h2>
               <p>{c.androidSub}</p>
             </div>
             <div className="linux-links">
-              <span className="linux-link">
-                .apk
-              </span>
+              <a
+                href={ANDROID_URL}
+                download="app-universal-release.apk"
+                className="linux-link"
+              >
+                Universal
+              </a>
+              <a
+                href={ANDROID_ARM64_URL}
+                download="AstroVPN-arm64-v8a.apk"
+                className="linux-link"
+              >
+                arm64-v8a
+              </a>
             </div>
-          </a>
+          </div>
         </div>
 
         <div className="footnote">{c.footnote}</div>

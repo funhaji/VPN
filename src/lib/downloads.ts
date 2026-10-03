@@ -48,6 +48,30 @@ export const DOWNLOAD_TARGETS: Record<string, DownloadTarget> = {
     filename: "app-universal-release.apk",
     contentType: "application/vnd.android.package-archive",
   },
+  universal: {
+    url: "https://github.com/funhaji/AstroVPN/releases/download/Android/app-universal-release.apk",
+    isRelease: true,
+    filename: "app-universal-release.apk",
+    contentType: "application/vnd.android.package-archive",
+  },
+  arm64: {
+    url: "https://github.com/funhaji/AstroVPN/releases/download/Android/AstroVPN-arm64-v8a.apk",
+    isRelease: true,
+    filename: "AstroVPN-arm64-v8a.apk",
+    contentType: "application/vnd.android.package-archive",
+  },
+  "arm64-v8a": {
+    url: "https://github.com/funhaji/AstroVPN/releases/download/Android/AstroVPN-arm64-v8a.apk",
+    isRelease: true,
+    filename: "AstroVPN-arm64-v8a.apk",
+    contentType: "application/vnd.android.package-archive",
+  },
+  "android-arm64": {
+    url: "https://github.com/funhaji/AstroVPN/releases/download/Android/AstroVPN-arm64-v8a.apk",
+    isRelease: true,
+    filename: "AstroVPN-arm64-v8a.apk",
+    contentType: "application/vnd.android.package-archive",
+  },
 };
 
 const releaseCache = new Map<string, { resolvedUrl: string; expiresAt: number }>();
