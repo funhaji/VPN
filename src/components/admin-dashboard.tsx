@@ -440,9 +440,8 @@ function CountrySelector(props: {
 
   const chooseCountry = (country: (typeof COUNTRIES)[number]) => {
     props.set("country", country.code);
-    if (props.name) {
-      props.set("name", `${country.flag} ${stripLeadingCountryFlag(props.name)}`);
-    }
+    const cleanName = stripLeadingCountryFlag(props.name).trim();
+    props.set("name", cleanName ? `${country.flag} ${cleanName}` : `${country.flag} ${country.name}`);
     setQuery("");
     setIsOpen(false);
   };
@@ -647,14 +646,24 @@ export function AdminDashboard() {
   }, []);
 
   const handleWgFiles = useCallback(async (files: File[]) => {
+    const selectedCountry = COUNTRIES.find((c) => c.code === form.country);
+    const countryFlag = selectedCountry ? selectedCountry.flag : "";
     const loaded = await Promise.all(
-      files.map(async (file): Promise<WgConfigFile> => {
+      files.map(async (file, idx): Promise<WgConfigFile> => {
         const content = await file.text();
-        const name = file.name.replace(/\.conf$/i, "");
+        let baseName = file.name.replace(/\.conf$/i, "");
+        if (files.length === 1 && form.name.trim()) {
+          baseName = stripLeadingCountryFlag(form.name).trim();
+        } else if (form.name.trim() && files.length > 1) {
+          baseName = `${stripLeadingCountryFlag(form.name).trim()} ${idx + 1}`;
+        }
+        const fileNameWithFlag = countryFlag
+          ? `${countryFlag} ${stripLeadingCountryFlag(baseName).trim()}`
+          : baseName;
         const parsed = parseWireGuardConf(content);
         return {
           id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-          name: name || file.name,
+          name: fileNameWithFlag || file.name,
           content,
           selected: true,
           parsed,
@@ -666,7 +675,7 @@ export function AdminDashboard() {
       const fresh = loaded.filter((f) => !existingContents.has(f.content));
       return [...prev, ...fresh];
     });
-  }, []);
+  }, [form.country, form.name]);
 
   const reset = useCallback((keepFields?: boolean) => {
     if (keepFields) {
@@ -863,17 +872,29 @@ export function AdminDashboard() {
         if (selectedFiles.length === 0) {
           throw new Error("Select at least one WireGuard .conf file");
         }
+        const selectedCountry = COUNTRIES.find((c) => c.code === form.country);
+        const countryFlag = selectedCountry ? selectedCountry.flag : "";
+        const countryCode = selectedCountry ? selectedCountry.code : (form.country.trim() || "XX");
+
         const payloads = selectedFiles.map((file) => {
           const parsed = file.parsed ?? parseWireGuardConf(file.content);
           if (!parsed) {
             throw new Error(`Could not parse WireGuard configuration in ${file.name}`);
           }
           const rawConfig = JSON.stringify(parsed, null, 2);
-          const safeName = (file.name || `WireGuard ${parsed.endpoint.host}`).trim();
+          let chosenName = (selectedFiles.length === 1 && form.name.trim())
+            ? form.name.trim()
+            : (file.name.trim() || `WireGuard ${parsed.endpoint.host}`);
+
+          if (countryFlag && !chosenName.startsWith(countryFlag)) {
+            chosenName = `${countryFlag} ${stripLeadingCountryFlag(chosenName).trim()}`;
+          }
+
+          const safeName = chosenName.trim();
           return {
             name: safeName.length >= 2 ? safeName : `${safeName} Profile`,
             protocol: "wireguard:profile",
-            country: safeName.length >= 2 ? safeName : "Imported",
+            country: countryCode,
             rawConfig,
             isEnabled: true,
             options: { mux: false, fragment: false, sniffing: false, allowInsecure: false, extra: {} },
@@ -898,6 +919,10 @@ export function AdminDashboard() {
         if (selectedFiles.length === 0) {
           throw new Error("Select at least one OpenVPN file");
         }
+        const selectedCountry = COUNTRIES.find((c) => c.code === form.country);
+        const countryFlag = selectedCountry ? selectedCountry.flag : "";
+        const countryCode = selectedCountry ? selectedCountry.code : (form.country.trim() || "XX");
+
         const payloads = selectedFiles.map((file) => {
           const detected = parseOvpnRemote(file.content);
           const transport = detected?.transport ?? openVpnMode;
@@ -913,11 +938,19 @@ export function AdminDashboard() {
             credentials: { username, password },
             profile: file.content,
           });
-          const safeName = (file.name || `OpenVPN ${detected?.host ?? "Config"}`).trim();
+          let chosenName = (selectedFiles.length === 1 && form.name.trim())
+            ? form.name.trim()
+            : (file.name.trim() || `OpenVPN ${detected?.host ?? "Config"}`);
+
+          if (countryFlag && !chosenName.startsWith(countryFlag)) {
+            chosenName = `${countryFlag} ${stripLeadingCountryFlag(chosenName).trim()}`;
+          }
+
+          const safeName = chosenName.trim();
           return {
             name: safeName.length >= 2 ? safeName : `${safeName} Config`,
             protocol: `openvpn:${transport}`,
-            country: safeName.length >= 2 ? safeName : "Imported",
+            country: countryCode,
             rawConfig,
             isEnabled: true,
             options: { mux: false, fragment: false, sniffing: false, allowInsecure: false, extra: {} },
@@ -954,10 +987,19 @@ export function AdminDashboard() {
       }
 
       const detected = detectProfileMetadata(effectiveRawConfig.trim(), protocol);
+      const selectedCountry = COUNTRIES.find((c) => c.code === form.country);
+      const countryFlag = selectedCountry ? selectedCountry.flag : "";
+      const countryCode = selectedCountry ? selectedCountry.code : (form.country.trim() || detected.country);
+
+      let finalName = form.name.trim() || detected.name;
+      if (countryFlag && !finalName.startsWith(countryFlag)) {
+        finalName = `${countryFlag} ${stripLeadingCountryFlag(finalName).trim()}`;
+      }
+
       const payload: Record<string, unknown> = {
-        name: form.name.trim() || detected.name,
+        name: finalName,
         protocol: detected.protocol,
-        country: form.country.trim() || detected.country,
+        country: countryCode,
         rawConfig: effectiveRawConfig.trim(),
         isEnabled: true,
         options: {
