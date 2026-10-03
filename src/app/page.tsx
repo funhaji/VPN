@@ -2,14 +2,12 @@
 
 import React, { useEffect, useRef, useState, useCallback } from "react";
 
-const WINDOWS_URL =
-  "https://github.com/funhaji/AstroVPN/raw/main/Astro%20VPN_setup.exe";
-const DEB_URL = "https://github.com/funhaji/AstroVPN/raw/main/linux/AstroVPN.deb";
-const RPM_URL = "https://github.com/funhaji/AstroVPN/raw/main/linux/AstroVPN.rpm";
-const APPIMAGE_URL =
-  "https://github.com/funhaji/AstroVPN/releases/download/Main/AstroVPN.AppImage";
-const ANDROID_URL =
-  "https://github.com/funhaji/AstroVPN/releases/download/Android/app-universal-release.apk";
+const WINDOWS_URL = "/api/download/windows";
+const DEB_URL = "/api/download/deb";
+const RPM_URL = "/api/download/rpm";
+const APPIMAGE_URL = "/api/download/appimage";
+const ANDROID_URL = "/api/download/android";
+
 
 type Lang = "en" | "fa";
 
@@ -259,14 +257,6 @@ export default function DownloadPage() {
     });
   }, []);
 
-  const downloadFile = (url: string) => {
-    const a = document.createElement('a');
-    a.href = url;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-  };
-
   const c = COPY[lang];
   const title = useScramble("ASTROVPN", 150);
   const isRtl = lang === "fa";
@@ -306,7 +296,11 @@ export default function DownloadPage() {
         <StatusTicker lines={c.ticker} />
 
         <div className="downloads">
-          <button onClick={() => downloadFile(WINDOWS_URL)} className="card card-primary" style={{cursor: 'pointer'}}>
+          <a
+            href={WINDOWS_URL}
+            download="Astro VPN_setup.exe"
+            className="card card-primary"
+          >
             <div className="card-top">
               <OsIconWindows />
               <span className="card-arrow">{isRtl ? "←" : "→"}</span>
@@ -316,7 +310,7 @@ export default function DownloadPage() {
               <p>{c.winSub}</p>
             </div>
             <div className="card-cta">{c.winCta}</div>
-          </button>
+          </a>
 
           <div className="card card-secondary">
             <div className="card-top">
@@ -327,32 +321,49 @@ export default function DownloadPage() {
               <p>{c.linuxSub}</p>
             </div>
             <div className="linux-links">
-              <button onClick={() => downloadFile(DEB_URL)} className="linux-link" style={{cursor: 'pointer'}}>
+              <a
+                href={DEB_URL}
+                download="AstroVPN.deb"
+                className="linux-link"
+              >
                 .deb
-              </button>
-              <button onClick={() => downloadFile(RPM_URL)} className="linux-link" style={{cursor: 'pointer'}}>
+              </a>
+              <a
+                href={RPM_URL}
+                download="AstroVPN.rpm"
+                className="linux-link"
+              >
                 .rpm
-              </button>
-              <button onClick={() => downloadFile(APPIMAGE_URL)} className="linux-link" style={{cursor: 'pointer'}}>
+              </a>
+              <a
+                href={APPIMAGE_URL}
+                download="AstroVPN.AppImage"
+                className="linux-link"
+              >
                 AppImage
-              </button>
+              </a>
             </div>
           </div>
 
-          <div className="card card-secondary">
+          <a
+            href={ANDROID_URL}
+            download="app-universal-release.apk"
+            className="card card-secondary"
+          >
             <div className="card-top">
               <OsIconAndroid />
+              <span className="card-arrow">{isRtl ? "←" : "→"}</span>
             </div>
             <div className="card-body">
               <h2>{c.androidTitle}</h2>
               <p>{c.androidSub}</p>
             </div>
             <div className="linux-links">
-              <button onClick={() => downloadFile(ANDROID_URL)} className="linux-link" style={{cursor: 'pointer'}}>
+              <span className="linux-link">
                 .apk
-              </button>
+              </span>
             </div>
-          </div>
+          </a>
         </div>
 
         <div className="footnote">{c.footnote}</div>
@@ -651,6 +662,10 @@ export default function DownloadPage() {
         .linux-link {
           flex: 1;
           min-width: 4.5rem;
+          min-height: 44px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
           text-align: center;
           font-family: var(--font-mono, monospace);
           font-size: 0.72rem;
@@ -661,10 +676,12 @@ export default function DownloadPage() {
           padding: 0.55rem 0.4rem;
           border-radius: 0.5rem;
           text-decoration: none;
-          transition: background 0.2s ease, border-color 0.2s ease;
+          transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+          cursor: pointer;
         }
 
-        .linux-link:hover {
+        .linux-link:hover,
+        .card:hover .linux-link {
           background: rgba(34, 211, 238, 0.1);
           border-color: rgba(34, 211, 238, 0.3);
           color: var(--signal);
