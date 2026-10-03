@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { decryptConfig } from "@/lib/crypto";
 import { listServers } from "@/lib/db";
+import { parseWireGuardConf } from "@/lib/profile-import";
 import type { ProtocolOptions, ServerRecord } from "@/types/server";
 
 export const revalidate = 300; // Cache the public catalog for 5 minutes.
@@ -492,19 +493,33 @@ const buildOutboundFromSsh = (
 };
 
 const buildOutboundFromWireguardProfile = (rawConfig: string): JsonObject => {
-  const parsed = parseJson(rawConfig);
-  if (!isObject(parsed) || !isObject(parsed.endpoint)) {
+  let candidate: JsonObject | null = null;
+  const parsedJson = parseJson(rawConfig);
+  if (isObject(parsedJson) && isObject(parsedJson.endpoint)) {
+    candidate = parsedJson;
+  } else {
+    const parsedConf = parseWireGuardConf(rawConfig);
+    if (parsedConf) {
+      candidate = parsedConf as unknown as JsonObject;
+    }
+  }
+
+  if (!candidate || !isObject(candidate.endpoint)) {
     throw new Error("Invalid WireGuard profile");
   }
-  const endpoint = parsed.endpoint;
-  const localAddress = Array.isArray(parsed.local_address)
-    ? parsed.local_address.filter((item): item is string => typeof item === "string")
+
+  const endpoint = candidate.endpoint;
+  const localAddress = Array.isArray(candidate.local_address)
+    ? candidate.local_address.filter((item): item is string => typeof item === "string")
     : [];
-  const allowedIps = Array.isArray(parsed.allowed_ips)
-    ? parsed.allowed_ips.filter((item): item is string => typeof item === "string")
+  const allowedIps = Array.isArray(candidate.allowed_ips)
+    ? candidate.allowed_ips.filter((item): item is string => typeof item === "string")
     : undefined;
-  const reserved = Array.isArray(parsed.reserved)
-    ? parsed.reserved.filter((item): item is number => typeof item === "number")
+  const dnsServers = Array.isArray(candidate.dns)
+    ? candidate.dns.filter((item): item is string => typeof item === "string")
+    : typeof candidate.dns === "string" ? [candidate.dns] : undefined;
+  const reserved = Array.isArray(candidate.reserved)
+    ? candidate.reserved.filter((item): item is number => typeof item === "number")
     : undefined;
 
   return withOptional(
@@ -514,14 +529,16 @@ const buildOutboundFromWireguardProfile = (rawConfig: string): JsonObject => {
       server: pickString(endpoint.host) ?? "",
       server_port: pickNumber(endpoint.port) ?? 51820,
       local_address: localAddress,
-      private_key: pickString(parsed.private_key) ?? "",
-      peer_public_key: pickString(parsed.peer_public_key) ?? "",
+      private_key: pickString(candidate.private_key) ?? "",
+      peer_public_key: pickString(candidate.peer_public_key) ?? "",
     },
     {
-      pre_shared_key: pickString(parsed.pre_shared_key),
+      conf: pickString(candidate.conf),
+      pre_shared_key: pickString(candidate.pre_shared_key),
       allowed_ips: allowedIps,
+      dns: dnsServers,
       reserved,
-      mtu: pickNumber(parsed.mtu),
+      mtu: pickNumber(candidate.mtu),
     },
   );
 };

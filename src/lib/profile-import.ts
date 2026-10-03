@@ -281,6 +281,8 @@ export type ParsedWireGuardProfile = {
   allowed_ips?: string[];
   reserved?: number[];
   mtu?: number;
+  dns?: string[];
+  conf?: string;
 };
 
 export const isWireGuardConf = (raw: string): boolean => {
@@ -296,6 +298,7 @@ export const parseWireGuardConf = (raw: string): ParsedWireGuardProfile | null =
   let section = "";
   let privateKey = "";
   const localAddresses: string[] = [];
+  const dnsServers: string[] = [];
   let mtu: number | undefined;
   let peerPublicKey = "";
   let preSharedKey = "";
@@ -326,6 +329,11 @@ export const parseWireGuardConf = (raw: string): ParsedWireGuardProfile | null =
         for (const part of val.split(",")) {
           const addr = part.trim();
           if (addr) localAddresses.push(addr);
+        }
+      } else if (key === "dns") {
+        for (const part of val.split(",")) {
+          const d = part.trim();
+          if (d) dnsServers.push(d);
         }
       } else if (key === "mtu") {
         const parsedMtu = parseInt(val, 10);
@@ -370,10 +378,12 @@ export const parseWireGuardConf = (raw: string): ParsedWireGuardProfile | null =
     local_address: localAddresses.length > 0 ? localAddresses : ["10.0.0.2/32"],
     private_key: privateKey,
     peer_public_key: peerPublicKey,
+    conf: raw.trim(),
     ...(preSharedKey ? { pre_shared_key: preSharedKey } : {}),
     ...(allowedIps.length > 0 ? { allowed_ips: allowedIps } : {}),
     ...(reserved.length > 0 ? { reserved } : {}),
     ...(mtu ? { mtu } : {}),
+    ...(dnsServers.length > 0 ? { dns: dnsServers } : {}),
   };
 };
 

@@ -62,6 +62,8 @@ type FormState = {
   wgAllowedIps: string;
   wgReserved: string;
   wgMtu: string;
+  wgDns: string;
+  wgConf: string;
   openVpnUsername: string;
   openVpnPassword: string;
   httpUsername: string;
@@ -102,6 +104,8 @@ const BLANK: FormState = {
   wgAllowedIps: "0.0.0.0/0",
   wgReserved: "",
   wgMtu: "1408",
+  wgDns: "1.1.1.1, 8.8.8.8",
+  wgConf: "",
   openVpnUsername: "",
   openVpnPassword: "",
   httpUsername: "",
@@ -230,8 +234,28 @@ const buildSshDnsttProfile = (form: FormState, resolverMode: SshResolverMode): s
     2,
   );
 
-const buildWireGuardProfile = (form: FormState): string =>
-  JSON.stringify(
+const generateWireGuardConfFromForm = (form: FormState): string => {
+  const lines: string[] = ["[Interface]"];
+  if (form.wgPrivateKey.trim()) lines.push(`PrivateKey = ${form.wgPrivateKey.trim()}`);
+  if (form.wgLocalAddress.trim()) lines.push(`Address = ${form.wgLocalAddress.trim()}`);
+  if (form.wgDns.trim()) lines.push(`DNS = ${form.wgDns.trim()}`);
+  if (form.wgMtu.trim()) lines.push(`MTU = ${form.wgMtu.trim()}`);
+
+  lines.push("", "[Peer]");
+  if (form.wgPeerPublicKey.trim()) lines.push(`PublicKey = ${form.wgPeerPublicKey.trim()}`);
+  if (form.wgPresharedKey.trim()) lines.push(`PresharedKey = ${form.wgPresharedKey.trim()}`);
+  const host = form.host.trim();
+  const port = parseNumber(form.port) ?? 51820;
+  if (host) lines.push(`Endpoint = ${host}:${port}`);
+  if (form.wgAllowedIps.trim()) lines.push(`AllowedIPs = ${form.wgAllowedIps.trim()}`);
+  if (form.wgReserved.trim()) lines.push(`Reserved = ${form.wgReserved.trim()}`);
+
+  return lines.join("\n");
+};
+
+const buildWireGuardProfile = (form: FormState): string => {
+  const generatedConf = form.wgConf.trim() || generateWireGuardConfFromForm(form);
+  return JSON.stringify(
     {
       type: "wireguard-profile",
       endpoint: {
@@ -243,14 +267,17 @@ const buildWireGuardProfile = (form: FormState): string =>
       peer_public_key: form.wgPeerPublicKey.trim(),
       ...(form.wgPresharedKey.trim() ? { pre_shared_key: form.wgPresharedKey.trim() } : {}),
       ...(splitList(form.wgAllowedIps).length > 0 ? { allowed_ips: splitList(form.wgAllowedIps) } : {}),
+      ...(splitList(form.wgDns).length > 0 ? { dns: splitList(form.wgDns) } : {}),
       ...(splitList(form.wgReserved).length > 0
         ? { reserved: splitList(form.wgReserved).map((item) => Number(item)).filter(Number.isFinite) }
         : {}),
       ...(parseNumber(form.wgMtu) ? { mtu: parseNumber(form.wgMtu) } : {}),
+      ...(generatedConf ? { conf: generatedConf } : {}),
     },
     null,
     2,
   );
+};
 
 const parseOvpnRemote = (content: string): { host: string; port: number; transport: string } | null => {
   const match = content.match(/^remote[ \t]+(\S+)[ \t]+(\d+)(?:[ \t]+(udp|tcp))?/im);
@@ -523,6 +550,7 @@ export function AdminDashboard() {
   const [wgDragging, setWgDragging] = useState(false);
   const wgFileInputRef = useRef<HTMLInputElement>(null);
   const [wgPastedText, setWgPastedText] = useState("");
+  const [wgPreviewMode, setWgPreviewMode] = useState<"json" | "conf">("json");
   const [customProto, setCustomProto] = useState("custom:tcp");
   const [bulk, setBulk] = useState("");
   const [busy, setBusy] = useState(false);
@@ -654,6 +682,15 @@ export function AdminDashboard() {
         sshPassword: prev.sshPassword,
         openVpnUsername: prev.openVpnUsername,
         openVpnPassword: prev.openVpnPassword,
+        wgLocalAddress: prev.wgLocalAddress,
+        wgPrivateKey: prev.wgPrivateKey,
+        wgPeerPublicKey: prev.wgPeerPublicKey,
+        wgPresharedKey: prev.wgPresharedKey,
+        wgAllowedIps: prev.wgAllowedIps,
+        wgReserved: prev.wgReserved,
+        wgMtu: prev.wgMtu,
+        wgDns: prev.wgDns,
+        wgConf: prev.wgConf,
       }));
     } else {
       setForm(BLANK);
@@ -662,6 +699,8 @@ export function AdminDashboard() {
       setSshResolverMode("udp");
       setOpenVpnMode("udp");
       setOvpnFiles([]);
+      setWgFiles([]);
+      setWgPastedText("");
       setCustomProto("custom:tcp");
     }
     setEditingServerId(null);
@@ -751,6 +790,10 @@ export function AdminDashboard() {
 
   // Deferred so the big JSON preview doesn't block keystrokes
   const deferredEffectiveRawConfig = useDeferredValue(effectiveRawConfig);
+
+  const previewWgConf = useMemo(() => {
+    return form.wgConf.trim() || generateWireGuardConfFromForm(form);
+  }, [form]);
 
   const parsedImportProfiles = useMemo(
     () => (tab === "v2ray" || tab === "custom" ? splitImportedProfiles(effectiveRawConfig) : []),
@@ -1203,7 +1246,7 @@ export function AdminDashboard() {
       } else if (proto.startsWith("ssh:")) {
         newTab = "ssh";
         newSshMode = proto.includes("dnstt") ? "dnstt" : "direct";
-      } else if (proto.startsWith("wireguard:")) {
+      } else if (proto.startsWith("wireguard") || proto === "wg") {
         newTab = "wireguard";
       } else if (proto.startsWith("openvpn:")) {
         newTab = "openvpn";
@@ -1235,6 +1278,17 @@ export function AdminDashboard() {
       let l2tpUsername = "";
       let l2tpPassword = "";
       let l2tpPsk = "";
+      let wgLocalAddress = "10.0.0.2/32";
+      let wgPrivateKey = "";
+      let wgPeerPublicKey = "";
+      let wgPresharedKey = "";
+      let wgAllowedIps = "0.0.0.0/0";
+      let wgReserved = "";
+      let wgMtu = "1408";
+      let wgDns = "1.1.1.1, 8.8.8.8";
+      let wgConf = "";
+      let wgHost = s.host;
+      let wgPort = String(s.port);
       let rawConfig = data.rawConfig;
 
       if (newTab === "http") {
@@ -1270,13 +1324,83 @@ export function AdminDashboard() {
           // ignore
         }
       }
+
+      if (newTab === "wireguard") {
+        setWgInputMode("form");
+        try {
+          const parsed = JSON.parse(data.rawConfig);
+          if (parsed && typeof parsed === "object") {
+            if (parsed.endpoint && typeof parsed.endpoint === "object") {
+              if (parsed.endpoint.host) wgHost = String(parsed.endpoint.host);
+              if (parsed.endpoint.port) wgPort = String(parsed.endpoint.port);
+            } else if (parsed.server) {
+              wgHost = String(parsed.server);
+              if (parsed.server_port) wgPort = String(parsed.server_port);
+            }
+            if (Array.isArray(parsed.local_address)) {
+              wgLocalAddress = parsed.local_address.join(", ");
+            } else if (typeof parsed.local_address === "string") {
+              wgLocalAddress = parsed.local_address;
+            }
+            if (parsed.private_key) wgPrivateKey = String(parsed.private_key);
+            if (parsed.peer_public_key) wgPeerPublicKey = String(parsed.peer_public_key);
+            if (parsed.pre_shared_key) wgPresharedKey = String(parsed.pre_shared_key);
+            if (Array.isArray(parsed.allowed_ips)) {
+              wgAllowedIps = parsed.allowed_ips.join(", ");
+            } else if (typeof parsed.allowed_ips === "string") {
+              wgAllowedIps = parsed.allowed_ips;
+            }
+            if (Array.isArray(parsed.dns)) {
+              wgDns = parsed.dns.join(", ");
+            } else if (typeof parsed.dns === "string") {
+              wgDns = parsed.dns;
+            }
+            if (Array.isArray(parsed.reserved)) {
+              wgReserved = parsed.reserved.join(", ");
+            }
+            if (parsed.mtu) wgMtu = String(parsed.mtu);
+            if (parsed.conf) wgConf = String(parsed.conf);
+          }
+        } catch {
+          const parsedConf = parseWireGuardConf(data.rawConfig);
+          if (parsedConf) {
+            wgHost = parsedConf.endpoint.host;
+            wgPort = String(parsedConf.endpoint.port);
+            wgLocalAddress = parsedConf.local_address.join(", ");
+            wgPrivateKey = parsedConf.private_key;
+            wgPeerPublicKey = parsedConf.peer_public_key;
+            if (parsedConf.pre_shared_key) wgPresharedKey = parsedConf.pre_shared_key;
+            if (parsedConf.allowed_ips) wgAllowedIps = parsedConf.allowed_ips.join(", ");
+            if (parsedConf.dns) wgDns = parsedConf.dns.join(", ");
+            if (parsedConf.reserved) wgReserved = parsedConf.reserved.join(", ");
+            if (parsedConf.mtu) wgMtu = String(parsedConf.mtu);
+            wgConf = parsedConf.conf || data.rawConfig;
+          }
+        }
+        if (!wgConf) {
+          wgConf = generateWireGuardConfFromForm({
+            ...BLANK,
+            host: wgHost,
+            port: wgPort,
+            wgLocalAddress,
+            wgPrivateKey,
+            wgPeerPublicKey,
+            wgPresharedKey,
+            wgAllowedIps,
+            wgReserved,
+            wgMtu,
+            wgDns,
+            wgConf: "",
+          });
+        }
+      }
       
       setForm({
         ...BLANK,
         name: s.name,
         country: s.country,
-        host: s.host,
-        port: String(s.port),
+        host: newTab === "wireguard" ? wgHost : s.host,
+        port: newTab === "wireguard" ? wgPort : String(s.port),
         rawConfig,
         httpUsername,
         httpPassword,
@@ -1285,6 +1409,15 @@ export function AdminDashboard() {
         l2tpPsk,
         openVpnUsername,
         openVpnPassword,
+        wgLocalAddress,
+        wgPrivateKey,
+        wgPeerPublicKey,
+        wgPresharedKey,
+        wgAllowedIps,
+        wgReserved,
+        wgMtu,
+        wgDns,
+        wgConf,
         mux: s.options.mux,
         fragment: s.options.fragment,
         sniffing: s.options.sniffing,
@@ -1667,11 +1800,13 @@ export function AdminDashboard() {
                                 wgAllowedIps: parsed.allowed_ips ? parsed.allowed_ips.join(", ") : "0.0.0.0/0",
                                 wgMtu: parsed.mtu ? String(parsed.mtu) : "1408",
                                 wgReserved: parsed.reserved ? parsed.reserved.join(", ") : "",
+                                wgDns: parsed.dns ? parsed.dns.join(", ") : "1.1.1.1, 8.8.8.8",
+                                wgConf: parsed.conf || val,
                               }));
                             }
                           }}
                           rows={8}
-                          placeholder={"[Interface]\nPrivateKey = ...\nAddress = 10.0.0.2/32\n\n[Peer]\nPublicKey = ...\nEndpoint = 192.0.2.1:51820"}
+                          placeholder={"[Interface]\nPrivateKey = ...\nAddress = 10.0.0.2/32\nDNS = 1.1.1.1\n\n[Peer]\nPublicKey = ...\nEndpoint = 192.0.2.1:51820\nAllowedIPs = 0.0.0.0/0"}
                         />
                         <button
                           type="button"
@@ -1689,6 +1824,8 @@ export function AdminDashboard() {
                                 wgAllowedIps: parsed.allowed_ips ? parsed.allowed_ips.join(", ") : "0.0.0.0/0",
                                 wgMtu: parsed.mtu ? String(parsed.mtu) : "1408",
                                 wgReserved: parsed.reserved ? parsed.reserved.join(", ") : "",
+                                wgDns: parsed.dns ? parsed.dns.join(", ") : "1.1.1.1, 8.8.8.8",
+                                wgConf: parsed.conf || wgPastedText,
                               }));
                               setWgInputMode("form");
                               setMsg({ ok: true, text: "Configuration parsed into form fields." });
@@ -1709,13 +1846,75 @@ export function AdminDashboard() {
                           <Field label="Local address" value={form.wgLocalAddress} onChange={(value) => set("wgLocalAddress", value)} placeholder="10.0.0.2/32" mono />
                           <Field label="MTU" value={form.wgMtu} onChange={(value) => set("wgMtu", value)} placeholder="1408" />
                         </div>
-                        <TextArea label="Private key" value={form.wgPrivateKey} onChange={(value) => set("wgPrivateKey", value)} rows={4} placeholder="Base64 private key" />
-                        <TextArea label="Peer public key" value={form.wgPeerPublicKey} onChange={(value) => set("wgPeerPublicKey", value)} rows={3} placeholder="Base64 peer public key" />
                         <div className="grid gap-4 md:grid-cols-2">
+                          <Field label="DNS servers" value={form.wgDns} onChange={(value) => set("wgDns", value)} placeholder="1.1.1.1, 8.8.8.8" mono />
                           <Field label="Pre-shared key" value={form.wgPresharedKey} onChange={(value) => set("wgPresharedKey", value)} placeholder="Optional" mono />
+                        </div>
+                        <div className="grid gap-4 md:grid-cols-2">
+                          <TextArea label="Private key" value={form.wgPrivateKey} onChange={(value) => set("wgPrivateKey", value)} rows={3} placeholder="Base64 private key" />
+                          <TextArea label="Peer public key" value={form.wgPeerPublicKey} onChange={(value) => set("wgPeerPublicKey", value)} rows={3} placeholder="Base64 peer public key" />
+                        </div>
+                        <div className="grid gap-4 md:grid-cols-2">
+                          <TextArea label="Allowed IPs" value={form.wgAllowedIps} onChange={(value) => set("wgAllowedIps", value)} rows={3} placeholder="0.0.0.0/0, ::/0" />
                           <Field label="Reserved bytes" value={form.wgReserved} onChange={(value) => set("wgReserved", value)} placeholder="0,0,0" mono />
                         </div>
-                        <Field label="Allowed IPs" value={form.wgAllowedIps} onChange={(value) => set("wgAllowedIps", value)} placeholder="0.0.0.0/0, ::/0" mono />
+                        <div className="rounded-2xl border border-white/6 bg-white/2 p-4 space-y-3">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <p className="text-xs font-medium text-zinc-300">Raw .conf text</p>
+                              <p className="text-[11px] text-zinc-500">Standard WireGuard client configuration</p>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const generated = generateWireGuardConfFromForm(form);
+                                  set("wgConf", generated);
+                                  setMsg({ ok: true, text: "Synchronized .conf from form fields." });
+                                }}
+                                className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-zinc-300 hover:bg-white/10 transition"
+                              >
+                                Sync from fields
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const textToParse = form.wgConf.trim() || generateWireGuardConfFromForm(form);
+                                  const parsed = parseWireGuardConf(textToParse);
+                                  if (parsed) {
+                                    setForm((prev) => ({
+                                      ...prev,
+                                      host: parsed.endpoint.host || prev.host,
+                                      port: parsed.endpoint.port ? String(parsed.endpoint.port) : prev.port,
+                                      wgLocalAddress: parsed.local_address.length > 0 ? parsed.local_address.join(", ") : prev.wgLocalAddress,
+                                      wgPrivateKey: parsed.private_key || prev.wgPrivateKey,
+                                      wgPeerPublicKey: parsed.peer_public_key || prev.wgPeerPublicKey,
+                                      wgPresharedKey: parsed.pre_shared_key ?? prev.wgPresharedKey,
+                                      wgAllowedIps: parsed.allowed_ips ? parsed.allowed_ips.join(", ") : prev.wgAllowedIps,
+                                      wgMtu: parsed.mtu ? String(parsed.mtu) : prev.wgMtu,
+                                      wgReserved: parsed.reserved ? parsed.reserved.join(", ") : prev.wgReserved,
+                                      wgDns: parsed.dns ? parsed.dns.join(", ") : prev.wgDns,
+                                      wgConf: parsed.conf || textToParse,
+                                    }));
+                                    setMsg({ ok: true, text: "Form fields updated from .conf text." });
+                                  } else {
+                                    setMsg({ ok: false, text: "Could not parse .conf text." });
+                                  }
+                                }}
+                                className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1 text-xs text-cyan-300 hover:bg-cyan-500/20 transition"
+                              >
+                                Parse into fields
+                              </button>
+                            </div>
+                          </div>
+                          <TextArea
+                            label=""
+                            value={form.wgConf || generateWireGuardConfFromForm(form)}
+                            onChange={(val) => set("wgConf", val)}
+                            rows={6}
+                            placeholder={"[Interface]\n..."}
+                          />
+                        </div>
                       </div>
                     )}
                   </div>
@@ -2290,19 +2489,47 @@ or
 
           <aside className="space-y-4">
             <div className="rounded-2xl border border-white/6 bg-white/3 p-4">
-              <p className="text-xs font-medium text-zinc-400">Config preview</p>
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-medium text-zinc-400">Config preview</p>
+                {tab === "wireguard" ? (
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setWgPreviewMode("json")}
+                      className={`rounded-lg px-2 py-0.5 text-[11px] font-medium transition ${
+                        wgPreviewMode === "json"
+                          ? "bg-white/10 text-cyan-300 ring-1 ring-white/15"
+                          : "text-zinc-500 hover:text-zinc-300"
+                      }`}
+                    >
+                      JSON
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setWgPreviewMode("conf")}
+                      className={`rounded-lg px-2 py-0.5 text-[11px] font-medium transition ${
+                        wgPreviewMode === "conf"
+                          ? "bg-white/10 text-cyan-300 ring-1 ring-white/15"
+                          : "text-zinc-500 hover:text-zinc-300"
+                      }`}
+                    >
+                      .CONF
+                    </button>
+                  </div>
+                ) : null}
+              </div>
               {tab !== "bulk" ? (
                 <div className="mt-3">
                   <TextArea
                     label=""
-                    value={deferredEffectiveRawConfig}
+                    value={tab === "wireguard" && wgPreviewMode === "conf" ? previewWgConf : deferredEffectiveRawConfig}
                     onChange={() => undefined}
                     rows={18}
                     readOnly
                   />
                 </div>
               ) : (
-                <p className="mt-2 text-xs text-zinc-600">Bulk mode — no preview.</p>
+                <p className="mt-2 text-xs text-zinc-600">Bulk mode: no preview.</p>
               )}
             </div>
           </aside>
