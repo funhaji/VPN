@@ -263,6 +263,11 @@ const buildOutboundFromVless = (
   options: ProtocolOptions,
 ): JsonObject => {
   const url = new URL(rawConfig);
+  const encryption =
+    url.searchParams.get("encryption") ??
+    url.searchParams.get("enc") ??
+    url.searchParams.get("encrypt") ??
+    undefined;
   return withOptional(
     {
       type: "vless",
@@ -272,6 +277,7 @@ const buildOutboundFromVless = (
       uuid: decodeURIComponent(url.username),
     },
     {
+      encryption,
       flow: url.searchParams.get("flow") ?? undefined,
       packet_encoding:
         pickString(options.extra.packetEncoding) ??
@@ -868,14 +874,16 @@ const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): JsonObjec
   const trimmed = rawConfig.trim();
   const parsedJson = parseJson(trimmed);
 
-  // Helper: Check if outbound requires Xray-core (xhttp/splithttp are Xray-only transports)
+  // Helper: Check if outbound requires Xray-core (xhttp/splithttp are Xray-only transports, mlkem requires Xray-core)
   const requiresXray = (outbound: unknown): boolean => {
     if (!isObject(outbound)) return false;
     const transport = (outbound as JsonObject).transport;
     if (isObject(transport)) {
       const type = pickString((transport as JsonObject).type);
-      return type === "xhttp" || type === "splithttp";
+      if (type === "xhttp" || type === "splithttp") return true;
     }
+    const enc = pickString((outbound as JsonObject).encryption);
+    if (enc && enc.toLowerCase() !== "none") return true;
     return false;
   };
 
