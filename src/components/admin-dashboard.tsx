@@ -71,7 +71,6 @@ type FormState = {
   l2tpUsername: string;
   l2tpPassword: string;
   l2tpPsk: string;
-  l2tpAuthMode: "shared" | "custom" | "single";
   l2tpAuths: L2tpAuthItem[];
 };
 
@@ -122,7 +121,6 @@ const BLANK: FormState = {
   l2tpUsername: "",
   l2tpPassword: "",
   l2tpPsk: "",
-  l2tpAuthMode: "shared",
   l2tpAuths: [],
 };
 
@@ -332,7 +330,6 @@ const buildHttpProfile = (form: FormState): string =>
   );
 
 const buildL2tpProfile = (form: FormState): string => {
-  const mode = form.l2tpAuthMode || "shared";
   const extraAuths = (form.l2tpAuths || [])
     .map((item) => ({
       username: item.username.trim(),
@@ -347,8 +344,7 @@ const buildL2tpProfile = (form: FormState): string => {
       username: form.l2tpUsername.trim(),
       password: form.l2tpPassword.trim(),
       psk: form.l2tpPsk.trim(),
-      authMode: mode,
-      ...(mode === "custom" && extraAuths.length > 0 ? { auths: extraAuths } : {}),
+      ...(extraAuths.length > 0 ? { auths: extraAuths } : {}),
     },
     null,
     2,
@@ -587,12 +583,8 @@ export function AdminDashboard() {
   const [bulkCredUsername, setBulkCredUsername] = useState("");
   const [bulkCredPassword, setBulkCredPassword] = useState("");
   const [bulkCredPsk, setBulkCredPsk] = useState("");
-  const [sharedL2tpPool, setSharedL2tpPool] = useState<L2tpAuthItem[]>([]);
-  const [sharedL2tpServerCount, setSharedL2tpServerCount] = useState(0);
-  const [showSharedPoolPanel, setShowSharedPoolPanel] = useState(false);
-  const [sharedPoolBulkText, setSharedPoolBulkText] = useState("");
-  const [showSharedPoolBulk, setShowSharedPoolBulk] = useState(false);
-  const [sharedPoolSaving, setSharedPoolSaving] = useState(false);
+  const [bulkExtraAuthText, setBulkExtraAuthText] = useState("");
+  const [bulkExtraAuthBusy, setBulkExtraAuthBusy] = useState(false);
   const [dnsttDefaults, setDnsttDefaults] = useState<{ dns: string; querySize: string; mtu: string }>({
     dns: "8.8.8.8:53",
     querySize: "1232",
@@ -631,16 +623,6 @@ export function AdminDashboard() {
     return res.json() as Promise<T>;
   }, []);
 
-  const loadL2tpPool = useCallback(async () => {
-    try {
-      const data = await api<{ accounts: L2tpAuthItem[]; sharedServersCount: number }>("/api/admin/l2tp-pool");
-      setSharedL2tpPool(data.accounts);
-      setSharedL2tpServerCount(data.sharedServersCount);
-    } catch {
-      // ignore
-    }
-  }, [api]);
-
   const load = useCallback(async () => {
     setBusy(true);
     try {
@@ -651,13 +633,12 @@ export function AdminDashboard() {
         total: data.servers.length,
         enabled: data.servers.filter((server) => server.isEnabled).length,
       });
-      void loadL2tpPool();
     } catch (error) {
       setMsg({ ok: false, text: error instanceof Error ? error.message : "Load failed" });
     } finally {
       setBusy(false);
     }
-  }, [api, loadL2tpPool]);
+  }, [api]);
 
   useEffect(() => {
     void load();
@@ -853,110 +834,7 @@ export function AdminDashboard() {
     }
   }, [bulkPasteText]);
 
-  const addSharedPoolItem = useCallback(() => {
-    setSharedL2tpPool((prev) => [
-      ...prev,
-      {
-        id: `pool-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-        username: "",
-        password: "",
-        psk: "",
-      },
-    ]);
-  }, []);
 
-  const updateSharedPoolItem = useCallback(
-    (id: string, field: "username" | "password" | "psk", value: string) => {
-      setSharedL2tpPool((prev) =>
-        prev.map((item) => (item.id === id ? { ...item, [field]: value } : item)),
-      );
-    },
-    [],
-  );
-
-  const removeSharedPoolItem = useCallback((id: string) => {
-    setSharedL2tpPool((prev) => prev.filter((item) => item.id !== id));
-  }, []);
-
-  const handleBulkPasteSharedPool = useCallback(() => {
-    if (!sharedPoolBulkText.trim()) return;
-    const lines = sharedPoolBulkText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-    const newItems: L2tpAuthItem[] = [];
-
-    for (const line of lines) {
-      let parts: string[] = [];
-      if (line.includes(":")) parts = line.split(":");
-      else if (line.includes(",")) parts = line.split(",");
-      else parts = line.split(/\s+/);
-
-      const u = parts[0]?.trim();
-      const p = parts[1]?.trim();
-      const k = parts[2]?.trim() || "";
-
-      if (u && p) {
-        newItems.push({
-          id: `pool-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-          username: u,
-          password: p,
-          psk: k,
-        });
-      }
-    }
-
-    if (newItems.length > 0) {
-      setSharedL2tpPool((prev) => [...prev, ...newItems]);
-      setSharedPoolBulkText("");
-      setShowSharedPoolBulk(false);
-    }
-  }, [sharedPoolBulkText]);
-
-  const saveSharedPool = useCallback(async () => {
-    setSharedPoolSaving(true);
-    try {
-      await api("/api/admin/l2tp-pool", {
-        method: "POST",
-        body: JSON.stringify({ accounts: sharedL2tpPool }),
-      });
-      setMsg({ ok: true, text: `Saved ${sharedL2tpPool.length} accounts to shared L2TP pool` });
-      await loadL2tpPool();
-      await load();
-    } catch (err) {
-      setMsg({ ok: false, text: err instanceof Error ? err.message : "Failed to save shared pool" });
-    } finally {
-      setSharedPoolSaving(false);
-    }
-  }, [api, load, loadL2tpPool, sharedL2tpPool]);
-
-  const setL2tpServerAuthMode = useCallback(
-    async (serverIds: string[], mode: "shared" | "single") => {
-      setBusy(true);
-      setMsg(null);
-      try {
-        await api("/api/admin/servers", {
-          method: "PATCH",
-          body: JSON.stringify({
-            action: "set-l2tp-auth-mode",
-            ids: serverIds,
-            mode,
-          }),
-        });
-        setMsg({
-          ok: true,
-          text:
-            mode === "shared"
-              ? `Included ${serverIds.length} server${serverIds.length !== 1 ? "s" : ""} in shared L2TP pool`
-              : `Excluded ${serverIds.length} server${serverIds.length !== 1 ? "s" : ""} from pool (set to dedicated account)`,
-        });
-        await load();
-        await loadL2tpPool();
-      } catch (err) {
-        setMsg({ ok: false, text: err instanceof Error ? err.message : "Failed to update auth mode" });
-      } finally {
-        setBusy(false);
-      }
-    },
-    [api, load, loadL2tpPool],
-  );
 
   const protocolFilterTabs = useMemo(() => {
     let l2tp = 0;
@@ -1027,22 +905,22 @@ export function AdminDashboard() {
     [filteredServers, serversPage],
   );
 
-  const credentialServers = useMemo(
-    () => servers.filter((server) => protocolSupportsCredentials(server.protocol)),
-    [servers],
+  const filteredCredentialServers = useMemo(
+    () => filteredServers.filter((server) => protocolSupportsCredentials(server.protocol)),
+    [filteredServers],
   );
 
-  const selectedCredentialCount = useMemo(
-    () => credentialServers.filter((server) => selectedServerIds.has(server.id)).length,
-    [credentialServers, selectedServerIds],
+  const selectedFilteredCredentialCount = useMemo(
+    () => filteredCredentialServers.filter((server) => selectedServerIds.has(server.id)).length,
+    [filteredCredentialServers, selectedServerIds],
   );
 
   const selectedL2tpServerIds = useMemo(
     () =>
-      servers
+      filteredServers
         .filter((server) => server.protocol.toLowerCase().startsWith("l2tp") && selectedServerIds.has(server.id))
         .map((server) => server.id),
-    [servers, selectedServerIds],
+    [filteredServers, selectedServerIds],
   );
 
   const toggleServerSelection = useCallback((id: string, checked: boolean) => {
@@ -1054,16 +932,100 @@ export function AdminDashboard() {
     });
   }, []);
 
-  const toggleAllCredentialServers = useCallback((checked: boolean) => {
+  const toggleAllFilteredCredentialServers = useCallback((checked: boolean) => {
     setSelectedServerIds((current) => {
       const next = new Set(current);
-      for (const server of credentialServers) {
+      for (const server of filteredCredentialServers) {
         if (checked) next.add(server.id);
         else next.delete(server.id);
       }
       return next;
     });
-  }, [credentialServers]);
+  }, [filteredCredentialServers]);
+
+  const bulkAddExtraAuths = useCallback(
+    async (mode: "append" | "replace") => {
+      const lines = bulkExtraAuthText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+      const auths: Array<{ username: string; password: string; psk?: string }> = [];
+      for (const line of lines) {
+        let parts: string[] = [];
+        if (line.includes(":")) parts = line.split(":");
+        else if (line.includes(",")) parts = line.split(",");
+        else parts = line.split(/\s+/);
+
+        const u = parts[0]?.trim();
+        const p = parts[1]?.trim();
+        const k = parts[2]?.trim();
+        if (u && p) {
+          auths.push({
+            username: u,
+            password: p,
+            ...(k ? { psk: k } : {}),
+          });
+        }
+      }
+
+      if (auths.length === 0) {
+        setMsg({ ok: false, text: "Enter at least one account in username:password format" });
+        return;
+      }
+      if (selectedL2tpServerIds.length === 0) {
+        setMsg({ ok: false, text: "Select at least one L2TP server" });
+        return;
+      }
+      setBulkExtraAuthBusy(true);
+      setMsg(null);
+      try {
+        const res = await api<{ ok: boolean; updated: number }>("/api/admin/servers", {
+          method: "PATCH",
+          body: JSON.stringify({
+            action: "bulk-add-extra-auths",
+            ids: selectedL2tpServerIds,
+            auths,
+            mode,
+          }),
+        });
+        setMsg({
+          ok: true,
+          text: `${mode === "replace" ? "Replaced" : "Added"} ${auths.length} account${auths.length === 1 ? "" : "s"} on ${res.updated} L2TP server${res.updated === 1 ? "" : "s"}`,
+        });
+        setBulkExtraAuthText("");
+        await load();
+      } catch (err) {
+        setMsg({ ok: false, text: err instanceof Error ? err.message : "Failed to update accounts" });
+      } finally {
+        setBulkExtraAuthBusy(false);
+      }
+    },
+    [api, bulkExtraAuthText, load, selectedL2tpServerIds],
+  );
+
+  const bulkClearExtraAuths = useCallback(async () => {
+    if (selectedL2tpServerIds.length === 0) {
+      setMsg({ ok: false, text: "Select at least one L2TP server" });
+      return;
+    }
+    setBulkExtraAuthBusy(true);
+    setMsg(null);
+    try {
+      const res = await api<{ ok: boolean; updated: number }>("/api/admin/servers", {
+        method: "PATCH",
+        body: JSON.stringify({
+          action: "bulk-clear-extra-auths",
+          ids: selectedL2tpServerIds,
+        }),
+      });
+      setMsg({
+        ok: true,
+        text: `Cleared extra accounts on ${res.updated} L2TP server${res.updated === 1 ? "" : "s"}`,
+      });
+      await load();
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : "Failed to clear accounts" });
+    } finally {
+      setBulkExtraAuthBusy(false);
+    }
+  }, [api, load, selectedL2tpServerIds]);
 
   const effectiveRawConfig = useMemo(() => {
     if (tab === "ssh") {
@@ -1456,7 +1418,7 @@ export function AdminDashboard() {
   }, [api, load]);
 
   const bulkUpdateCredentials = useCallback(async () => {
-    const ids = credentialServers
+    const ids = filteredCredentialServers
       .filter((server) => selectedServerIds.has(server.id))
       .map((server) => server.id);
     if (ids.length === 0) {
@@ -1497,7 +1459,7 @@ export function AdminDashboard() {
     } finally {
       setBusy(false);
     }
-  }, [api, bulkCredPassword, bulkCredUsername, bulkCredPsk, credentialServers, load, selectedServerIds]);
+  }, [api, bulkCredPassword, bulkCredUsername, bulkCredPsk, filteredCredentialServers, load, selectedServerIds]);
 
   const logout = async () => {
     await fetch("/api/admin/auth/logout", { method: "POST" });
@@ -1635,24 +1597,12 @@ export function AdminDashboard() {
         }
       }
       
-      let l2tpAuthMode: "shared" | "custom" | "single" = "shared";
       if (newTab === "l2tp") {
         try {
           const parsed = JSON.parse(data.rawConfig);
           l2tpUsername = parsed.username || "";
           l2tpPassword = parsed.password || "";
           l2tpPsk = parsed.psk || "";
-          if (
-            parsed.authMode === "shared" ||
-            parsed.authMode === "custom" ||
-            parsed.authMode === "single"
-          ) {
-            l2tpAuthMode = parsed.authMode;
-          } else if (Array.isArray(parsed.auths) && parsed.auths.length > 0) {
-            l2tpAuthMode = "custom";
-          } else {
-            l2tpAuthMode = "single";
-          }
           if (Array.isArray(parsed.auths)) {
             l2tpAuths = parsed.auths.map((item: any, idx: number) => ({
               id: `auth-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 7)}`,
@@ -1761,7 +1711,6 @@ export function AdminDashboard() {
         l2tpUsername,
         l2tpPassword,
         l2tpPsk,
-        l2tpAuthMode,
         l2tpAuths,
         openVpnUsername,
         openVpnPassword,
@@ -2487,465 +2436,163 @@ export function AdminDashboard() {
 
                 {tab === "l2tp" ? (
                   <div className="mt-6 space-y-4">
-                    {/* Shared Multi-Account Pool Manager Card */}
-                    <div className="rounded-2xl border border-cyan-500/20 bg-cyan-950/20 p-4">
-                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    {/* Server connection and primary credentials */}
+                    <div className="rounded-2xl border border-white/6 bg-white/2 p-4">
+                      <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
+                        Server Connection & Primary Account
+                      </p>
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <Field
+                          label="Server host / IP"
+                          value={form.host}
+                          onChange={(value) => set("host", value)}
+                          placeholder="vpn.example.com"
+                        />
+                        <Field
+                          label="IPsec Pre-Shared Key (PSK)"
+                          value={form.l2tpPsk}
+                          onChange={(value) => set("l2tpPsk", value)}
+                          placeholder="Shared IPsec PSK"
+                        />
+                        <Field
+                          label="Primary Username"
+                          value={form.l2tpUsername}
+                          onChange={(value) => set("l2tpUsername", value)}
+                          placeholder="Primary username"
+                        />
+                        <Field
+                          label="Primary Password"
+                          value={form.l2tpPassword}
+                          onChange={(value) => set("l2tpPassword", value)}
+                          placeholder="Primary password"
+                          type="password"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Multi-Account Pool for this server */}
+                    <div className="rounded-2xl border border-white/6 bg-white/2 p-4">
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                         <div>
                           <div className="flex items-center gap-2">
-                            <p className="text-sm font-semibold text-cyan-200">Shared Multi-Account Pool</p>
-                            <span className="rounded-full bg-cyan-500/20 px-2.5 py-0.5 text-[11px] font-semibold text-cyan-300">
-                              {sharedL2tpPool.length} {sharedL2tpPool.length === 1 ? "account" : "accounts"}
+                            <p className="text-sm font-semibold text-zinc-100">Extra Accounts for Rotation</p>
+                            <span className="rounded-full bg-cyan-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-cyan-300">
+                              {form.l2tpAuths.length} extra {form.l2tpAuths.length === 1 ? "account" : "accounts"}
                             </span>
                           </div>
                           <p className="mt-1 text-xs text-zinc-400">
-                            Currently used by {sharedL2tpServerCount} L2TP {sharedL2tpServerCount === 1 ? "server" : "servers"}. Servers in the shared pool randomly rotate through these accounts.
+                            Clients connecting to this server will randomly receive credentials from the primary account and these extra accounts.
                           </p>
                         </div>
                         <div className="flex items-center gap-2">
                           <button
                             type="button"
-                            onClick={() => setShowSharedPoolPanel((prev) => !prev)}
-                            className="rounded-xl border border-cyan-400/30 bg-cyan-500/10 px-3.5 py-1.5 text-xs font-semibold text-cyan-200 transition hover:bg-cyan-500/20"
+                            onClick={() => setShowBulkPasteAuth((prev) => !prev)}
+                            className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs font-medium text-zinc-300 transition hover:bg-white/10"
                           >
-                            {showSharedPoolPanel ? "Close Pool Manager" : `Manage Shared Pool (${sharedL2tpPool.length})`}
+                            {showBulkPasteAuth ? "Hide Bulk" : "Bulk Paste"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={addL2tpAuthItem}
+                            className="rounded-lg bg-cyan-500/20 border border-cyan-400/30 px-3 py-1.5 text-xs font-semibold text-cyan-200 transition hover:bg-cyan-500/30"
+                          >
+                            + Add Account
                           </button>
                         </div>
                       </div>
 
-                      {showSharedPoolPanel ? (
-                        <div className="mt-4 border-t border-cyan-500/20 pt-4">
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div className="flex items-center gap-2">
-                              <button
-                                type="button"
-                                onClick={addSharedPoolItem}
-                                className="rounded-lg bg-cyan-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-cyan-500"
-                              >
-                                + Add Account
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setShowSharedPoolBulk((prev) => !prev)}
-                                className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs font-medium text-zinc-300 transition hover:bg-white/10"
-                              >
-                                {showSharedPoolBulk ? "Hide Bulk Paste" : "Bulk Paste"}
-                              </button>
-                            </div>
+                      {showBulkPasteAuth ? (
+                        <div className="mt-3 rounded-xl border border-cyan-500/20 bg-cyan-950/20 p-3">
+                          <p className="text-xs font-medium text-cyan-300">
+                            Paste accounts (one per line): <span className="font-mono text-zinc-300">username:password</span> or <span className="font-mono text-zinc-300">username:password:psk</span>
+                          </p>
+                          <textarea
+                            rows={4}
+                            value={bulkPasteText}
+                            onChange={(e) => setBulkPasteText(e.target.value)}
+                            placeholder={"user1:pass1\nuser2:pass2\nuser3:pass3:customPsk"}
+                            className="mt-2 w-full rounded-lg border border-zinc-700 bg-zinc-900 p-2 font-mono text-xs text-zinc-200 placeholder-zinc-500 focus:border-cyan-500 focus:outline-none"
+                          />
+                          <div className="mt-2 flex justify-end gap-2">
                             <button
                               type="button"
-                              onClick={saveSharedPool}
-                              disabled={sharedPoolSaving}
-                              className="rounded-lg bg-emerald-600 px-4 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-40"
+                              onClick={() => {
+                                setBulkPasteText("");
+                                setShowBulkPasteAuth(false);
+                              }}
+                              className="rounded-lg px-2.5 py-1 text-xs text-zinc-400 hover:text-zinc-200"
                             >
-                              {sharedPoolSaving ? "Saving Pool..." : "Save Shared Pool"}
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleBulkPasteAuth}
+                              disabled={!bulkPasteText.trim()}
+                              className="rounded-lg bg-cyan-600 px-3 py-1 text-xs font-semibold text-white transition hover:bg-cyan-500 disabled:opacity-40"
+                            >
+                              Import Accounts
                             </button>
                           </div>
-
-                          {showSharedPoolBulk ? (
-                            <div className="mt-3 rounded-xl border border-cyan-500/30 bg-black/40 p-3">
-                              <p className="text-xs font-medium text-cyan-300">
-                                Paste accounts (one per line): <span className="font-mono text-zinc-300">username:password</span> or <span className="font-mono text-zinc-300">username:password:psk</span>
-                              </p>
-                              <textarea
-                                rows={4}
-                                value={sharedPoolBulkText}
-                                onChange={(e) => setSharedPoolBulkText(e.target.value)}
-                                placeholder={"user1:pass1\nuser2:pass2\nuser3:pass3:customPsk"}
-                                className="mt-2 w-full rounded-lg border border-zinc-700 bg-zinc-900 p-2 font-mono text-xs text-zinc-200 placeholder-zinc-500 focus:border-cyan-500 focus:outline-none"
-                              />
-                              <div className="mt-2 flex justify-end gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setSharedPoolBulkText("");
-                                    setShowSharedPoolBulk(false);
-                                  }}
-                                  className="rounded-lg px-2.5 py-1 text-xs text-zinc-400 hover:text-zinc-200"
-                                >
-                                  Cancel
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={handleBulkPasteSharedPool}
-                                  disabled={!sharedPoolBulkText.trim()}
-                                  className="rounded-lg bg-cyan-600 px-3 py-1 text-xs font-semibold text-white transition hover:bg-cyan-500 disabled:opacity-40"
-                                >
-                                  Import into Pool
-                                </button>
-                              </div>
-                            </div>
-                          ) : null}
-
-                          {sharedL2tpPool.length > 0 ? (
-                            <div className="mt-3 max-h-72 space-y-2 overflow-y-auto pr-1">
-                              {sharedL2tpPool.map((authItem, idx) => (
-                                <div
-                                  key={authItem.id}
-                                  className="flex flex-col gap-2 rounded-xl border border-white/5 bg-zinc-900/80 p-2.5 sm:flex-row sm:items-center"
-                                >
-                                  <span className="w-7 text-xs font-bold text-zinc-500 sm:text-center">#{idx + 1}</span>
-                                  <div className="flex-1">
-                                    <input
-                                      type="text"
-                                      value={authItem.username}
-                                      onChange={(e) => updateSharedPoolItem(authItem.id, "username", e.target.value)}
-                                      placeholder="Username"
-                                      className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-xs text-zinc-200 placeholder-zinc-600 focus:border-cyan-500 focus:outline-none"
-                                    />
-                                  </div>
-                                  <div className="flex-1">
-                                    <input
-                                      type="text"
-                                      value={authItem.password}
-                                      onChange={(e) => updateSharedPoolItem(authItem.id, "password", e.target.value)}
-                                      placeholder="Password"
-                                      className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-xs text-zinc-200 placeholder-zinc-600 focus:border-cyan-500 focus:outline-none"
-                                    />
-                                  </div>
-                                  <div className="flex-1">
-                                    <input
-                                      type="text"
-                                      value={authItem.psk || ""}
-                                      onChange={(e) => updateSharedPoolItem(authItem.id, "psk", e.target.value)}
-                                      placeholder="Custom PSK (optional, server PSK used by default)"
-                                      className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-xs text-zinc-200 placeholder-zinc-600 focus:border-cyan-500 focus:outline-none"
-                                    />
-                                  </div>
-                                  <button
-                                    type="button"
-                                    onClick={() => removeSharedPoolItem(authItem.id)}
-                                    className="rounded-lg p-1.5 text-zinc-500 transition hover:bg-rose-500/10 hover:text-rose-400"
-                                    title="Remove account"
-                                    aria-label="Remove account"
-                                  >
-                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                      <line x1="18" y1="6" x2="6" y2="18"></line>
-                                      <line x1="6" y1="6" x2="18" y2="18"></line>
-                                    </svg>
-                                  </button>
-                                </div>
-                              ))}
-                            </div>
-                          ) : (
-                            <p className="mt-3 text-center text-xs text-zinc-500">
-                              The shared pool is currently empty. Add accounts or bulk paste to enable shared rotation!
-                            </p>
-                          )}
                         </div>
                       ) : null}
-                    </div>
 
-                    {/* Server Authentication Mode 3-way Switcher */}
-                    <div className="rounded-2xl border border-white/6 bg-white/2 p-4">
-                      <label className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
-                        Authentication Mode for this Server
-                      </label>
-                      <div className="mt-2.5 grid grid-cols-1 gap-2 sm:grid-cols-3">
-                        {/* Option 1: Shared Pool */}
-                        <button
-                          type="button"
-                          onClick={() => set("l2tpAuthMode", "shared")}
-                          className={`flex flex-col items-start rounded-xl border p-3 text-left transition ${
-                            form.l2tpAuthMode === "shared"
-                              ? "border-cyan-400 bg-cyan-500/10 ring-1 ring-cyan-400/30"
-                              : "border-white/6 bg-white/3 hover:border-white/10 hover:bg-white/5"
-                          }`}
-                        >
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-sm">🌐</span>
-                            <span className={`text-xs font-bold ${form.l2tpAuthMode === "shared" ? "text-cyan-200" : "text-zinc-200"}`}>
-                              Shared Pool
-                            </span>
-                          </div>
-                          <p className="mt-1 text-[11px] leading-snug text-zinc-400">
-                            Included in pool ({sharedL2tpPool.length} accounts). Rotates automatically.
-                          </p>
-                        </button>
-
-                        {/* Option 2: Custom Multi-Account */}
-                        <button
-                          type="button"
-                          onClick={() => set("l2tpAuthMode", "custom")}
-                          className={`flex flex-col items-start rounded-xl border p-3 text-left transition ${
-                            form.l2tpAuthMode === "custom"
-                              ? "border-amber-400 bg-amber-500/10 ring-1 ring-amber-400/30"
-                              : "border-white/6 bg-white/3 hover:border-white/10 hover:bg-white/5"
-                          }`}
-                        >
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-sm">👥</span>
-                            <span className={`text-xs font-bold ${form.l2tpAuthMode === "custom" ? "text-amber-200" : "text-zinc-200"}`}>
-                              Custom Pool
-                            </span>
-                          </div>
-                          <p className="mt-1 text-[11px] leading-snug text-zinc-400">
-                            Excluded from shared. Has its own private list of multiple accounts.
-                          </p>
-                        </button>
-
-                        {/* Option 3: Single Dedicated Account */}
-                        <button
-                          type="button"
-                          onClick={() => set("l2tpAuthMode", "single")}
-                          className={`flex flex-col items-start rounded-xl border p-3 text-left transition ${
-                            form.l2tpAuthMode === "single"
-                              ? "border-zinc-400 bg-white/10 ring-1 ring-white/20"
-                              : "border-white/6 bg-white/3 hover:border-white/10 hover:bg-white/5"
-                          }`}
-                        >
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-sm">🔒</span>
-                            <span className={`text-xs font-bold ${form.l2tpAuthMode === "single" ? "text-zinc-100" : "text-zinc-200"}`}>
-                              Single Dedicated
-                            </span>
-                          </div>
-                          <p className="mt-1 text-[11px] leading-snug text-zinc-400">
-                            Excluded from rotation. Fixed single username/password only.
-                          </p>
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Mode: Shared Pool fields */}
-                    {form.l2tpAuthMode === "shared" ? (
-                      <div className="rounded-2xl border border-white/6 bg-white/2 p-4 space-y-4">
-                        <div className="grid gap-4 md:grid-cols-2">
-                          <Field
-                            label="Server host / IP"
-                            value={form.host}
-                            onChange={(value) => set("host", value)}
-                            placeholder="vpn.example.com"
-                          />
-                          <Field
-                            label="IPsec Pre-Shared Key (PSK)"
-                            value={form.l2tpPsk}
-                            onChange={(value) => set("l2tpPsk", value)}
-                            placeholder="Shared IPsec PSK"
-                          />
-                        </div>
-                        <div className="rounded-xl border border-cyan-500/20 bg-cyan-950/20 p-3">
-                          <p className="text-xs text-cyan-200">
-                            ✓ <strong>Included in Shared Pool:</strong> Clients connecting to this server will randomly receive credentials from the {sharedL2tpPool.length} accounts in the shared pool.
-                          </p>
-                        </div>
-                        <div className="grid gap-4 md:grid-cols-2">
-                          <Field
-                            label="Fallback Username (Optional)"
-                            value={form.l2tpUsername}
-                            onChange={(value) => set("l2tpUsername", value)}
-                            placeholder="Used only if shared pool is empty"
-                          />
-                          <Field
-                            label="Fallback Password (Optional)"
-                            value={form.l2tpPassword}
-                            onChange={(value) => set("l2tpPassword", value)}
-                            placeholder="Used only if shared pool is empty"
-                            type="password"
-                          />
-                        </div>
-                      </div>
-                    ) : null}
-
-                    {/* Mode: Single Dedicated Account fields */}
-                    {form.l2tpAuthMode === "single" ? (
-                      <div className="rounded-2xl border border-white/6 bg-white/2 p-4 space-y-4">
-                        <div className="grid gap-4 md:grid-cols-2">
-                          <Field
-                            label="Server host / IP"
-                            value={form.host}
-                            onChange={(value) => set("host", value)}
-                            placeholder="vpn.example.com"
-                          />
-                          <Field
-                            label="IPsec Pre-Shared Key (PSK)"
-                            value={form.l2tpPsk}
-                            onChange={(value) => set("l2tpPsk", value)}
-                            placeholder="IPsec secret / PSK"
-                          />
-                        </div>
-                        <div className="grid gap-4 md:grid-cols-2">
-                          <Field
-                            label="Dedicated Username"
-                            value={form.l2tpUsername}
-                            onChange={(value) => set("l2tpUsername", value)}
-                            placeholder="Single account username"
-                          />
-                          <Field
-                            label="Dedicated Password"
-                            value={form.l2tpPassword}
-                            onChange={(value) => set("l2tpPassword", value)}
-                            placeholder="Single account password"
-                            type="password"
-                          />
-                        </div>
-                        <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
-                          <p className="text-xs text-zinc-400">
-                            🔒 <strong>Excluded from Pool:</strong> This server uses only this dedicated account. No random credential rotation is performed.
-                          </p>
-                        </div>
-                      </div>
-                    ) : null}
-
-                    {/* Mode: Custom Multi-Account fields */}
-                    {form.l2tpAuthMode === "custom" ? (
-                      <div className="space-y-4">
-                        <div className="rounded-2xl border border-white/6 bg-white/2 p-4">
-                          <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
-                            Primary Account Credentials
-                          </p>
-                          <div className="grid gap-4 md:grid-cols-2">
-                            <Field
-                              label="Server host / IP"
-                              value={form.host}
-                              onChange={(value) => set("host", value)}
-                              placeholder="vpn.example.com"
-                            />
-                            <Field
-                              label="Default IPsec PSK"
-                              value={form.l2tpPsk}
-                              onChange={(value) => set("l2tpPsk", value)}
-                              placeholder="IPsec PSK"
-                            />
-                            <Field
-                              label="Primary Username"
-                              value={form.l2tpUsername}
-                              onChange={(value) => set("l2tpUsername", value)}
-                              placeholder="L2TP Username"
-                            />
-                            <Field
-                              label="Primary Password"
-                              value={form.l2tpPassword}
-                              onChange={(value) => set("l2tpPassword", value)}
-                              placeholder="L2TP Password"
-                              type="password"
-                            />
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl border border-white/6 bg-white/2 p-4">
-                          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                            <div>
-                              <div className="flex items-center gap-2">
-                                <p className="text-sm font-semibold text-zinc-100">Custom Multi-Auth Accounts Pool</p>
-                                <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-300">
-                                  {form.l2tpAuths.length} extra {form.l2tpAuths.length === 1 ? "account" : "accounts"}
-                                </span>
+                      {form.l2tpAuths.length > 0 ? (
+                        <div className="mt-4 space-y-2.5">
+                          {form.l2tpAuths.map((authItem, idx) => (
+                            <div
+                              key={authItem.id}
+                              className="flex flex-col gap-2 rounded-xl border border-white/5 bg-zinc-900/60 p-3 sm:flex-row sm:items-center"
+                            >
+                              <span className="w-7 text-xs font-bold text-zinc-500 sm:text-center">#{idx + 1}</span>
+                              <div className="flex-1">
+                                <input
+                                  type="text"
+                                  value={authItem.username}
+                                  onChange={(e) => updateL2tpAuthItem(authItem.id, "username", e.target.value)}
+                                  placeholder="Username"
+                                  className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-xs text-zinc-200 placeholder-zinc-600 focus:border-cyan-500 focus:outline-none"
+                                />
                               </div>
-                              <p className="mt-1 text-xs text-zinc-400">
-                                Specific to this server only. Excluded from the shared pool.
-                              </p>
-                            </div>
-                            <div className="flex items-center gap-2">
+                              <div className="flex-1">
+                                <input
+                                  type="text"
+                                  value={authItem.password}
+                                  onChange={(e) => updateL2tpAuthItem(authItem.id, "password", e.target.value)}
+                                  placeholder="Password"
+                                  className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-xs text-zinc-200 placeholder-zinc-600 focus:border-cyan-500 focus:outline-none"
+                                />
+                              </div>
+                              <div className="flex-1">
+                                <input
+                                  type="text"
+                                  value={authItem.psk}
+                                  onChange={(e) => updateL2tpAuthItem(authItem.id, "psk", e.target.value)}
+                                  placeholder="PSK (defaults to main PSK)"
+                                  className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-xs text-zinc-200 placeholder-zinc-600 focus:border-cyan-500 focus:outline-none"
+                                />
+                              </div>
                               <button
                                 type="button"
-                                onClick={() => setShowBulkPasteAuth((prev) => !prev)}
-                                className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs font-medium text-zinc-300 transition hover:bg-white/10"
+                                onClick={() => removeL2tpAuthItem(authItem.id)}
+                                className="rounded-lg p-1.5 text-zinc-500 transition hover:bg-rose-500/10 hover:text-rose-400"
+                                title="Remove account"
+                                aria-label="Remove account"
                               >
-                                {showBulkPasteAuth ? "Hide Bulk" : "Bulk Paste"}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={addL2tpAuthItem}
-                                className="rounded-lg bg-amber-600/80 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-amber-500"
-                              >
-                                + Add Account
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                                </svg>
                               </button>
                             </div>
-                          </div>
-
-                          {showBulkPasteAuth ? (
-                            <div className="mt-3 rounded-xl border border-amber-500/20 bg-amber-950/20 p-3">
-                              <p className="text-xs font-medium text-amber-300">
-                                Paste accounts (one per line): <span className="font-mono text-zinc-400">username:password</span> or <span className="font-mono text-zinc-400">username:password:psk</span>
-                              </p>
-                              <textarea
-                                rows={4}
-                                value={bulkPasteText}
-                                onChange={(e) => setBulkPasteText(e.target.value)}
-                                placeholder={"user1:pass1\nuser2:pass2\nuser3:pass3:customPsk"}
-                                className="mt-2 w-full rounded-lg border border-zinc-700 bg-zinc-900 p-2 font-mono text-xs text-zinc-200 placeholder-zinc-500 focus:border-amber-500 focus:outline-none"
-                              />
-                              <div className="mt-2 flex justify-end gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setBulkPasteText("");
-                                    setShowBulkPasteAuth(false);
-                                  }}
-                                  className="rounded-lg px-2.5 py-1 text-xs text-zinc-400 hover:text-zinc-200"
-                                >
-                                  Cancel
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={handleBulkPasteAuth}
-                                  disabled={!bulkPasteText.trim()}
-                                  className="rounded-lg bg-amber-600 px-3 py-1 text-xs font-semibold text-white transition hover:bg-amber-500 disabled:opacity-40"
-                                >
-                                  Import Accounts
-                                </button>
-                              </div>
-                            </div>
-                          ) : null}
-
-                          {form.l2tpAuths.length > 0 ? (
-                            <div className="mt-4 space-y-2.5">
-                              {form.l2tpAuths.map((authItem, idx) => (
-                                <div
-                                  key={authItem.id}
-                                  className="flex flex-col gap-2 rounded-xl border border-white/5 bg-zinc-900/60 p-3 sm:flex-row sm:items-center"
-                                >
-                                  <span className="w-7 text-xs font-bold text-zinc-500 sm:text-center">#{idx + 1}</span>
-                                  <div className="flex-1">
-                                    <input
-                                      type="text"
-                                      value={authItem.username}
-                                      onChange={(e) => updateL2tpAuthItem(authItem.id, "username", e.target.value)}
-                                      placeholder="Username"
-                                      className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-xs text-zinc-200 placeholder-zinc-600 focus:border-cyan-500 focus:outline-none"
-                                    />
-                                  </div>
-                                  <div className="flex-1">
-                                    <input
-                                      type="text"
-                                      value={authItem.password}
-                                      onChange={(e) => updateL2tpAuthItem(authItem.id, "password", e.target.value)}
-                                      placeholder="Password"
-                                      className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-xs text-zinc-200 placeholder-zinc-600 focus:border-cyan-500 focus:outline-none"
-                                    />
-                                  </div>
-                                  <div className="flex-1">
-                                    <input
-                                      type="text"
-                                      value={authItem.psk}
-                                      onChange={(e) => updateL2tpAuthItem(authItem.id, "psk", e.target.value)}
-                                      placeholder="PSK (defaults to main PSK)"
-                                      className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-xs text-zinc-200 placeholder-zinc-600 focus:border-cyan-500 focus:outline-none"
-                                    />
-                                  </div>
-                                  <button
-                                    type="button"
-                                    onClick={() => removeL2tpAuthItem(authItem.id)}
-                                    className="rounded-lg p-1.5 text-zinc-500 transition hover:bg-rose-500/10 hover:text-rose-400"
-                                    title="Remove account"
-                                    aria-label="Remove account"
-                                  >
-                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                      <line x1="18" y1="6" x2="6" y2="18"></line>
-                                      <line x1="6" y1="6" x2="18" y2="18"></line>
-                                    </svg>
-                                  </button>
-                                </div>
-                              ))}
-                            </div>
-                          ) : (
-                            <p className="mt-3 text-center text-xs text-zinc-600">
-                              No extra accounts added yet. Only the primary credentials will be used.
-                            </p>
-                          )}
+                          ))}
                         </div>
-                      </div>
-                    ) : null}
+                      ) : (
+                        <p className="mt-3 text-center text-xs text-zinc-600">
+                          No extra accounts added yet. Only the primary credentials will be used.
+                        </p>
+                      )}
+                    </div>
                   </div>
                 ) : null}
 
@@ -3148,7 +2795,7 @@ or
                 })}
               </div>
 
-              {credentialServers.length > 0 ? (
+              {filteredCredentialServers.length > 0 ? (
                 <div className="mb-4 rounded-2xl border border-white/6 bg-white/3 px-5 py-4">
                   {/* Header row: checkbox + button */}
                   <div className="flex items-start justify-between gap-4">
@@ -3156,46 +2803,29 @@ or
                       <input
                         type="checkbox"
                         checked={
-                          credentialServers.length > 0 &&
-                          credentialServers.every((server) => selectedServerIds.has(server.id))
+                          filteredCredentialServers.length > 0 &&
+                          filteredCredentialServers.every((server) => selectedServerIds.has(server.id))
                         }
-                        onChange={(e) => toggleAllCredentialServers(e.target.checked)}
+                        onChange={(e) => toggleAllFilteredCredentialServers(e.target.checked)}
                         className="rounded border-zinc-700 bg-zinc-900 accent-cyan-400"
                       />
                       <div>
                         <p className="text-sm font-medium text-zinc-200">Bulk credentials</p>
                         <p className="text-xs text-zinc-500">
-                          {selectedCredentialCount} of {credentialServers.length} selected · OpenVPN, HTTP, SSH, L2TP
+                          {selectedFilteredCredentialCount} of {filteredCredentialServers.length} selected
+                          {protocolFilter === "l2tp"
+                            ? " · L2TP"
+                            : protocolFilter === "all"
+                            ? " · OpenVPN, HTTP, SSH, L2TP"
+                            : ` · ${protocolFilter.toUpperCase()}`}
                         </p>
                       </div>
                     </label>
                     <div className="flex flex-wrap items-center gap-2">
-                      {selectedL2tpServerIds.length > 0 ? (
-                        <>
-                          <button
-                            type="button"
-                            onClick={() => void setL2tpServerAuthMode(selectedL2tpServerIds, "shared")}
-                            disabled={busy}
-                            className="flex-shrink-0 rounded-xl border border-cyan-400/40 bg-cyan-500/10 px-3 py-2 text-xs font-semibold text-cyan-200 transition hover:bg-cyan-500/20 disabled:opacity-40"
-                            title="Include all selected L2TP servers in the shared multi-account pool"
-                          >
-                            Include {selectedL2tpServerIds.length} in Pool
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void setL2tpServerAuthMode(selectedL2tpServerIds, "single")}
-                            disabled={busy}
-                            className="flex-shrink-0 rounded-xl border border-zinc-700 bg-zinc-800/60 px-3 py-2 text-xs font-semibold text-zinc-300 transition hover:bg-zinc-700 disabled:opacity-40"
-                            title="Exclude all selected L2TP servers from the pool (set to dedicated account)"
-                          >
-                            Exclude {selectedL2tpServerIds.length} (Dedicated)
-                          </button>
-                        </>
-                      ) : null}
                       <button
                         type="button"
                         onClick={() => void bulkUpdateCredentials()}
-                        disabled={busy || selectedCredentialCount === 0}
+                        disabled={busy || selectedFilteredCredentialCount === 0}
                         className="flex-shrink-0 rounded-xl bg-cyan-400 px-4 py-2 text-xs font-semibold text-cyan-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         {busy ? "Updating..." : "Update selected"}
@@ -3224,6 +2854,71 @@ or
                       placeholder="Leave blank to keep"
                     />
                   </div>
+
+                  {/* Bulk Extra Accounts for Selected L2TP Servers */}
+                  {selectedL2tpServerIds.length > 0 ? (
+                    <div className="mt-4 rounded-xl border border-cyan-500/20 bg-cyan-950/20 p-4">
+                      <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <p className="text-xs font-semibold uppercase tracking-wider text-cyan-300">
+                              L2TP Multi-Account Rotation
+                            </p>
+                            <span className="rounded-full bg-cyan-500/20 px-2 py-0.5 text-[10px] font-bold text-cyan-200">
+                              {selectedL2tpServerIds.length} {selectedL2tpServerIds.length === 1 ? "server" : "servers"} selected
+                            </span>
+                          </div>
+                          <p className="mt-1 text-xs text-zinc-400">
+                            Paste accounts below to add extra login credentials to the {selectedL2tpServerIds.length} selected L2TP server{selectedL2tpServerIds.length === 1 ? "" : "s"}.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="mt-3">
+                        <textarea
+                          rows={3}
+                          value={bulkExtraAuthText}
+                          onChange={(e) => setBulkExtraAuthText(e.target.value)}
+                          placeholder={"user1:pass1\nuser2:pass2\nuser3:pass3:custom_psk"}
+                          className="w-full rounded-xl border border-white/10 bg-black/40 p-2.5 font-mono text-xs text-zinc-200 placeholder-zinc-500 focus:border-cyan-500 focus:outline-none"
+                        />
+                        <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-[11px] text-zinc-500">
+                            Format: <code className="text-zinc-400">username:password</code> or <code className="text-zinc-400">username:password:psk</code>
+                          </span>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => void bulkClearExtraAuths()}
+                              disabled={bulkExtraAuthBusy}
+                              className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/20 disabled:opacity-40"
+                              title="Clear all extra accounts from selected L2TP servers"
+                            >
+                              Clear Extra Accounts
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void bulkAddExtraAuths("replace")}
+                              disabled={bulkExtraAuthBusy || !bulkExtraAuthText.trim()}
+                              className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-300 transition hover:bg-amber-500/20 disabled:opacity-40"
+                              title="Replace all extra accounts with the list above"
+                            >
+                              Replace Accounts
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void bulkAddExtraAuths("append")}
+                              disabled={bulkExtraAuthBusy || !bulkExtraAuthText.trim()}
+                              className="rounded-xl bg-cyan-400 px-3.5 py-1.5 text-xs font-semibold text-cyan-950 transition hover:bg-cyan-300 disabled:opacity-40"
+                              title="Add these accounts to existing extra accounts"
+                            >
+                              + Add to Selected ({selectedL2tpServerIds.length})
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
 
@@ -3264,22 +2959,8 @@ or
                             <span className={`rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${protoBadgeColor}`}>
                               {server.protocol.toUpperCase()}
                             </span>
-                            {server.protocol.toLowerCase().startsWith("l2tp") ? (
-                              server.l2tpAuthMode === "shared" ? (
-                                <span className="rounded-full bg-cyan-500/15 px-2 py-0.5 text-[9px] font-semibold text-cyan-300 uppercase tracking-wide">
-                                  SHARED POOL · {server.accountCount ?? sharedL2tpPool.length} ACCOUNTS
-                                </span>
-                              ) : server.l2tpAuthMode === "custom" ? (
-                                <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[9px] font-semibold text-amber-300 uppercase tracking-wide">
-                                  CUSTOM POOL · {server.accountCount} ACCOUNTS
-                                </span>
-                              ) : (
-                                <span className="rounded-full bg-zinc-800 px-2 py-0.5 text-[9px] font-semibold text-zinc-400 uppercase tracking-wide">
-                                  DEDICATED
-                                </span>
-                              )
-                            ) : server.accountCount && server.accountCount > 1 ? (
-                              <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[9px] font-semibold text-emerald-300 uppercase tracking-wide">
+                            {server.accountCount && server.accountCount > 1 ? (
+                              <span className="rounded-full bg-cyan-500/15 px-2 py-0.5 text-[9px] font-semibold text-cyan-300 uppercase tracking-wide">
                                 {server.accountCount} AUTHS
                               </span>
                             ) : null}
@@ -3293,29 +2974,6 @@ or
                         </div>
                       </div>
                       <div className="flex flex-wrap gap-1.5 md:flex-nowrap">
-                        {server.protocol.toLowerCase().startsWith("l2tp") ? (
-                          server.l2tpAuthMode === "shared" ? (
-                            <button
-                              type="button"
-                              onClick={() => void setL2tpServerAuthMode([server.id], "single")}
-                              disabled={busy}
-                              className="rounded-lg border border-zinc-700/60 bg-zinc-800/40 px-2.5 py-1.5 text-xs font-medium text-zinc-300 transition hover:bg-zinc-700/60 hover:text-white"
-                              title="Exclude from shared pool and use a single dedicated account"
-                            >
-                              Exclude
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => void setL2tpServerAuthMode([server.id], "shared")}
-                              disabled={busy}
-                              className="rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-2.5 py-1.5 text-xs font-semibold text-cyan-200 transition hover:bg-cyan-500/20"
-                              title="Include in shared multi-account pool"
-                            >
-                              Include in Pool
-                            </button>
-                          )
-                        ) : null}
                         <button
                           type="button"
                           onClick={() => void moveServer(server.id, 'up')}
