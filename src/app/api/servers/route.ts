@@ -119,12 +119,18 @@ const buildTlsFromUrl = (
     undefined;
   const alpn = splitCsv(url.searchParams.get("alpn"));
   const fingerprint = url.searchParams.get("fp") ?? url.searchParams.get("fingerprint") ?? undefined;
+  const pcs =
+    url.searchParams.get("pcs") ??
+    url.searchParams.get("pinnedPeerCertSha256") ??
+    url.searchParams.get("pinSHA256") ??
+    undefined;
   const isReality = defaults?.reality || security === "reality";
   const enabled =
     defaults?.enabled ??
     (isReality ||
       security === "tls" ||
       Boolean(serverName) ||
+      Boolean(pcs) ||
       Boolean(alpn && alpn.length > 0));
 
   if (!enabled) return undefined;
@@ -137,6 +143,7 @@ const buildTlsFromUrl = (
     {
       server_name: serverName,
       alpn,
+      pinned_peer_cert_sha256: pcs,
       utls: fingerprint ? { enabled: true, fingerprint } : undefined,
       reality: isReality
         ? {
@@ -884,6 +891,8 @@ const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): JsonObjec
     }
     const enc = pickString((outbound as JsonObject).encryption);
     if (enc && enc.toLowerCase() !== "none") return true;
+    const tls = (outbound as JsonObject).tls;
+    if (isObject(tls) && pickString((tls as JsonObject).pinned_peer_cert_sha256)) return true;
     return false;
   };
 
