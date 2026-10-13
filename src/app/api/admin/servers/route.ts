@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
-import { createServer, createServers, deleteAllServers, getServer, listServers, setAllServersEnabled, updateServer } from "@/lib/db";
+import { createServer, createServers, deleteAllServers, getL2tpSharedPool, getServer, listServers, setAllServersEnabled, updateServer } from "@/lib/db";
 import { encryptConfig, decryptConfig } from "@/lib/crypto";
 import { isAuthorized, limitRequest } from "@/lib/auth";
 import { applyStoredCredentials } from "@/lib/credentials";
 import { detectProfileMetadata } from "@/lib/profile-import";
 import { serverInputSchema } from "@/lib/validation";
+import type { L2tpAuthMode } from "@/types/server";
 
 export const dynamic = "force-dynamic";
 
@@ -37,20 +38,37 @@ export async function GET(request: NextRequest) {
   }
 
   const servers = await listServers(false);
+  const sharedPool = await getL2tpSharedPool();
+  const sharedCount = sharedPool.length;
+
   const enriched = servers.map((server) => {
     let accountCount: number | undefined = undefined;
+    let l2tpAuthMode: L2tpAuthMode | undefined = undefined;
+
     if (server.protocol.toLowerCase().startsWith("l2tp")) {
       try {
         const raw = decryptConfig(server.encryptedConfig);
         const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed.auths) && parsed.auths.length > 0) {
-          accountCount = parsed.auths.length + (parsed.username ? 1 : 0);
-        } else if (parsed.username) {
-          accountCount = 1;
+        if (parsed.authMode === "shared") {
+          l2tpAuthMode = "shared";
+          accountCount = sharedCount;
+        } else if (parsed.authMode === "single") {
+          l2tpAuthMode = "single";
+          accountCount = parsed.username ? 1 : 0;
+        } else if (
+          parsed.authMode === "custom" ||
+          (Array.isArray(parsed.auths) && parsed.auths.length > 0)
+        ) {
+          l2tpAuthMode = "custom";
+          const extra = Array.isArray(parsed.auths) ? parsed.auths.length : 0;
+          accountCount = extra + (parsed.username ? 1 : 0);
+        } else {
+          l2tpAuthMode = "single";
+          accountCount = parsed.username ? 1 : 0;
         }
       } catch {}
     }
-    return { ...server, accountCount };
+    return { ...server, accountCount, l2tpAuthMode };
   });
   return NextResponse.json({ servers: enriched });
 }
@@ -184,6 +202,34 @@ export async function PATCH(request: NextRequest) {
         updated,
         ...(errors.length > 0 ? { warnings: errors } : {}),
       });
+    }
+
+    if (action === "set-l2tp-auth-mode") {
+      const mode = typeof (payload as { mode?: unknown }).mode === "string" ? (payload as { mode?: string }).mode : "";
+      if (mode !== "shared" && mode !== "single" && mode !== "custom") {
+        return NextResponse.json({ error: "Invalid auth mode" }, { status: 400 });
+      }
+      if (!Array.isArray(payload.ids) || payload.ids.length === 0) {
+        return NextResponse.json({ error: "Select at least one server" }, { status: 400 });
+      }
+
+      let updated = 0;
+      for (const rawId of payload.ids) {
+        if (typeof rawId !== "string" || !/^[0-9a-f-]{36}$/i.test(rawId)) continue;
+        const server = await getServer(rawId);
+        if (!server || !server.protocol.toLowerCase().startsWith("l2tp")) continue;
+        try {
+          const rawConfig = decryptConfig(server.encryptedConfig);
+          const parsed = JSON.parse(rawConfig);
+          parsed.authMode = mode;
+          const nextConfig = JSON.stringify(parsed);
+          await updateServer(rawId, { encryptedConfig: encryptConfig(nextConfig) });
+          updated++;
+        } catch {}
+      }
+
+      revalidateServerCatalog();
+      return NextResponse.json({ ok: true, updated });
     }
 
     if (action !== "enable-all" && action !== "disable-all") {

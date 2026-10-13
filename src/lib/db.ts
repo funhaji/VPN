@@ -105,6 +105,13 @@ export const ensureSchema = async (): Promise<void> => {
   await query`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_routing_rules_type_value ON routing_rules(type, value);
   `;
+  await query`
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key VARCHAR(64) PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `;
   schemaReady = true;
 };
 
@@ -475,4 +482,53 @@ export const deleteRoutingRules = async (type?: string): Promise<number> => {
     ? await query`DELETE FROM routing_rules WHERE type = ${type} RETURNING id;`
     : await query`DELETE FROM routing_rules RETURNING id;`;
   return (rows as Array<{ id: string }>).length;
+};
+
+export const getSetting = async (key: string): Promise<string | null> => {
+  await ensureSchema();
+  const query = getSql();
+  const rows = (await query`SELECT value FROM app_settings WHERE key = ${key} LIMIT 1;`) as Array<{ value: string }>;
+  if (rows.length === 0) return null;
+  return rows[0].value;
+};
+
+export const setSetting = async (key: string, value: string): Promise<void> => {
+  await ensureSchema();
+  const query = getSql();
+  await query`
+    INSERT INTO app_settings (key, value, updated_at)
+    VALUES (${key}, ${value}, NOW())
+    ON CONFLICT (key) DO UPDATE
+    SET value = EXCLUDED.value, updated_at = NOW();
+  `;
+};
+
+export type L2tpPoolAccount = {
+  id: string;
+  username: string;
+  password: string;
+  psk?: string;
+};
+
+export const getL2tpSharedPool = async (): Promise<L2tpPoolAccount[]> => {
+  const raw = await getSetting("l2tp_shared_pool");
+  if (!raw) return [];
+  try {
+    const encrypted = JSON.parse(raw);
+    if (encrypted && encrypted.cipherText) {
+      const decrypted = decryptConfig(encrypted);
+      const parsed = JSON.parse(decrypted);
+      return Array.isArray(parsed) ? parsed : [];
+    }
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+export const setL2tpSharedPool = async (accounts: L2tpPoolAccount[]): Promise<void> => {
+  const jsonStr = JSON.stringify(accounts);
+  const encrypted = encryptConfig(jsonStr);
+  await setSetting("l2tp_shared_pool", JSON.stringify(encrypted));
 };

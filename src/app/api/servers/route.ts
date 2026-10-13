@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { decryptConfig } from "@/lib/crypto";
-import { listServers } from "@/lib/db";
+import { getL2tpSharedPool, listServers, type L2tpPoolAccount } from "@/lib/db";
 import { parseWireGuardConf } from "@/lib/profile-import";
 import type { ProtocolOptions, ServerRecord } from "@/types/server";
 
@@ -876,7 +876,11 @@ const buildOutboundFromXrayJson = (
   return null;
 };
 
-const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): JsonObject => {
+const buildRuntimeProfile = (
+  server: ServerRecord,
+  rawConfig: string,
+  sharedPool: L2tpPoolAccount[] = [],
+): JsonObject => {
   const loweredProtocol = server.protocol.trim().toLowerCase();
   const normalizedProtocol = normalizeProtocol(server.protocol, rawConfig);
   const trimmed = rawConfig.trim();
@@ -930,44 +934,65 @@ const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): JsonObjec
 
   if (loweredProtocol.startsWith("l2tp")) {
     const l2tpOutbound = isObject(parsedJson) ? { ...parsedJson } : {};
-    const allAuths: Array<{ username: string; password: string; psk?: string }> = [];
+    const mode =
+      pickString(l2tpOutbound.authMode) ||
+      (Array.isArray(l2tpOutbound.auths) && l2tpOutbound.auths.length > 0 ? "custom" : "single");
 
-    // 1. Collect all auths from auths array
-    if (Array.isArray(l2tpOutbound.auths)) {
-      for (const item of l2tpOutbound.auths) {
-        if (isObject(item)) {
-          const u = pickString(item.username);
-          const p = pickString(item.password);
-          const k = pickString(item.psk);
-          if (u && p) {
-            allAuths.push({ username: u, password: p, psk: k });
+    let allAuths: Array<{ username: string; password: string; psk?: string }> = [];
+
+    if (mode === "shared") {
+      // 1. Shared multi-account pool
+      for (const item of sharedPool) {
+        if (item.username && item.password) {
+          allAuths.push({ username: item.username, password: item.password, psk: item.psk });
+        }
+      }
+    } else if (mode === "custom") {
+      // 2. Custom multi-account pool on this server
+      if (Array.isArray(l2tpOutbound.auths)) {
+        for (const item of l2tpOutbound.auths) {
+          if (isObject(item)) {
+            const u = pickString(item.username);
+            const p = pickString(item.password);
+            const k = pickString(item.psk);
+            if (u && p) {
+              allAuths.push({ username: u, password: p, psk: k });
+            }
           }
         }
       }
     }
 
-    // 2. Also include primary credentials if present
     const primUser = pickString(l2tpOutbound.username);
     const primPass = pickString(l2tpOutbound.password);
     const primPsk = pickString(l2tpOutbound.psk);
-    if (primUser && primPass && !allAuths.some((a) => a.username === primUser && a.password === primPass)) {
-      allAuths.unshift({ username: primUser, password: primPass, psk: primPsk });
-    }
 
-    // 3. Random selection: if auths exist, pick ONE randomly!
-    if (allAuths.length > 0) {
-      const chosen = allAuths[Math.floor(Math.random() * allAuths.length)];
-      l2tpOutbound.username = chosen.username;
-      l2tpOutbound.password = chosen.password;
-      if (chosen.psk) {
-        l2tpOutbound.psk = chosen.psk;
-      } else if (primPsk) {
-        l2tpOutbound.psk = primPsk;
+    if (mode === "single") {
+      // Single dedicated account: NO rotation, use fixed credentials!
+    } else {
+      // Include primary credential as fallback if custom or if shared pool is empty
+      if (primUser && primPass && !allAuths.some((a) => a.username === primUser && a.password === primPass)) {
+        if (mode === "custom" || allAuths.length === 0) {
+          allAuths.unshift({ username: primUser, password: primPass, psk: primPsk });
+        }
+      }
+
+      // Randomly select one credential from available pool
+      if (allAuths.length > 0) {
+        const chosen = allAuths[Math.floor(Math.random() * allAuths.length)];
+        l2tpOutbound.username = chosen.username;
+        l2tpOutbound.password = chosen.password;
+        if (chosen.psk) {
+          l2tpOutbound.psk = chosen.psk;
+        } else if (primPsk) {
+          l2tpOutbound.psk = primPsk;
+        }
       }
     }
 
-    // 4. Strip internal auths list before returning to client so it's not exposed
+    // Strip internal auths & authMode before returning to client so nothing leaks
     delete l2tpOutbound.auths;
+    delete l2tpOutbound.authMode;
 
     return {
       engine: "l2tp",
@@ -1080,6 +1105,7 @@ const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): JsonObjec
 export async function GET(request: NextRequest) {
   try {
     const servers = await listServers(true);
+    const sharedPool = await getL2tpSharedPool();
     const catalogServers = [];
 
     for (const server of servers) {
@@ -1094,7 +1120,7 @@ export async function GET(request: NextRequest) {
           country: server.country,
           options: server.options,
           rawConfig: "",
-          runtimeProfile: buildRuntimeProfile(server, rawConfig),
+          runtimeProfile: buildRuntimeProfile(server, rawConfig, sharedPool),
           updatedAt: server.updatedAt,
         });
       } catch {

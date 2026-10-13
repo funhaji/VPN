@@ -14,6 +14,8 @@ export type EncryptedConfig = {
   authTag: string;
 };
 
+export type L2tpAuthMode = "shared" | "custom" | "single";
+
 export type ServerRecord = {
   id: string;
   name: string;
@@ -28,4 +30,5 @@ export type ServerRecord = {
   createdAt: string;
   updatedAt: string;
   accountCount?: number;
+  l2tpAuthMode?: L2tpAuthMode;
 };
