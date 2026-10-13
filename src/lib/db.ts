@@ -5,6 +5,7 @@ import { getDatabaseUrl } from "@/lib/env";
 
 let schemaReady = false;
 let legacyMigrationChecked = false;
+let sortOrderMigrated = false;
 let sql: NeonQueryFunction<false, false> | null = null;
 
 const getSql = (): NeonQueryFunction<false, false> => {
@@ -112,6 +113,30 @@ export const ensureSchema = async (): Promise<void> => {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `;
+  if (!sortOrderMigrated) {
+    try {
+      const dupRows = (await query`
+        SELECT 1 FROM vpn_servers GROUP BY sort_order HAVING COUNT(*) > 1 LIMIT 1;
+      `) as unknown[];
+      if (dupRows.length > 0) {
+        await query`
+          WITH reordered AS (
+            SELECT id, ROW_NUMBER() OVER (
+              ORDER BY created_at DESC, sort_order ASC
+            ) - 1 AS clean_order
+            FROM vpn_servers
+          )
+          UPDATE vpn_servers AS s
+          SET sort_order = reordered.clean_order
+          FROM reordered
+          WHERE s.id = reordered.id;
+        `;
+      }
+      sortOrderMigrated = true;
+    } catch {
+      // Ignore if error during initialization
+    }
+  }
   schemaReady = true;
 };
 
@@ -221,10 +246,10 @@ export const listServers = async (enabledOnly: boolean): Promise<ServerRecord[]>
   const query = getSql();
   const rows = (enabledOnly
     ? await query`
-      SELECT * FROM vpn_servers WHERE is_enabled = TRUE ORDER BY sort_order ASC, updated_at DESC
+      SELECT * FROM vpn_servers WHERE is_enabled = TRUE ORDER BY sort_order ASC, created_at DESC
     `
     : await query`
-      SELECT * FROM vpn_servers ORDER BY sort_order ASC, updated_at DESC
+      SELECT * FROM vpn_servers ORDER BY sort_order ASC, created_at DESC
     `) as DatabaseServer[];
   return rows.map((row) => mapServer(row));
 };
@@ -243,6 +268,22 @@ export const createServer = async (input: {
 }): Promise<void> => {
   await ensureSchema();
   const query = getSql();
+
+  // If sortOrder is not explicitly specified, place the new server at the very TOP (index 0)
+  // and shift all existing servers down by 1.
+  if (input.sortOrder === undefined) {
+    await query`
+      WITH ranked AS (
+        SELECT id, ROW_NUMBER() OVER (ORDER BY sort_order ASC, created_at DESC) - 1 AS new_rank
+        FROM vpn_servers
+      )
+      UPDATE vpn_servers AS s
+      SET sort_order = ranked.new_rank + 1
+      FROM ranked
+      WHERE s.id = ranked.id;
+    `;
+  }
+
   await query`
     INSERT INTO vpn_servers (
       id, name, protocol, host, port, country, is_enabled, options_json, config_cipher, config_salt, config_iv, config_tag, config_version, sort_order
@@ -278,8 +319,22 @@ export const createServers = async (
     encryptedConfig: { version?: number; cipherText: string; salt?: string; iv: string; authTag: string };
   }>,
 ): Promise<void> => {
+  if (items.length === 0) return;
   await ensureSchema();
   const query = getSql();
+
+  // Shift existing servers down by items.length, preserving their relative order
+  await query`
+    WITH ranked AS (
+      SELECT id, ROW_NUMBER() OVER (ORDER BY sort_order ASC, created_at DESC) - 1 AS new_rank
+      FROM vpn_servers
+    )
+    UPDATE vpn_servers AS s
+    SET sort_order = ranked.new_rank + ${items.length}
+    FROM ranked
+    WHERE s.id = ranked.id;
+  `;
+
   const BATCH_SIZE = 100;
   for (let index = 0; index < items.length; index += BATCH_SIZE) {
     const chunk = items.slice(index, index + BATCH_SIZE);
