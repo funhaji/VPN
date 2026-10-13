@@ -1,10 +1,11 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { decryptConfig } from "@/lib/crypto";
 import { listServers } from "@/lib/db";
 import { parseWireGuardConf } from "@/lib/profile-import";
 import type { ProtocolOptions, ServerRecord } from "@/types/server";
 
-export const revalidate = 300; // Cache the public catalog for 5 minutes.
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 type JsonObject = Record<string, unknown>;
 
@@ -928,10 +929,50 @@ const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): JsonObjec
   }
 
   if (loweredProtocol.startsWith("l2tp")) {
+    const l2tpOutbound = isObject(parsedJson) ? { ...parsedJson } : {};
+    const allAuths: Array<{ username: string; password: string; psk?: string }> = [];
+
+    // 1. Collect all auths from auths array
+    if (Array.isArray(l2tpOutbound.auths)) {
+      for (const item of l2tpOutbound.auths) {
+        if (isObject(item)) {
+          const u = pickString(item.username);
+          const p = pickString(item.password);
+          const k = pickString(item.psk);
+          if (u && p) {
+            allAuths.push({ username: u, password: p, psk: k });
+          }
+        }
+      }
+    }
+
+    // 2. Also include primary credentials if present
+    const primUser = pickString(l2tpOutbound.username);
+    const primPass = pickString(l2tpOutbound.password);
+    const primPsk = pickString(l2tpOutbound.psk);
+    if (primUser && primPass && !allAuths.some((a) => a.username === primUser && a.password === primPass)) {
+      allAuths.unshift({ username: primUser, password: primPass, psk: primPsk });
+    }
+
+    // 3. Random selection: if auths exist, pick ONE randomly!
+    if (allAuths.length > 0) {
+      const chosen = allAuths[Math.floor(Math.random() * allAuths.length)];
+      l2tpOutbound.username = chosen.username;
+      l2tpOutbound.password = chosen.password;
+      if (chosen.psk) {
+        l2tpOutbound.psk = chosen.psk;
+      } else if (primPsk) {
+        l2tpOutbound.psk = primPsk;
+      }
+    }
+
+    // 4. Strip internal auths list before returning to client so it's not exposed
+    delete l2tpOutbound.auths;
+
     return {
       engine: "l2tp",
       supported: true,
-      outbound: parsedJson as JsonObject,
+      outbound: l2tpOutbound,
     };
   }
 
@@ -1036,7 +1077,7 @@ const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): JsonObjec
   };
 };
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     const servers = await listServers(true);
     const catalogServers = [];
@@ -1061,11 +1102,42 @@ export async function GET() {
       }
     }
 
+    // Support optional protocol filter query (?protocol=l2tp, etc.)
+    const url = new URL(request.url);
+    const requestedProtocol = url.searchParams.get("protocol")?.trim().toLowerCase();
+
+    let filteredCatalog = catalogServers;
+    if (requestedProtocol && requestedProtocol !== "all") {
+      filteredCatalog = catalogServers.filter((s) => {
+        const p = s.protocol.toLowerCase();
+        if (requestedProtocol === "l2tp") return p.startsWith("l2tp");
+        if (requestedProtocol === "v2ray") {
+          return (
+            p.startsWith("v2ray") ||
+            p.startsWith("vless") ||
+            p.startsWith("vmess") ||
+            p.startsWith("trojan") ||
+            p.startsWith("ss:") ||
+            p.startsWith("hysteria") ||
+            p.startsWith("shadowsocks")
+          );
+        }
+        if (requestedProtocol === "openvpn") return p.startsWith("openvpn");
+        if (requestedProtocol === "wireguard" || requestedProtocol === "wg") {
+          return p.startsWith("wireguard") || p === "wg";
+        }
+        if (requestedProtocol === "ssh") return p.startsWith("ssh");
+        if (requestedProtocol === "http") return p === "http";
+        return p === requestedProtocol;
+      });
+    }
+
     const { encryptCatalogPayload } = await import("@/lib/client-catalog");
-    return NextResponse.json(encryptCatalogPayload({ servers: catalogServers }), {
+    return NextResponse.json(encryptCatalogPayload({ servers: filteredCatalog }), {
       headers: {
-        "Cache-Control": "public, max-age=0, must-revalidate",
-        "CDN-Cache-Control": "public, s-maxage=300, stale-while-revalidate=86400",
+        "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0",
+        "Pragma": "no-cache",
+        "Expires": "0",
       },
     });
   } catch (error) {

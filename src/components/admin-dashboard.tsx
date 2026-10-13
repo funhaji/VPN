@@ -71,6 +71,14 @@ type FormState = {
   l2tpUsername: string;
   l2tpPassword: string;
   l2tpPsk: string;
+  l2tpAuths: L2tpAuthItem[];
+};
+
+type L2tpAuthItem = {
+  id: string;
+  username: string;
+  password: string;
+  psk: string;
 };
 
 const BLANK: FormState = {
@@ -113,6 +121,7 @@ const BLANK: FormState = {
   l2tpUsername: "",
   l2tpPassword: "",
   l2tpPsk: "",
+  l2tpAuths: [],
 };
 
 const PROTOCOLS: Array<{
@@ -320,17 +329,27 @@ const buildHttpProfile = (form: FormState): string =>
     2,
   );
 
-const buildL2tpProfile = (form: FormState): string =>
-  JSON.stringify(
+const buildL2tpProfile = (form: FormState): string => {
+  const extraAuths = (form.l2tpAuths || [])
+    .map((item) => ({
+      username: item.username.trim(),
+      password: item.password.trim(),
+      ...(item.psk.trim() ? { psk: item.psk.trim() } : {}),
+    }))
+    .filter((item) => Boolean(item.username && item.password));
+
+  return JSON.stringify(
     {
       server: form.host.trim(),
       username: form.l2tpUsername.trim(),
       password: form.l2tpPassword.trim(),
       psk: form.l2tpPsk.trim(),
+      ...(extraAuths.length > 0 ? { auths: extraAuths } : {}),
     },
     null,
     2,
   );
+};
 
 const buildImportedPayload = (
   rawConfig: string,
@@ -740,10 +759,146 @@ export function AdminDashboard() {
     return `${tab}:${variant}`;
   }, [customProto, openVpnMode, sshMode, tab, variant]);
 
+  const [protocolFilter, setProtocolFilter] = useState<string>("all");
+  const [showBulkPasteAuth, setShowBulkPasteAuth] = useState(false);
+  const [bulkPasteText, setBulkPasteText] = useState("");
+
+  const addL2tpAuthItem = useCallback(() => {
+    setForm((prev) => ({
+      ...prev,
+      l2tpAuths: [
+        ...prev.l2tpAuths,
+        {
+          id: `auth-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          username: "",
+          password: "",
+          psk: "",
+        },
+      ],
+    }));
+  }, []);
+
+  const updateL2tpAuthItem = useCallback(
+    (id: string, field: "username" | "password" | "psk", value: string) => {
+      setForm((prev) => ({
+        ...prev,
+        l2tpAuths: prev.l2tpAuths.map((item) =>
+          item.id === id ? { ...item, [field]: value } : item
+        ),
+      }));
+    },
+    []
+  );
+
+  const removeL2tpAuthItem = useCallback((id: string) => {
+    setForm((prev) => ({
+      ...prev,
+      l2tpAuths: prev.l2tpAuths.filter((item) => item.id !== id),
+    }));
+  }, []);
+
+  const handleBulkPasteAuth = useCallback(() => {
+    if (!bulkPasteText.trim()) return;
+    const lines = bulkPasteText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const newItems: L2tpAuthItem[] = [];
+
+    for (const line of lines) {
+      let parts: string[] = [];
+      if (line.includes(":")) parts = line.split(":");
+      else if (line.includes(",")) parts = line.split(",");
+      else parts = line.split(/\s+/);
+
+      const u = parts[0]?.trim();
+      const p = parts[1]?.trim();
+      const k = parts[2]?.trim() || "";
+
+      if (u && p) {
+        newItems.push({
+          id: `auth-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          username: u,
+          password: p,
+          psk: k,
+        });
+      }
+    }
+
+    if (newItems.length > 0) {
+      setForm((prev) => ({
+        ...prev,
+        l2tpAuths: [...prev.l2tpAuths, ...newItems],
+      }));
+      setBulkPasteText("");
+      setShowBulkPasteAuth(false);
+    }
+  }, [bulkPasteText]);
+
+  const protocolFilterTabs = useMemo(() => {
+    let l2tp = 0;
+    let v2ray = 0;
+    let openvpn = 0;
+    let wireguard = 0;
+    let ssh = 0;
+    let http = 0;
+
+    for (const s of servers) {
+      const p = s.protocol.toLowerCase();
+      if (p.startsWith("l2tp")) l2tp++;
+      else if (
+        p.startsWith("v2ray") ||
+        p.startsWith("vless") ||
+        p.startsWith("vmess") ||
+        p.startsWith("trojan") ||
+        p.startsWith("ss:") ||
+        p.startsWith("hysteria") ||
+        p.startsWith("shadowsocks")
+      ) {
+        v2ray++;
+      } else if (p.startsWith("openvpn")) openvpn++;
+      else if (p.startsWith("wireguard") || p === "wg") wireguard++;
+      else if (p.startsWith("ssh")) ssh++;
+      else if (p === "http") http++;
+    }
+
+    return [
+      { id: "all", label: "All", count: servers.length },
+      { id: "l2tp", label: "L2TP", count: l2tp },
+      { id: "v2ray", label: "V2Ray", count: v2ray },
+      { id: "openvpn", label: "OpenVPN", count: openvpn },
+      { id: "wireguard", label: "WireGuard", count: wireguard },
+      { id: "ssh", label: "SSH", count: ssh },
+      { id: "http", label: "HTTP", count: http },
+    ];
+  }, [servers]);
+
+  const filteredServers = useMemo(() => {
+    if (protocolFilter === "all") return servers;
+    return servers.filter((s) => {
+      const p = s.protocol.toLowerCase();
+      if (protocolFilter === "l2tp") return p.startsWith("l2tp");
+      if (protocolFilter === "v2ray") {
+        return (
+          p.startsWith("v2ray") ||
+          p.startsWith("vless") ||
+          p.startsWith("vmess") ||
+          p.startsWith("trojan") ||
+          p.startsWith("ss:") ||
+          p.startsWith("hysteria") ||
+          p.startsWith("shadowsocks")
+        );
+      }
+      if (protocolFilter === "openvpn") return p.startsWith("openvpn");
+      if (protocolFilter === "wireguard") return p.startsWith("wireguard") || p === "wg";
+      if (protocolFilter === "ssh") return p.startsWith("ssh");
+      if (protocolFilter === "http") return p === "http";
+      return true;
+    });
+  }, [servers, protocolFilter]);
+
   const PAGE_SIZE = 8;
+  const totalFilteredPages = Math.max(1, Math.ceil(filteredServers.length / PAGE_SIZE));
   const displayedServers = useMemo(
-    () => servers.slice(serversPage * PAGE_SIZE, (serversPage + 1) * PAGE_SIZE),
-    [servers, serversPage],
+    () => filteredServers.slice(serversPage * PAGE_SIZE, (serversPage + 1) * PAGE_SIZE),
+    [filteredServers, serversPage],
   );
 
   const credentialServers = useMemo(
@@ -1238,7 +1393,9 @@ export function AdminDashboard() {
     }
   }, [api, load, servers]);
 
-  const moveServer = useCallback(async (indexInList: number, direction: 'up' | 'down') => {
+  const moveServer = useCallback(async (serverId: string, direction: 'up' | 'down') => {
+    const indexInList = servers.findIndex((s) => s.id === serverId);
+    if (indexInList === -1) return;
     if (direction === 'up' && indexInList === 0) return;
     if (direction === 'down' && indexInList === servers.length - 1) return;
 
@@ -1320,6 +1477,7 @@ export function AdminDashboard() {
       let l2tpUsername = "";
       let l2tpPassword = "";
       let l2tpPsk = "";
+      let l2tpAuths: L2tpAuthItem[] = [];
       let wgLocalAddress = "10.0.0.2/32";
       let wgPrivateKey = "";
       let wgPeerPublicKey = "";
@@ -1349,6 +1507,14 @@ export function AdminDashboard() {
           l2tpUsername = parsed.username || "";
           l2tpPassword = parsed.password || "";
           l2tpPsk = parsed.psk || "";
+          if (Array.isArray(parsed.auths)) {
+            l2tpAuths = parsed.auths.map((item: any, idx: number) => ({
+              id: `auth-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 7)}`,
+              username: String(item.username || ""),
+              password: String(item.password || ""),
+              psk: String(item.psk || ""),
+            }));
+          }
         } catch {
           // ignore
         }
@@ -1449,6 +1615,7 @@ export function AdminDashboard() {
         l2tpUsername,
         l2tpPassword,
         l2tpPsk,
+        l2tpAuths,
         openVpnUsername,
         openVpnPassword,
         wgLocalAddress,
@@ -2173,11 +2340,159 @@ export function AdminDashboard() {
 
                 {tab === "l2tp" ? (
                   <div className="mt-6 space-y-4">
-                    <div className="grid gap-4 md:grid-cols-2">
-                      <Field label="Server host / IP" value={form.host} onChange={(value) => set("host", value)} placeholder="vpn.example.com" />
-                      <Field label="IPsec Pre-Shared Key (PSK)" value={form.l2tpPsk} onChange={(value) => set("l2tpPsk", value)} placeholder="IPsec PSK" />
-                      <Field label="Username" value={form.l2tpUsername} onChange={(value) => set("l2tpUsername", value)} placeholder="L2TP Username" />
-                      <Field label="Password" value={form.l2tpPassword} onChange={(value) => set("l2tpPassword", value)} placeholder="L2TP Password" />
+                    <div className="rounded-2xl border border-white/6 bg-white/2 p-4">
+                      <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
+                        Primary / Default Credentials
+                      </p>
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <Field
+                          label="Server host / IP"
+                          value={form.host}
+                          onChange={(value) => set("host", value)}
+                          placeholder="vpn.example.com"
+                        />
+                        <Field
+                          label="Default IPsec PSK"
+                          value={form.l2tpPsk}
+                          onChange={(value) => set("l2tpPsk", value)}
+                          placeholder="IPsec PSK"
+                        />
+                        <Field
+                          label="Default Username"
+                          value={form.l2tpUsername}
+                          onChange={(value) => set("l2tpUsername", value)}
+                          placeholder="L2TP Username"
+                        />
+                        <Field
+                          label="Default Password"
+                          value={form.l2tpPassword}
+                          onChange={(value) => set("l2tpPassword", value)}
+                          placeholder="L2TP Password"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-white/6 bg-white/2 p-4">
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <p className="text-sm font-semibold text-zinc-100">Multi-Auth Accounts Pool</p>
+                            <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-emerald-300">
+                              {form.l2tpAuths.length} extra {form.l2tpAuths.length === 1 ? "account" : "accounts"}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-xs text-zinc-400">
+                            Whenever a client fetches or refreshes servers, the backend randomly assigns one account from this pool.
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setShowBulkPasteAuth((prev) => !prev)}
+                            className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs font-medium text-zinc-300 transition hover:bg-white/10"
+                          >
+                            {showBulkPasteAuth ? "Hide Bulk" : "Bulk Paste"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={addL2tpAuthItem}
+                            className="rounded-lg bg-emerald-600/80 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-emerald-500"
+                          >
+                            + Add Account
+                          </button>
+                        </div>
+                      </div>
+
+                      {showBulkPasteAuth ? (
+                        <div className="mt-3 rounded-xl border border-emerald-500/20 bg-emerald-950/20 p-3">
+                          <p className="text-xs font-medium text-emerald-300">
+                            Paste accounts (one per line): <span className="font-mono text-zinc-400">username:password</span> or <span className="font-mono text-zinc-400">username:password:psk</span>
+                          </p>
+                          <textarea
+                            rows={4}
+                            value={bulkPasteText}
+                            onChange={(e) => setBulkPasteText(e.target.value)}
+                            placeholder={"user1:pass1\nuser2:pass2\nuser3:pass3:customPsk"}
+                            className="mt-2 w-full rounded-lg border border-zinc-700 bg-zinc-900 p-2 font-mono text-xs text-zinc-200 placeholder-zinc-500 focus:border-emerald-500 focus:outline-none"
+                          />
+                          <div className="mt-2 flex justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setBulkPasteText("");
+                                setShowBulkPasteAuth(false);
+                              }}
+                              className="rounded-lg px-2.5 py-1 text-xs text-zinc-400 hover:text-zinc-200"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleBulkPasteAuth}
+                              disabled={!bulkPasteText.trim()}
+                              className="rounded-lg bg-emerald-600 px-3 py-1 text-xs font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-40"
+                            >
+                              Import Accounts
+                            </button>
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {form.l2tpAuths.length > 0 ? (
+                        <div className="mt-4 space-y-2.5">
+                          {form.l2tpAuths.map((authItem, idx) => (
+                            <div
+                              key={authItem.id}
+                              className="flex flex-col gap-2 rounded-xl border border-white/5 bg-zinc-900/60 p-3 sm:flex-row sm:items-center"
+                            >
+                              <span className="w-7 text-xs font-bold text-zinc-500 sm:text-center">#{idx + 1}</span>
+                              <div className="flex-1">
+                                <input
+                                  type="text"
+                                  value={authItem.username}
+                                  onChange={(e) => updateL2tpAuthItem(authItem.id, "username", e.target.value)}
+                                  placeholder="Username"
+                                  className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-xs text-zinc-200 placeholder-zinc-600 focus:border-cyan-500 focus:outline-none"
+                                />
+                              </div>
+                              <div className="flex-1">
+                                <input
+                                  type="text"
+                                  value={authItem.password}
+                                  onChange={(e) => updateL2tpAuthItem(authItem.id, "password", e.target.value)}
+                                  placeholder="Password"
+                                  className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-xs text-zinc-200 placeholder-zinc-600 focus:border-cyan-500 focus:outline-none"
+                                />
+                              </div>
+                              <div className="flex-1">
+                                <input
+                                  type="text"
+                                  value={authItem.psk}
+                                  onChange={(e) => updateL2tpAuthItem(authItem.id, "psk", e.target.value)}
+                                  placeholder="PSK (defaults to main PSK)"
+                                  className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-xs text-zinc-200 placeholder-zinc-600 focus:border-cyan-500 focus:outline-none"
+                                />
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => removeL2tpAuthItem(authItem.id)}
+                                className="rounded-lg p-1.5 text-zinc-500 transition hover:bg-rose-500/10 hover:text-rose-400"
+                                title="Remove account"
+                                aria-label="Remove account"
+                              >
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                                </svg>
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="mt-3 text-center text-xs text-zinc-600">
+                          No extra accounts added yet. Only the default credentials above will be used.
+                        </p>
+                      )}
                     </div>
                   </div>
                 ) : null}
@@ -2348,6 +2663,39 @@ or
                 </div>
               </div>
 
+              {/* Protocol Filter Tabs */}
+              <div className="flex flex-wrap items-center gap-1.5 rounded-2xl border border-white/6 bg-white/2 p-1.5">
+                {protocolFilterTabs.map((f) => {
+                  const isActive = protocolFilter === f.id;
+                  return (
+                    <button
+                      key={f.id}
+                      type="button"
+                      onClick={() => {
+                        setProtocolFilter(f.id);
+                        setServersPage(0);
+                      }}
+                      className={`flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium transition ${
+                        isActive
+                          ? "bg-cyan-400 text-cyan-950 font-semibold shadow-sm"
+                          : "text-zinc-400 hover:bg-white/4 hover:text-zinc-200"
+                      }`}
+                    >
+                      <span>{f.label}</span>
+                      <span
+                        className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${
+                          isActive
+                            ? "bg-cyan-950/20 text-cyan-900"
+                            : "bg-white/6 text-zinc-500"
+                        }`}
+                      >
+                        {f.count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
               {credentialServers.length > 0 ? (
                 <div className="mb-4 rounded-2xl border border-white/6 bg-white/3 px-5 py-4">
                   {/* Header row: checkbox + button */}
@@ -2404,9 +2752,11 @@ or
               ) : null}
 
               <div className="grid gap-2">
-                {displayedServers.map((server, i) => {
-                  const absoluteIndex = serversPage * PAGE_SIZE + i;
+                {displayedServers.map((server) => {
                   const supportsCredentials = protocolSupportsCredentials(server.protocol);
+                  const serverIndexInAll = servers.findIndex((s) => s.id === server.id);
+                  const isFirst = serverIndexInAll <= 0;
+                  const isLast = serverIndexInAll === -1 || serverIndexInAll >= servers.length - 1;
                   const protoBadgeColor = (() => {
                     const p = server.protocol.toLowerCase();
                     if (p.startsWith("v2ray") || p.startsWith("vless") || p.startsWith("vmess") || p.startsWith("trojan") || p.startsWith("ss:") || p.startsWith("hysteria")) return "bg-cyan-500/15 text-cyan-300";
@@ -2438,6 +2788,11 @@ or
                             <span className={`rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${protoBadgeColor}`}>
                               {server.protocol.toUpperCase()}
                             </span>
+                            {server.accountCount && server.accountCount > 1 ? (
+                              <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[9px] font-semibold text-emerald-300 uppercase tracking-wide">
+                                {server.accountCount} AUTHS
+                              </span>
+                            ) : null}
                             <span className={`rounded-full px-2 py-0.5 text-[9px] uppercase tracking-[0.16em] ${server.isEnabled ? "bg-emerald-500/12 text-emerald-400" : "bg-zinc-800 text-zinc-500"}`}>
                               {server.isEnabled ? "Live" : "Off"}
                             </span>
@@ -2450,17 +2805,19 @@ or
                       <div className="flex flex-wrap gap-1.5 md:flex-nowrap">
                         <button
                           type="button"
-                          onClick={() => void moveServer(absoluteIndex, 'up')}
-                          disabled={absoluteIndex === 0 || busy}
+                          onClick={() => void moveServer(server.id, 'up')}
+                          disabled={isFirst || busy}
                           className="rounded-lg border border-white/8 px-2.5 py-1.5 text-xs text-zinc-500 transition hover:bg-white/6 hover:text-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed"
+                          title="Move up"
                         >
                           ↑
                         </button>
                         <button
                           type="button"
-                          onClick={() => void moveServer(absoluteIndex, 'down')}
-                          disabled={absoluteIndex === servers.length - 1 || busy}
+                          onClick={() => void moveServer(server.id, 'down')}
+                          disabled={isLast || busy}
                           className="rounded-lg border border-white/8 px-2.5 py-1.5 text-xs text-zinc-500 transition hover:bg-white/6 hover:text-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed"
+                          title="Move down"
                         >
                           ↓
                         </button>
@@ -2496,14 +2853,16 @@ or
                     </div>
                   </div>
                 )})}
-                {servers.length === 0 ? (
+                {filteredServers.length === 0 ? (
                   <div className="rounded-xl border border-dashed border-white/8 px-4 py-10 text-center text-sm text-zinc-600">
-                    No servers yet — use one of the builders above to create the first profile.
+                    {servers.length === 0
+                      ? "No servers yet — use one of the builders above to create the first profile."
+                      : `No servers found matching the "${protocolFilter.toUpperCase()}" filter.`}
                   </div>
                 ) : null}
               </div>
 
-              {stats.total > PAGE_SIZE ? (
+              {filteredServers.length > PAGE_SIZE ? (
                 <div className="mt-4 flex items-center justify-between gap-3">
                   <button
                     type="button"
@@ -2514,13 +2873,13 @@ or
                     Prev
                   </button>
                   <div className="text-xs text-zinc-500">
-                    Page {serversPage + 1} / {Math.max(1, Math.ceil(stats.total / PAGE_SIZE))}
+                    Page {serversPage + 1} / {totalFilteredPages}
                   </div>
                   <button
                     type="button"
                     className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-2 text-xs text-zinc-400 transition hover:border-zinc-700 hover:text-zinc-100 disabled:opacity-40 disabled:cursor-not-allowed"
-                    onClick={() => setServersPage((p) => Math.min(Math.max(0, Math.ceil(stats.total / PAGE_SIZE) - 1), p + 1))}
-                    disabled={serversPage >= Math.max(0, Math.ceil(stats.total / PAGE_SIZE) - 1)}
+                    onClick={() => setServersPage((p) => Math.min(totalFilteredPages - 1, p + 1))}
+                    disabled={serversPage >= totalFilteredPages - 1}
                   >
                     Next
                   </button>

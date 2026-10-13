@@ -27,4 +27,5 @@ export type ServerRecord = {
   sortOrder: number;
   createdAt: string;
   updatedAt: string;
+  accountCount?: number;
 };

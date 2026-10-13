@@ -37,7 +37,22 @@ export async function GET(request: NextRequest) {
   }
 
   const servers = await listServers(false);
-  return NextResponse.json({ servers });
+  const enriched = servers.map((server) => {
+    let accountCount: number | undefined = undefined;
+    if (server.protocol.toLowerCase().startsWith("l2tp")) {
+      try {
+        const raw = decryptConfig(server.encryptedConfig);
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed.auths) && parsed.auths.length > 0) {
+          accountCount = parsed.auths.length + (parsed.username ? 1 : 0);
+        } else if (parsed.username) {
+          accountCount = 1;
+        }
+      } catch {}
+    }
+    return { ...server, accountCount };
+  });
+  return NextResponse.json({ servers: enriched });
 }
 
 export async function POST(request: NextRequest) {
