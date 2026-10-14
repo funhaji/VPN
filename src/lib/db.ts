@@ -2,6 +2,7 @@ import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
 import { decryptConfig, encryptConfig } from "@/lib/crypto";
 import type { ProtocolOptions, ServerRecord } from "@/types/server";
 import { getDatabaseUrl } from "@/lib/env";
+import { getCountryMeta, getCountryNameFa, normalizeLocationCode } from "@/lib/countries";
 
 let schemaReady = false;
 let legacyMigrationChecked = false;
@@ -254,6 +255,61 @@ export const listServers = async (enabledOnly: boolean): Promise<ServerRecord[]>
   return rows.map((row) => mapServer(row));
 };
 
+export type LocationStatItem = {
+  code: string;
+  name: string;
+  nameFa: string;
+  flag: string;
+  count: number;
+};
+
+export type ActiveLocationsStats = {
+  totalServers: number;
+  enabledServers: number;
+  locationCount: number;
+  countries: LocationStatItem[];
+};
+
+export const getActiveLocationsStats = async (): Promise<ActiveLocationsStats> => {
+  await ensureSchema();
+  const query = getSql();
+  const rows = (await query`
+    SELECT country, is_enabled FROM vpn_servers
+  `) as Array<{ country: string; is_enabled: boolean }>;
+
+  const totalServers = rows.length;
+  const enabledServers = rows.filter((r) => r.is_enabled).length;
+
+  const countryCounts = new Map<string, number>();
+  for (const row of rows) {
+    if (!row.is_enabled || !row.country) continue;
+    const code = normalizeLocationCode(row.country);
+    if (code && code !== "UNKNOWN") {
+      countryCounts.set(code, (countryCounts.get(code) ?? 0) + 1);
+    }
+  }
+
+  const countries: LocationStatItem[] = Array.from(countryCounts.entries())
+    .map(([code, count]) => {
+      const meta = getCountryMeta(code);
+      return {
+        code,
+        name: meta.name,
+        nameFa: getCountryNameFa(code),
+        flag: meta.flag,
+        count,
+      };
+    })
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+
+  return {
+    totalServers,
+    enabledServers,
+    locationCount: countries.length,
+    countries,
+  };
+};
+
 export const createServer = async (input: {
   id: string;
   name: string;
@@ -414,6 +470,19 @@ export const setAllServersEnabled = async (isEnabled: boolean): Promise<number> 
     UPDATE vpn_servers
     SET is_enabled = ${isEnabled}, updated_at = NOW()
     WHERE is_enabled IS DISTINCT FROM ${isEnabled}
+    RETURNING id;
+  ` as Array<{ id: string }>;
+  return rows.length;
+};
+
+export const setServersEnabledByIds = async (ids: string[], isEnabled: boolean): Promise<number> => {
+  if (ids.length === 0) return 0;
+  await ensureSchema();
+  const query = getSql();
+  const rows = await query`
+    UPDATE vpn_servers
+    SET is_enabled = ${isEnabled}, updated_at = NOW()
+    WHERE id = ANY(${ids}::uuid[]) AND is_enabled IS DISTINCT FROM ${isEnabled}
     RETURNING id;
   ` as Array<{ id: string }>;
   return rows.length;

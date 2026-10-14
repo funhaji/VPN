@@ -6,6 +6,7 @@ import type { ServerRecord } from "@/types/server";
 import { detectProfileMetadata, splitImportedProfiles, parseWireGuardConf, type ParsedWireGuardProfile } from "@/lib/profile-import";
 import { protocolSupportsCredentials, unwrapOpenVpnProfileContent } from "@/lib/credentials";
 import { RoutingRulesPanel } from "@/components/routing-rules-panel";
+import { normalizeLocationCode } from "@/lib/countries";
 
 type TabId = "v2ray" | "ssh" | "openvpn" | "wireguard" | "custom" | "bulk" | "routing" | "http" | "l2tp";
 type SshMode = "direct" | "dnstt";
@@ -575,7 +576,7 @@ export function AdminDashboard() {
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [hasPendingReorder, setHasPendingReorder] = useState(false);
   const [servers, setServers] = useState<ServerRecord[]>([]);
-  const [stats, setStats] = useState({ total: 0, enabled: 0 });
+  const [stats, setStats] = useState({ total: 0, enabled: 0, locations: 0, totalLocations: 0 });
   const [pendingServerId, setPendingServerId] = useState<string | null>(null);
   const [editingServerId, setEditingServerId] = useState<string | null>(null);
   const [serversPage, setServersPage] = useState(0);
@@ -629,9 +630,22 @@ export function AdminDashboard() {
       const data = await api<{ servers: ServerRecord[] }>("/api/admin/servers");
       setServers(data.servers);
       setServersPage((p) => Math.min(p, Math.max(0, Math.ceil(data.servers.length / PAGE_SIZE) - 1)));
+      const enabledServers = data.servers.filter((server) => server.isEnabled);
+      const enabledLocations = new Set(
+        enabledServers
+          .map((s) => normalizeLocationCode(s.country))
+          .filter((code) => code && code !== "UNKNOWN")
+      ).size;
+      const totalLocations = new Set(
+        data.servers
+          .map((s) => normalizeLocationCode(s.country))
+          .filter((code) => code && code !== "UNKNOWN")
+      ).size;
       setStats({
         total: data.servers.length,
-        enabled: data.servers.filter((server) => server.isEnabled).length,
+        enabled: enabledServers.length,
+        locations: enabledLocations,
+        totalLocations,
       });
     } catch (error) {
       setMsg({ ok: false, text: error instanceof Error ? error.message : "Load failed" });
@@ -910,6 +924,16 @@ export function AdminDashboard() {
     [filteredServers],
   );
 
+  const filteredLocationsCount = useMemo(
+    () =>
+      new Set(
+        filteredServers
+          .map((s) => normalizeLocationCode(s.country))
+          .filter((code) => code && code !== "UNKNOWN")
+      ).size,
+    [filteredServers],
+  );
+
   const selectedFilteredCredentialCount = useMemo(
     () => filteredCredentialServers.filter((server) => selectedServerIds.has(server.id)).length,
     [filteredCredentialServers, selectedServerIds],
@@ -932,6 +956,22 @@ export function AdminDashboard() {
     });
   }, []);
 
+  const selectedFilteredCount = useMemo(
+    () => filteredServers.filter((server) => selectedServerIds.has(server.id)).length,
+    [filteredServers, selectedServerIds],
+  );
+
+  const toggleAllFilteredServers = useCallback((checked: boolean) => {
+    setSelectedServerIds((current) => {
+      const next = new Set(current);
+      for (const server of filteredServers) {
+        if (checked) next.add(server.id);
+        else next.delete(server.id);
+      }
+      return next;
+    });
+  }, [filteredServers]);
+
   const toggleAllFilteredCredentialServers = useCallback((checked: boolean) => {
     setSelectedServerIds((current) => {
       const next = new Set(current);
@@ -942,6 +982,37 @@ export function AdminDashboard() {
       return next;
     });
   }, [filteredCredentialServers]);
+
+  const bulkToggleSelectedEnabled = useCallback(async (enable: boolean) => {
+    const ids = filteredServers
+      .filter((server) => selectedServerIds.has(server.id))
+      .map((server) => server.id);
+    if (ids.length === 0) {
+      setMsg({ ok: false, text: "Select at least one server" });
+      return;
+    }
+
+    setBusy(true);
+    setMsg(null);
+    try {
+      const res = await api<{ changed: number }>("/api/admin/servers", {
+        method: "PATCH",
+        body: JSON.stringify({
+          action: enable ? "enable-selected" : "disable-selected",
+          ids,
+        }),
+      });
+      setMsg({
+        ok: true,
+        text: `${enable ? "Enabled" : "Disabled"} ${res.changed} servers`,
+      });
+      await load();
+    } catch (error) {
+      setMsg({ ok: false, text: error instanceof Error ? error.message : "Failed to update servers" });
+    } finally {
+      setBusy(false);
+    }
+  }, [api, filteredServers, load, selectedServerIds]);
 
   const bulkAddExtraAuths = useCallback(
     async (mode: "append" | "replace") => {
@@ -1768,17 +1839,28 @@ export function AdminDashboard() {
 
         {/* Stats + actions */}
         <div className="border-t border-white/5 px-3 py-3 space-y-2">
-          {/* Server count */}
-          <div className="rounded-xl border border-white/6 bg-white/3 p-3">
-            <div className="flex items-center justify-between">
-              <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Live servers</p>
-              <span className="text-xs text-zinc-400">{stats.enabled}/{stats.total}</span>
+          {/* Server & Location stats */}
+          <div className="rounded-xl border border-white/6 bg-white/3 p-3 space-y-2.5">
+            <div>
+              <div className="flex items-center justify-between">
+                <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Live servers</p>
+                <span className="text-xs font-mono text-zinc-400">{stats.enabled}/{stats.total}</span>
+              </div>
+              <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-zinc-800">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-cyan-400 transition-all"
+                  style={{ width: stats.total > 0 ? `${(stats.enabled / stats.total) * 100}%` : "0%" }}
+                />
+              </div>
             </div>
-            <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-zinc-800">
-              <div
-                className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-cyan-400 transition-all"
-                style={{ width: stats.total > 0 ? `${(stats.enabled / stats.total) * 100}%` : "0%" }}
-              />
+            <div className="pt-2 border-t border-white/5 flex items-center justify-between">
+              <span className="text-[10px] uppercase tracking-[0.18em] text-zinc-500 flex items-center gap-1.5">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                Locations
+              </span>
+              <span className="text-xs font-mono text-cyan-300 font-medium">
+                {stats.locations} active ({stats.totalLocations} total)
+              </span>
             </div>
           </div>
 
@@ -2271,7 +2353,7 @@ export function AdminDashboard() {
                             ↑
                           </div>
                           <p className="text-sm font-medium text-zinc-300">Drop .ovpn files here or click to browse</p>
-                          <p className="mt-1 text-xs text-zinc-600">Multiple files supported — filename becomes the config name</p>
+                          <p className="mt-1 text-xs text-zinc-600">Multiple files supported. Filename becomes the config name</p>
                         </div>
 
                         {ovpnFiles.length > 0 && (
@@ -2349,7 +2431,7 @@ export function AdminDashboard() {
                               })}
                             </div>
 
-                            {/* Bulk credentials panel — only shown when ≥1 file is selected */}
+                            {/* Bulk credentials panel: only shown when >=1 file is selected */}
                             {ovpnFiles.some((f) => f.selected) && (
                               <div className="rounded-2xl border border-cyan-400/20 bg-cyan-400/5 p-5 space-y-4">
                                 <div>
@@ -2411,7 +2493,7 @@ export function AdminDashboard() {
                           </div>
                         ) : form.rawConfig.trim() ? (
                           <div className="rounded-2xl border border-amber-700/30 bg-amber-500/8 px-4 py-3 text-sm text-amber-200">
-                            ⚠ No <span className="font-mono">remote</span> directive found — add a host in the field below or check the config.
+                            ⚠ No <span className="font-mono">remote</span> directive found. Add a host in the field below or check the config.
                             <div className="mt-2 grid gap-2 md:grid-cols-2">
                               <Field label="Remote host (override)" value={form.host} onChange={(value) => set("host", value)} placeholder="vpn.example.com" />
                               <Field label="Remote port (override)" value={form.port} onChange={(value) => set("port", value)} placeholder="1194" />
@@ -2723,7 +2805,15 @@ or
 
             <div className="rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-6">
               <div className="mb-4 flex items-center justify-between gap-3">
-                <h4 className="text-sm font-semibold text-zinc-100">Stored servers <span className="ml-1 text-zinc-600">({stats.total})</span></h4>
+                <h4 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
+                  <span>Stored servers</span>
+                  <span className="text-xs font-mono text-zinc-500">({stats.total})</span>
+                  <span className="text-zinc-600">•</span>
+                  <span className="text-xs text-cyan-400 font-medium">
+                    {stats.locations} active locations
+                    {protocolFilter !== "all" && filteredLocationsCount !== stats.locations ? ` (${filteredLocationsCount} in filter)` : ""}
+                  </span>
+                </h4>
                 <div className="flex flex-wrap items-center gap-2">
                   {hasPendingReorder && (
                     <button
@@ -2795,65 +2885,87 @@ or
                 })}
               </div>
 
-              {filteredCredentialServers.length > 0 ? (
+              {filteredServers.length > 0 ? (
                 <div className="mb-4 rounded-2xl border border-white/6 bg-white/3 px-5 py-4">
-                  {/* Header row: checkbox + button */}
-                  <div className="flex items-start justify-between gap-4">
+                  {/* Header row: select all checkbox + enable / disable / update actions */}
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <label className="flex cursor-pointer items-center gap-2.5">
                       <input
                         type="checkbox"
                         checked={
-                          filteredCredentialServers.length > 0 &&
-                          filteredCredentialServers.every((server) => selectedServerIds.has(server.id))
+                          filteredServers.length > 0 &&
+                          filteredServers.every((server) => selectedServerIds.has(server.id))
                         }
-                        onChange={(e) => toggleAllFilteredCredentialServers(e.target.checked)}
+                        onChange={(e) => toggleAllFilteredServers(e.target.checked)}
                         className="rounded border-zinc-700 bg-zinc-900 accent-cyan-400"
                       />
                       <div>
-                        <p className="text-sm font-medium text-zinc-200">Bulk credentials</p>
+                        <p className="text-sm font-medium text-zinc-200">Bulk actions</p>
                         <p className="text-xs text-zinc-500">
-                          {selectedFilteredCredentialCount} of {filteredCredentialServers.length} selected
-                          {protocolFilter === "l2tp"
-                            ? " · L2TP"
-                            : protocolFilter === "all"
-                            ? " · OpenVPN, HTTP, SSH, L2TP"
-                            : ` · ${protocolFilter.toUpperCase()}`}
+                          {selectedFilteredCount} of {filteredServers.length} selected
+                          {protocolFilter !== "all" ? ` · ${protocolFilter.toUpperCase()}` : ""}
                         </p>
                       </div>
                     </label>
                     <div className="flex flex-wrap items-center gap-2">
                       <button
                         type="button"
-                        onClick={() => void bulkUpdateCredentials()}
-                        disabled={busy || selectedFilteredCredentialCount === 0}
-                        className="flex-shrink-0 rounded-xl bg-cyan-400 px-4 py-2 text-xs font-semibold text-cyan-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-40"
+                        onClick={() => void bulkToggleSelectedEnabled(true)}
+                        disabled={busy || selectedFilteredCount === 0}
+                        className="flex-shrink-0 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-300 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-40"
                       >
-                        {busy ? "Updating..." : "Update selected"}
+                        Enable ({selectedFilteredCount})
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => void bulkToggleSelectedEnabled(false)}
+                        disabled={busy || selectedFilteredCount === 0}
+                        className="flex-shrink-0 rounded-xl border border-zinc-700 bg-zinc-800/80 px-3 py-1.5 text-xs font-semibold text-zinc-300 transition hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        Disable ({selectedFilteredCount})
+                      </button>
+                      {selectedFilteredCredentialCount > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => void bulkUpdateCredentials()}
+                          disabled={busy}
+                          className="flex-shrink-0 rounded-xl bg-cyan-400 px-3.5 py-1.5 text-xs font-semibold text-cyan-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {busy ? "Updating..." : `Update credentials (${selectedFilteredCredentialCount})`}
+                        </button>
+                      )}
                     </div>
                   </div>
-                  {/* Fields row - below the header */}
-                  <div className="mt-4 grid gap-3 sm:grid-cols-3">
-                    <Field
-                      label="Bulk username"
-                      value={bulkCredUsername}
-                      onChange={setBulkCredUsername}
-                      placeholder="Leave blank to keep"
-                    />
-                    <Field
-                      label="Bulk password"
-                      value={bulkCredPassword}
-                      onChange={setBulkCredPassword}
-                      placeholder="Leave blank to keep"
-                      type="password"
-                    />
-                    <Field
-                      label="L2TP PSK (L2TP only)"
-                      value={bulkCredPsk}
-                      onChange={setBulkCredPsk}
-                      placeholder="Leave blank to keep"
-                    />
-                  </div>
+
+                  {/* Fields row for credentials - only if credential servers selected */}
+                  {selectedFilteredCredentialCount > 0 ? (
+                    <div className="mt-4 border-t border-white/5 pt-3">
+                      <p className="mb-2 text-xs font-medium text-zinc-400">
+                        Set credentials for {selectedFilteredCredentialCount} selected credential-capable servers:
+                      </p>
+                      <div className="grid gap-3 sm:grid-cols-3">
+                        <Field
+                          label="Bulk username"
+                          value={bulkCredUsername}
+                          onChange={setBulkCredUsername}
+                          placeholder="Leave blank to keep"
+                        />
+                        <Field
+                          label="Bulk password"
+                          value={bulkCredPassword}
+                          onChange={setBulkCredPassword}
+                          placeholder="Leave blank to keep"
+                          type="password"
+                        />
+                        <Field
+                          label="L2TP PSK (L2TP only)"
+                          value={bulkCredPsk}
+                          onChange={setBulkCredPsk}
+                          placeholder="Leave blank to keep"
+                        />
+                      </div>
+                    </div>
+                  ) : null}
 
                   {/* Bulk Extra Accounts for Selected L2TP Servers */}
                   {selectedL2tpServerIds.length > 0 ? (
@@ -2942,17 +3054,13 @@ or
                   <div key={server.id} className="group rounded-xl border border-white/5 bg-white/3 px-4 py-3 transition hover:border-white/8 hover:bg-white/4">
                     <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                       <div className="flex min-w-0 items-start gap-3">
-                        {supportsCredentials ? (
-                          <input
-                            type="checkbox"
-                            checked={selectedServerIds.has(server.id)}
-                            onChange={(e) => toggleServerSelection(server.id, e.target.checked)}
-                            className="mt-0.5 rounded border-zinc-700 bg-zinc-900 accent-cyan-400"
-                            aria-label={`Select ${server.name}`}
-                          />
-                        ) : (
-                          <span className="mt-0.5 inline-block h-4 w-4" aria-hidden="true" />
-                        )}
+                        <input
+                          type="checkbox"
+                          checked={selectedServerIds.has(server.id)}
+                          onChange={(e) => toggleServerSelection(server.id, e.target.checked)}
+                          className="mt-0.5 rounded border-zinc-700 bg-zinc-900 accent-cyan-400 cursor-pointer"
+                          aria-label={`Select ${server.name}`}
+                        />
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-center gap-2">
                             <p className="truncate text-sm font-semibold text-zinc-100">{server.name}</p>
@@ -3027,7 +3135,7 @@ or
                 {filteredServers.length === 0 ? (
                   <div className="rounded-xl border border-dashed border-white/8 px-4 py-10 text-center text-sm text-zinc-600">
                     {servers.length === 0
-                      ? "No servers yet — use one of the builders above to create the first profile."
+                      ? "No servers yet. Use one of the builders above to create the first profile."
                       : `No servers found matching the "${protocolFilter.toUpperCase()}" filter.`}
                   </div>
                 ) : null}

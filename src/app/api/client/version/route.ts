@@ -49,11 +49,29 @@ export async function GET() {
     androidVersion = "1.1.2";
   }
 
+  let locations = 62;
+  let servers = 96;
+
+  try {
+    const { getActiveLocationsStats } = await import("@/lib/db");
+    const stats = await getActiveLocationsStats();
+    if (stats.locationCount > 0) {
+      locations = stats.locationCount;
+    }
+    if (stats.enabledServers > 0) {
+      servers = stats.enabledServers;
+    }
+  } catch {}
+
   const response = NextResponse.json({
     android: androidVersion,
     windows: windowsVersion,
     apkUrl: "https://github.com/funhaji/AstroVPN/releases/download/Android/app-universal-release.apk",
     arm64Url: "https://github.com/funhaji/AstroVPN/releases/download/Android/AstroVPN-arm64-v8a.apk",
+    locations,
+    locationCount: locations,
+    servers,
+    serverCount: servers,
     timestamp: Date.now(),
   });
 

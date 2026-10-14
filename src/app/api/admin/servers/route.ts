@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
-import { createServer, createServers, deleteAllServers, getServer, listServers, setAllServersEnabled, updateServer } from "@/lib/db";
+import { createServer, createServers, deleteAllServers, getServer, listServers, setAllServersEnabled, setServersEnabledByIds, updateServer } from "@/lib/db";
 import { encryptConfig, decryptConfig } from "@/lib/crypto";
 import { isAuthorized, limitRequest } from "@/lib/auth";
 import { applyStoredCredentials } from "@/lib/credentials";
@@ -270,6 +270,19 @@ export async function PATCH(request: NextRequest) {
 
       revalidateServerCatalog();
       return NextResponse.json({ ok: true, updated });
+    }
+
+    if (action === "enable-selected" || action === "disable-selected") {
+      if (!Array.isArray(payload.ids) || payload.ids.length === 0) {
+        return NextResponse.json({ error: "Select at least one server" }, { status: 400 });
+      }
+      const validIds = payload.ids.filter((id): id is string => typeof id === "string" && /^[0-9a-f-]{36}$/i.test(id));
+      if (validIds.length === 0) {
+        return NextResponse.json({ error: "No valid server IDs provided" }, { status: 400 });
+      }
+      const changed = await setServersEnabledByIds(validIds, action === "enable-selected");
+      revalidateServerCatalog();
+      return NextResponse.json({ ok: true, changed });
     }
 
     if (action !== "enable-all" && action !== "disable-all") {
