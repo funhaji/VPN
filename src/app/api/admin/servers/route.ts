@@ -7,6 +7,7 @@ import { isAuthorized, limitRequest } from "@/lib/auth";
 import { applyStoredCredentials } from "@/lib/credentials";
 import { detectProfileMetadata } from "@/lib/profile-import";
 import { serverInputSchema } from "@/lib/validation";
+import { normalizeLocationCode } from "@/lib/countries";
 
 export const dynamic = "force-dynamic";
 
@@ -83,13 +84,17 @@ export async function POST(request: NextRequest) {
       await createServers(
         validServers.map((data) => {
           const endpoint = normalizeEndpoint(data);
+          const rawCountry = (data.country && data.country !== "XX" && data.country !== "GLOBAL")
+            ? data.country
+            : data.name;
+          const safeCountry = normalizeLocationCode(rawCountry);
           return {
             id: randomUUID(),
             name: data.name,
             protocol: data.protocol,
             host: endpoint.host,
             port: endpoint.port,
-            country: data.country,
+            country: safeCountry,
             isEnabled: data.isEnabled,
             options: data.options,
             encryptedConfig: encryptConfig(data.rawConfig),
@@ -106,13 +111,18 @@ export async function POST(request: NextRequest) {
     }
     const encryptedConfig = encryptConfig(parsed.data.rawConfig);
     const endpoint = normalizeEndpoint(parsed.data);
+    const rawCountry = (parsed.data.country && parsed.data.country !== "XX" && parsed.data.country !== "GLOBAL")
+      ? parsed.data.country
+      : parsed.data.name;
+    const safeCountry = normalizeLocationCode(rawCountry);
+
     await createServer({
       id: randomUUID(),
       name: parsed.data.name,
       protocol: parsed.data.protocol,
       host: endpoint.host,
       port: endpoint.port,
-      country: parsed.data.country,
+      country: safeCountry,
       isEnabled: parsed.data.isEnabled,
       options: parsed.data.options,
       encryptedConfig,

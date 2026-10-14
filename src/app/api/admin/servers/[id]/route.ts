@@ -5,6 +5,7 @@ import { isAuthorized, limitRequest } from "@/lib/auth";
 
 import { decryptConfig, encryptConfig } from "@/lib/crypto";
 import { updateServerSchema } from "@/lib/validation";
+import { normalizeLocationCode } from "@/lib/countries";
 
 export const dynamic = "force-dynamic";
 
@@ -67,12 +68,16 @@ export async function PATCH(
     }
 
     const data = parsed.data;
+    const safeCountry = data.country !== undefined
+      ? normalizeLocationCode((data.country && data.country !== "XX" && data.country !== "GLOBAL") ? data.country : data.name)
+      : undefined;
+
     const updateInput: Parameters<typeof updateServer>[1] = {
       name: data.name,
       protocol: data.protocol,
       host: data.host,
       port: data.port,
-      country: data.country,
+      country: safeCountry,
       isEnabled: data.isEnabled,
       options: data.options,
     };

@@ -1,3 +1,5 @@
+import { normalizeLocationCode } from "@/lib/countries";
+
 type JsonObject = Record<string, unknown>;
 
 export type ImportedProfileMetadata = {
@@ -82,8 +84,13 @@ const buildFallbackName = (protocol: string, host?: string, label?: string): str
   label || (host ? `${prettifyProtocol(protocol)} ${host}` : `${prettifyProtocol(protocol)} profile`);
 
 const buildCountryLabel = (name: string, host?: string): string => {
-  const preferred = name.trim() || host?.trim() || "Imported";
-  return preferred.length >= 2 ? preferred : "Imported";
+  const preferred = name.trim() || host?.trim() || "";
+  if (!preferred) return "GLOBAL";
+  const normalized = normalizeLocationCode(preferred);
+  if (normalized && normalized !== "UNKNOWN" && normalized !== "XX") {
+    return normalized;
+  }
+  return "GLOBAL";
 };
 
 const normalizeUriScheme = (raw: string): string => raw.replace(/^hy2:\/\//i, "hysteria2://");

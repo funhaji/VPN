@@ -6,7 +6,7 @@ import type { ServerRecord } from "@/types/server";
 import { detectProfileMetadata, splitImportedProfiles, parseWireGuardConf, type ParsedWireGuardProfile } from "@/lib/profile-import";
 import { protocolSupportsCredentials, unwrapOpenVpnProfileContent } from "@/lib/credentials";
 import { RoutingRulesPanel } from "@/components/routing-rules-panel";
-import { normalizeLocationCode } from "@/lib/countries";
+import { COUNTRIES, flagFromCountryCode, getCountryMeta, normalizeLocationCode } from "@/lib/countries";
 
 type TabId = "v2ray" | "ssh" | "openvpn" | "wireguard" | "custom" | "bulk" | "routing" | "http" | "l2tp";
 type SshMode = "direct" | "dnstt";
@@ -142,41 +142,11 @@ const PROTOCOLS: Array<{
   { id: "routing", label: "Routing Rules", badge: "Iran Direct", support: "Geo IP bypass" },
 ];
 
-const ISO_REGION_CODES = [
-  "AD", "AE", "AF", "AG", "AI", "AL", "AM", "AO", "AQ", "AR", "AS", "AT", "AU", "AW", "AX",
-  "AZ", "BA", "BB", "BD", "BE", "BF", "BG", "BH", "BI", "BJ", "BL", "BM", "BN", "BO", "BQ",
-  "BR", "BS", "BT", "BV", "BW", "BY", "BZ", "CA", "CC", "CD", "CF", "CG", "CH", "CI", "CK",
-  "CL", "CM", "CN", "CO", "CR", "CU", "CV", "CW", "CX", "CY", "CZ", "DE", "DJ", "DK", "DM",
-  "DO", "DZ", "EC", "EE", "EG", "EH", "ER", "ES", "ET", "FI", "FJ", "FK", "FM", "FO", "FR",
-  "GA", "GB", "GD", "GE", "GF", "GG", "GH", "GI", "GL", "GM", "GN", "GP", "GQ", "GR", "GS",
-  "GT", "GU", "GW", "GY", "HK", "HM", "HN", "HR", "HT", "HU", "ID", "IE", "IL", "IM", "IN",
-  "IO", "IQ", "IR", "IS", "IT", "JE", "JM", "JO", "JP", "KE", "KG", "KH", "KI", "KM", "KN",
-  "KP", "KR", "KW", "KY", "KZ", "LA", "LB", "LC", "LI", "LK", "LR", "LS", "LT", "LU", "LV",
-  "LY", "MA", "MC", "MD", "ME", "MF", "MG", "MH", "MK", "ML", "MM", "MN", "MO", "MP", "MQ",
-  "MR", "MS", "MT", "MU", "MV", "MW", "MX", "MY", "MZ", "NA", "NC", "NE", "NF", "NG", "NI",
-  "NL", "NO", "NP", "NR", "NU", "NZ", "OM", "PA", "PE", "PF", "PG", "PH", "PK", "PL", "PM",
-  "PN", "PR", "PS", "PT", "PW", "PY", "QA", "RE", "RO", "RS", "RU", "RW", "SA", "SB", "SC",
-  "SD", "SE", "SG", "SH", "SI", "SJ", "SK", "SL", "SM", "SN", "SO", "SR", "SS", "ST", "SV",
-  "SX", "SY", "SZ", "TC", "TD", "TF", "TG", "TH", "TJ", "TK", "TL", "TM", "TN", "TO", "TR",
-  "TT", "TV", "TW", "TZ", "UA", "UG", "UM", "US", "UY", "UZ", "VA", "VC", "VE", "VG", "VI",
-  "VN", "VU", "WF", "WS", "YE", "YT", "ZA", "ZM", "ZW",
-] as const;
-
-const countryDisplayNames = new Intl.DisplayNames(["en"], { type: "region" });
-
-const flagFromCountryCode = (code: string): string =>
-  code
-    .toUpperCase()
-    .replace(/[A-Z]/g, (letter) => String.fromCodePoint(127397 + letter.charCodeAt(0)));
-
-const COUNTRIES = ISO_REGION_CODES.map((code) => ({
-  code,
-  flag: flagFromCountryCode(code),
-  name: countryDisplayNames.of(code) ?? code,
-})).sort((a, b) => a.name.localeCompare(b.name));
-
 const stripLeadingCountryFlag = (value: string): string =>
-  value.replace(/^(?:[\u{1F1E6}-\u{1F1FF}]{2}|[\p{Emoji_Presentation}\p{Extended_Pictographic}])\s*/u, "");
+  value
+    .replace(/^(?:[\u{1F1E6}-\u{1F1FF}]{2}|[\p{Emoji_Presentation}\p{Extended_Pictographic}])\s*/u, "")
+    .replace(/^[-–—:\s]+/, "")
+    .trim();
 
 const parseNumber = (value: string): number | undefined => {
   const parsed = Number(value.trim());
@@ -369,8 +339,12 @@ const buildImportedPayload = (
       : explicitName
     : detected.name;
   const safeName = rawName.trim() || `Imported profile #${index + 1}`;
-  const rawCountry = explicitCountry || detected.country || detected.host || safeName;
-  const safeCountry = rawCountry.trim() || "Imported";
+  const rawCountry = (explicitCountry && explicitCountry !== "XX" && explicitCountry !== "GLOBAL")
+    ? explicitCountry
+    : (detected.country && detected.country !== "XX" && detected.country !== "GLOBAL")
+      ? detected.country
+      : safeName;
+  const safeCountry = normalizeLocationCode(rawCountry);
 
   return {
     name: safeName,
@@ -444,7 +418,36 @@ function CountrySelector(props: {
   const [query, setQuery] = useState("");
   const [isOpen, setIsOpen] = useState(false);
   const listId = useId();
-  const selectedCountry = COUNTRIES.find((country) => country.code === props.country);
+
+  // Resolve effective country code:
+  // 1. Try props.country normalized (if valid and not "XX" or "GLOBAL")
+  // 2. Fall back to extracting country code from props.name (which may start with a flag emoji or country name)
+  const effectiveCode = useMemo(() => {
+    const fromCountry = normalizeLocationCode(props.country);
+    if (fromCountry && fromCountry !== "XX" && fromCountry !== "GLOBAL") {
+      return fromCountry;
+    }
+    const fromName = normalizeLocationCode(props.name);
+    if (fromName && fromName !== "XX" && fromName !== "GLOBAL") {
+      return fromName;
+    }
+    return "";
+  }, [props.country, props.name]);
+
+  const selectedCountry = useMemo(
+    () => (effectiveCode ? COUNTRIES.find((country) => country.code === effectiveCode) : undefined),
+    [effectiveCode],
+  );
+
+  // Auto-sync props.country if effectiveCode was detected from name and country was missing/XX/raw
+  useEffect(() => {
+    if (effectiveCode && props.country !== effectiveCode) {
+      if (!props.country || props.country === "XX" || !/^[A-Z]{2}$/.test(props.country)) {
+        props.set("country", effectiveCode);
+      }
+    }
+  }, [effectiveCode, props.country, props.set]);
+
   const normalizedQuery = query.trim().toLowerCase();
   const filteredCountries = useMemo(
     () =>
@@ -471,7 +474,13 @@ function CountrySelector(props: {
       <span className="mb-1 block text-xs text-zinc-500">Country (adds flag to name)</span>
       <input
         type="text"
-        value={isOpen ? query : selectedCountry ? `${selectedCountry.flag} ${selectedCountry.name}` : props.country}
+        value={
+          isOpen
+            ? query
+            : selectedCountry
+              ? `${selectedCountry.flag} ${selectedCountry.name}`
+              : (props.country && props.country !== "XX" && props.country !== "GLOBAL" ? props.country : "")
+        }
         onFocus={() => {
           setIsOpen(true);
           setQuery("");
@@ -495,27 +504,30 @@ function CountrySelector(props: {
           className="absolute z-30 mt-2 max-h-64 w-full overflow-y-auto rounded-2xl border border-zinc-800 bg-zinc-950 p-1 shadow-2xl shadow-black/40"
         >
           {filteredCountries.length > 0 ? (
-            filteredCountries.map((country) => (
-              <button
-                key={country.code}
-                type="button"
-                role="option"
-                aria-selected={country.code === props.country}
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => chooseCountry(country)}
-                className={`flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition ${
-                  country.code === props.country
-                    ? "bg-cyan-400/12 text-cyan-100"
-                    : "text-zinc-200 hover:bg-white/6"
-                }`}
-              >
-                <span className="min-w-0 truncate">
-                  <span className="mr-2">{country.flag}</span>
-                  {country.name}
-                </span>
-                <span className="font-mono text-xs text-zinc-500">{country.code}</span>
-              </button>
-            ))
+            filteredCountries.map((country) => {
+              const isChosen = country.code === (selectedCountry?.code || props.country);
+              return (
+                <button
+                  key={country.code}
+                  type="button"
+                  role="option"
+                  aria-selected={isChosen}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => chooseCountry(country)}
+                  className={`flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition ${
+                    isChosen
+                      ? "bg-cyan-400/12 text-cyan-100"
+                      : "text-zinc-200 hover:bg-white/6"
+                  }`}
+                >
+                  <span className="min-w-0 truncate">
+                    <span className="mr-2">{country.flag}</span>
+                    {country.name}
+                  </span>
+                  <span className="font-mono text-xs text-zinc-500">{country.code}</span>
+                </button>
+              );
+            })
           ) : (
             <div className="px-3 py-4 text-sm text-zinc-500">No countries found</div>
           )}
@@ -1195,8 +1207,6 @@ export function AdminDashboard() {
           throw new Error("Select at least one WireGuard .conf file");
         }
         const selectedCountry = COUNTRIES.find((c) => c.code === form.country);
-        const countryFlag = selectedCountry ? selectedCountry.flag : "";
-        const countryCode = selectedCountry ? selectedCountry.code : (form.country.trim() || "XX");
 
         const payloads = selectedFiles.map((file) => {
           const parsed = file.parsed ?? parseWireGuardConf(file.content);
@@ -1208,8 +1218,17 @@ export function AdminDashboard() {
             ? form.name.trim()
             : (file.name.trim() || `WireGuard ${parsed.endpoint.host}`);
 
-          if (countryFlag && !chosenName.startsWith(countryFlag)) {
-            chosenName = `${countryFlag} ${stripLeadingCountryFlag(chosenName).trim()}`;
+          const rawDetectedCountry = normalizeLocationCode(form.country);
+          const countryCode = (selectedCountry?.code && selectedCountry.code !== "XX" && selectedCountry.code !== "GLOBAL")
+            ? selectedCountry.code
+            : (rawDetectedCountry && rawDetectedCountry !== "XX" && rawDetectedCountry !== "GLOBAL")
+              ? rawDetectedCountry
+              : normalizeLocationCode(chosenName) || normalizeLocationCode(file.name) || "GLOBAL";
+
+          const effectiveFlag = (selectedCountry ? selectedCountry.flag : "")
+            || (countryCode !== "GLOBAL" && countryCode !== "XX" ? flagFromCountryCode(countryCode) : "");
+          if (effectiveFlag && !chosenName.startsWith(effectiveFlag)) {
+            chosenName = `${effectiveFlag} ${stripLeadingCountryFlag(chosenName).trim()}`;
           }
 
           const safeName = chosenName.trim();
@@ -1242,8 +1261,6 @@ export function AdminDashboard() {
           throw new Error("Select at least one OpenVPN file");
         }
         const selectedCountry = COUNTRIES.find((c) => c.code === form.country);
-        const countryFlag = selectedCountry ? selectedCountry.flag : "";
-        const countryCode = selectedCountry ? selectedCountry.code : (form.country.trim() || "XX");
 
         const payloads = selectedFiles.map((file) => {
           const detected = parseOvpnRemote(file.content);
@@ -1264,8 +1281,17 @@ export function AdminDashboard() {
             ? form.name.trim()
             : (file.name.trim() || `OpenVPN ${detected?.host ?? "Config"}`);
 
-          if (countryFlag && !chosenName.startsWith(countryFlag)) {
-            chosenName = `${countryFlag} ${stripLeadingCountryFlag(chosenName).trim()}`;
+          const rawDetectedCountry = normalizeLocationCode(form.country);
+          const countryCode = (selectedCountry?.code && selectedCountry.code !== "XX" && selectedCountry.code !== "GLOBAL")
+            ? selectedCountry.code
+            : (rawDetectedCountry && rawDetectedCountry !== "XX" && rawDetectedCountry !== "GLOBAL")
+              ? rawDetectedCountry
+              : normalizeLocationCode(chosenName) || normalizeLocationCode(file.name) || "GLOBAL";
+
+          const effectiveFlag = (selectedCountry ? selectedCountry.flag : "")
+            || (countryCode !== "GLOBAL" && countryCode !== "XX" ? flagFromCountryCode(countryCode) : "");
+          if (effectiveFlag && !chosenName.startsWith(effectiveFlag)) {
+            chosenName = `${effectiveFlag} ${stripLeadingCountryFlag(chosenName).trim()}`;
           }
 
           const safeName = chosenName.trim();
@@ -1310,12 +1336,19 @@ export function AdminDashboard() {
 
       const detected = detectProfileMetadata(effectiveRawConfig.trim(), protocol);
       const selectedCountry = COUNTRIES.find((c) => c.code === form.country);
-      const countryFlag = selectedCountry ? selectedCountry.flag : "";
-      const countryCode = selectedCountry ? selectedCountry.code : (form.country.trim() || detected.country);
-
       let finalName = form.name.trim() || detected.name;
-      if (countryFlag && !finalName.startsWith(countryFlag)) {
-        finalName = `${countryFlag} ${stripLeadingCountryFlag(finalName).trim()}`;
+
+      const rawDetectedCountry = normalizeLocationCode(form.country);
+      const countryCode = (selectedCountry?.code && selectedCountry.code !== "XX" && selectedCountry.code !== "GLOBAL")
+        ? selectedCountry.code
+        : (rawDetectedCountry && rawDetectedCountry !== "XX" && rawDetectedCountry !== "GLOBAL")
+          ? rawDetectedCountry
+          : normalizeLocationCode(finalName) || normalizeLocationCode(detected.country) || "GLOBAL";
+
+      const effectiveFlag = (selectedCountry ? selectedCountry.flag : "")
+        || (countryCode !== "GLOBAL" && countryCode !== "XX" ? flagFromCountryCode(countryCode) : "");
+      if (effectiveFlag && !finalName.startsWith(effectiveFlag)) {
+        finalName = `${effectiveFlag} ${stripLeadingCountryFlag(finalName).trim()}`;
       }
 
       const payload: Record<string, unknown> = {
@@ -1393,10 +1426,18 @@ export function AdminDashboard() {
             String(item.protocol ?? `custom:${item.variant ?? "tcp"}`),
           );
 
+          const rawItemCountry = String(item.country ?? "").trim();
+          const resolvedCountry = (rawItemCountry && rawItemCountry !== "XX" && rawItemCountry !== "GLOBAL")
+            ? rawItemCountry
+            : (detected.country && detected.country !== "XX" && detected.country !== "GLOBAL")
+              ? detected.country
+              : String(item.name ?? "");
+          const countryCode = normalizeLocationCode(resolvedCountry);
+
           return {
             name: String(item.name ?? "").trim() || detected.name || `Imported profile #${index + 1}`,
             protocol: String(item.protocol ?? detected.protocol ?? `custom:${item.variant ?? "tcp"}`).toLowerCase(),
-            country: String(item.country ?? "").trim() || detected.country,
+            country: countryCode,
             rawConfig: detected.rawConfig,
             isEnabled: true,
             options: {
@@ -3076,9 +3117,21 @@ or
                               {server.isEnabled ? "Live" : "Off"}
                             </span>
                           </div>
-                          <p className="mt-0.5 text-xs text-zinc-500">
-                            {server.country ? `${server.country} · ` : ""}{server.host}:{server.port}
-                          </p>
+                          {(() => {
+                            const locCode = normalizeLocationCode(server.country || server.name);
+                            const meta = getCountryMeta(locCode);
+                            return (
+                              <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-zinc-400">
+                                <span>{meta.flag}</span>
+                                {meta.code !== "GLOBAL" ? (
+                                  <span className="font-medium text-zinc-300">
+                                    {meta.name} <span className="font-mono text-zinc-500">({meta.code})</span> ·
+                                  </span>
+                                ) : null}
+                                <span className="font-mono text-zinc-400">{server.host}:{server.port}</span>
+                              </p>
+                            );
+                          })()}
                         </div>
                       </div>
                       <div className="flex flex-wrap gap-1.5 md:flex-nowrap">

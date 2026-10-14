@@ -29,7 +29,7 @@ const countryDisplayNamesFa = new Intl.DisplayNames(["fa"], { type: "region" });
 
 export const flagFromCountryCode = (code: string): string => {
   const upper = code.trim().toUpperCase();
-  if (upper.length === 2 && /^[A-Z]{2}$/.test(upper)) {
+  if (upper.length === 2 && upper !== "XX" && (ISO_REGION_CODES as readonly string[]).includes(upper)) {
     return upper.replace(/[A-Z]/g, (letter) =>
       String.fromCodePoint(127397 + letter.charCodeAt(0))
     );
@@ -37,41 +37,51 @@ export const flagFromCountryCode = (code: string): string => {
   return "🌐";
 };
 
+export const extractFlagIsoCode = (text: string): string | null => {
+  const codePoints = Array.from(text);
+  for (let i = 0; i < codePoints.length - 1; i++) {
+    const cp0 = codePoints[i].codePointAt(0) ?? 0;
+    const cp1 = codePoints[i + 1].codePointAt(0) ?? 0;
+    if (cp0 >= 0x1f1e6 && cp0 <= 0x1f1ff && cp1 >= 0x1f1e6 && cp1 <= 0x1f1ff) {
+      const code = String.fromCharCode(cp0 - 127397) + String.fromCharCode(cp1 - 127397);
+      if ((ISO_REGION_CODES as readonly string[]).includes(code)) {
+        return code;
+      }
+    }
+  }
+  return null;
+};
+
 export const normalizeLocationCode = (raw: string | null | undefined): string => {
   if (!raw) return "GLOBAL";
   const trimmed = raw.trim();
-  if (!trimmed) return "GLOBAL";
+  if (!trimmed || trimmed === "XX" || trimmed === "GLOBAL") return "GLOBAL";
 
-  // Check if string begins with an emoji flag (two regional indicator symbols)
-  const codePoints = Array.from(trimmed);
-  if (codePoints.length >= 2) {
-    const cp0 = codePoints[0].codePointAt(0) ?? 0;
-    const cp1 = codePoints[1].codePointAt(0) ?? 0;
-    if (cp0 >= 0x1f1e6 && cp0 <= 0x1f1ff && cp1 >= 0x1f1e6 && cp1 <= 0x1f1ff) {
-      return String.fromCharCode(cp0 - 127397) + String.fromCharCode(cp1 - 127397);
-    }
+  // 1. Scan for any emoji flag pair anywhere near the start or throughout the string
+  const flagCode = extractFlagIsoCode(trimmed);
+  if (flagCode) {
+    return flagCode;
   }
 
-  // Check if it's already a 2-letter ISO code
-  if (/^[A-Za-z]{2}$/.test(trimmed)) {
-    return trimmed.toUpperCase();
+  // 2. Check if the string itself is a valid 2-letter ISO region code
+  const upper = trimmed.toUpperCase();
+  if (/^[A-Z]{2}$/.test(upper) && upper !== "XX" && (ISO_REGION_CODES as readonly string[]).includes(upper)) {
+    return upper;
   }
 
-  // Strip leading flag or symbols if any
+  // 3. Strip leading flag/symbols and trailing indexes
   const withoutLeadingFlag = trimmed.replace(
     /^(?:[\u{1F1E6}-\u{1F1FF}]{2}|[\p{Emoji_Presentation}\p{Extended_Pictographic}])\s*/u,
     ""
   ).trim();
-
-  // Strip trailing numbers / server indexes like " 1", " #2", etc.
   const cleaned = withoutLeadingFlag.replace(/\s*#?\d+$/, "").trim();
 
-  // Check if cleaned is a 2-letter code
-  if (/^[A-Za-z]{2}$/.test(cleaned)) {
-    return cleaned.toUpperCase();
+  const cleanedUpper = cleaned.toUpperCase();
+  if (/^[A-Z]{2}$/.test(cleanedUpper) && cleanedUpper !== "XX" && (ISO_REGION_CODES as readonly string[]).includes(cleanedUpper)) {
+    return cleanedUpper;
   }
 
-  // Check by matching against known region names
+  // 4. Match against known region display names (English)
   const lower = cleaned.toLowerCase();
   for (const code of ISO_REGION_CODES) {
     const name = countryDisplayNamesEn.of(code)?.toLowerCase();
@@ -80,7 +90,7 @@ export const normalizeLocationCode = (raw: string | null | undefined): string =>
     }
   }
 
-  return cleaned.toUpperCase() || "GLOBAL";
+  return "GLOBAL";
 };
 
 export const getCountryMeta = (codeOrRaw: string): CountryMeta => {
