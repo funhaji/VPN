@@ -39,9 +39,18 @@ export async function GET(
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
   
-  const decryptedConfig = decryptConfig(server.encryptedConfig);
+  let rawConfig = "";
+  try {
+    rawConfig = decryptConfig(server.encryptedConfig);
+  } catch {
+    try {
+      rawConfig = Buffer.from(server.encryptedConfig.cipherText, "base64").toString("utf8");
+    } catch {
+      rawConfig = server.encryptedConfig.cipherText ?? "";
+    }
+  }
 
-  return NextResponse.json({ server, rawConfig: decryptedConfig });
+  return NextResponse.json({ server, rawConfig });
 }
 
 export async function PATCH(

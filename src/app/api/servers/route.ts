@@ -440,7 +440,9 @@ const buildOutboundFromSsh = (
   rawConfig: string,
 ): JsonObject => {
   const parsed = parseJson(rawConfig);
-  if (isObject(parsed) && pickString(parsed.type)?.toLowerCase() === "ssh-profile") {
+  if (isObject(parsed)) {
+    const pType = pickString(parsed.type)?.toLowerCase();
+    if (pType === "ssh-profile" || pType === "ssh" || (!pType && (parsed.server || parsed.host))) {
     const server = pickString(parsed.server) ?? pickString(parsed.host) ?? "";
     const port = pickNumber(parsed.port) ?? pickNumber(parsed.server_port) ?? 22;
     const user = pickString(parsed.username) ?? pickString(parsed.user) ?? "root";
@@ -490,6 +492,7 @@ const buildOutboundFromSsh = (
     baseOutbound._ssh_profile = parsed;
     return baseOutbound;
   }
+}
 
   const url = new URL(rawConfig);
   return withOptional(
@@ -907,7 +910,7 @@ const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): JsonObjec
         outbound: { ...(parsedJson as JsonObject), tag: "proxy" },
       };
     }
-    if (parsedType && parsedType.toLowerCase() === "ssh-profile") {
+    if (parsedType && (parsedType.toLowerCase() === "ssh-profile" || parsedType.toLowerCase() === "ssh")) {
       return {
         engine: "sing-box",
         supported: true,

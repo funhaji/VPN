@@ -151,33 +151,47 @@ export const decryptConfig = (encrypted: EncryptedConfig): string => {
 
   // v2 - 16-byte salt, v2 AAD, 600k iterations
   if (encrypted.version === 2) {
+    try {
+      const decipher = createDecipheriv(
+        ALGORITHM,
+        deriveV2RecordKey(Buffer.from(encrypted.salt ?? "", "base64")),
+        Buffer.from(encrypted.iv, "base64"),
+      );
+      decipher.setAAD(V2_AAD);
+      decipher.setAuthTag(Buffer.from(encrypted.authTag, "base64"));
+      const decrypted = Buffer.concat([
+        decipher.update(Buffer.from(encrypted.cipherText, "base64")),
+        decipher.final(),
+      ]);
+      return decrypted.toString("utf8");
+    } catch {
+      const candidate = Buffer.from(encrypted.cipherText, "base64").toString("utf8");
+      if (looksLikePlaintextConfig(candidate)) return candidate;
+      if (looksLikePlaintextConfig(encrypted.cipherText)) return encrypted.cipherText;
+      throw new Error("Unable to decrypt server config");
+    }
+  }
+
+  // v3 (current) - 32-byte salt, v3 AAD, 900k iterations
+  try {
     const decipher = createDecipheriv(
       ALGORITHM,
-      deriveV2RecordKey(Buffer.from(encrypted.salt ?? "", "base64")),
+      deriveRecordKey(Buffer.from(encrypted.salt ?? "", "base64")),
       Buffer.from(encrypted.iv, "base64"),
     );
-    decipher.setAAD(V2_AAD);
+    decipher.setAAD(AAD);
     decipher.setAuthTag(Buffer.from(encrypted.authTag, "base64"));
     const decrypted = Buffer.concat([
       decipher.update(Buffer.from(encrypted.cipherText, "base64")),
       decipher.final(),
     ]);
     return decrypted.toString("utf8");
+  } catch {
+    const candidate = Buffer.from(encrypted.cipherText, "base64").toString("utf8");
+    if (looksLikePlaintextConfig(candidate)) return candidate;
+    if (looksLikePlaintextConfig(encrypted.cipherText)) return encrypted.cipherText;
+    throw new Error("Unable to decrypt server config");
   }
-
-  // v3 (current) - 32-byte salt, v3 AAD, 900k iterations
-  const decipher = createDecipheriv(
-    ALGORITHM,
-    deriveRecordKey(Buffer.from(encrypted.salt ?? "", "base64")),
-    Buffer.from(encrypted.iv, "base64"),
-  );
-  decipher.setAAD(AAD);
-  decipher.setAuthTag(Buffer.from(encrypted.authTag, "base64"));
-  const decrypted = Buffer.concat([
-    decipher.update(Buffer.from(encrypted.cipherText, "base64")),
-    decipher.final(),
-  ]);
-  return decrypted.toString("utf8");
 };
 
 export const safeEquals = (left: string, right: string): boolean => {

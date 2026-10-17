@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
-import { createServer, createServers, deleteAllServers, getServer, listServers, setAllServersEnabled, setServersEnabledByIds, updateServer } from "@/lib/db";
+import { createServer, createServers, deleteAllServers, deleteServersByIds, getServer, listServers, setAllServersEnabled, setServersEnabledByIds, updateServer } from "@/lib/db";
 import { encryptConfig, decryptConfig } from "@/lib/crypto";
 import { isAuthorized, limitRequest } from "@/lib/auth";
 import { applyStoredCredentials } from "@/lib/credentials";
@@ -316,6 +316,23 @@ export async function DELETE(request: NextRequest) {
   }
 
   try {
+    let payload: { ids?: unknown } | null = null;
+    try {
+      payload = (await request.json()) as { ids?: unknown };
+    } catch {
+      payload = null;
+    }
+
+    if (payload && Array.isArray(payload.ids) && payload.ids.length > 0) {
+      const validIds = payload.ids.filter((id): id is string => typeof id === "string" && /^[0-9a-f-]{36}$/i.test(id));
+      if (validIds.length === 0) {
+        return NextResponse.json({ error: "No valid server IDs provided" }, { status: 400 });
+      }
+      const deleted = await deleteServersByIds(validIds);
+      revalidateServerCatalog();
+      return NextResponse.json({ ok: true, deleted });
+    }
+
     const deleted = await deleteAllServers();
     revalidateServerCatalog();
     return NextResponse.json({ ok: true, deleted });

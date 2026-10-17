@@ -4,7 +4,7 @@ import { useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useSt
 import { useRouter } from "next/navigation";
 import type { ServerRecord } from "@/types/server";
 import { detectProfileMetadata, splitImportedProfiles, parseWireGuardConf, type ParsedWireGuardProfile } from "@/lib/profile-import";
-import { protocolSupportsCredentials, unwrapOpenVpnProfileContent } from "@/lib/credentials";
+import { protocolSupportsCredentials, unwrapOpenVpnProfileContent, readStoredCredentials } from "@/lib/credentials";
 import { RoutingRulesPanel } from "@/components/routing-rules-panel";
 import { COUNTRIES, flagFromCountryCode, getCountryMeta, normalizeLocationCode } from "@/lib/countries";
 
@@ -1026,6 +1026,45 @@ export function AdminDashboard() {
     }
   }, [api, filteredServers, load, selectedServerIds]);
 
+  const bulkDeleteSelected = useCallback(async () => {
+    const ids = filteredServers
+      .filter((server) => selectedServerIds.has(server.id))
+      .map((server) => server.id);
+    if (ids.length === 0) {
+      setMsg({ ok: false, text: "Select at least one server" });
+      return;
+    }
+
+    if (!window.confirm(`Delete ${ids.length} selected server${ids.length === 1 ? "" : "s"}? This cannot be undone.`)) {
+      return;
+    }
+
+    setBusy(true);
+    setMsg(null);
+    try {
+      const res = await api<{ deleted: number }>("/api/admin/servers", {
+        method: "DELETE",
+        body: JSON.stringify({ ids }),
+      });
+      setSelectedServerIds((current) => {
+        const next = new Set(current);
+        for (const id of ids) {
+          next.delete(id);
+        }
+        return next;
+      });
+      setMsg({
+        ok: true,
+        text: `Deleted ${res.deleted} servers`,
+      });
+      await load();
+    } catch (error) {
+      setMsg({ ok: false, text: error instanceof Error ? error.message : "Failed to delete servers" });
+    } finally {
+      setBusy(false);
+    }
+  }, [api, filteredServers, load, selectedServerIds]);
+
   const bulkAddExtraAuths = useCallback(
     async (mode: "append" | "replace") => {
       const lines = bulkExtraAuthText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
@@ -1499,6 +1538,48 @@ export function AdminDashboard() {
     }
   }, [api, load]);
 
+  const duplicateServer = useCallback(async (id: string) => {
+    setPendingServerId(id);
+    try {
+      const data = await api<{ server: ServerRecord; rawConfig: string }>(`/api/admin/servers/${id}`);
+      const s = data.server;
+      const baseName = (s.name || "Server").trim();
+      const copySuffix = " (Copy)";
+      const duplicateName = (baseName.length + copySuffix.length > 70)
+        ? `${baseName.slice(0, 70 - copySuffix.length).trim()}${copySuffix}`
+        : `${baseName}${copySuffix}`;
+
+      const payload: Record<string, unknown> = {
+        name: duplicateName,
+        protocol: s.protocol,
+        country: s.country || "GLOBAL",
+        rawConfig: data.rawConfig,
+        isEnabled: s.isEnabled,
+        options: {
+          mux: Boolean(s.options?.mux),
+          fragment: Boolean(s.options?.fragment),
+          sniffing: s.options?.sniffing ?? false,
+          allowInsecure: Boolean(s.options?.allowInsecure),
+          extra: s.options?.extra || {},
+        },
+        ...(s.host ? { host: s.host } : {}),
+        ...(s.port ? { port: Number(s.port) } : {}),
+      };
+
+      await api("/api/admin/servers", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+
+      setMsg({ ok: true, text: `Duplicated server as "${duplicateName}"` });
+      await load();
+    } catch (error) {
+      setMsg({ ok: false, text: error instanceof Error ? error.message : "Duplicate failed" });
+    } finally {
+      setPendingServerId(null);
+    }
+  }, [api, load]);
+
   const bulkServerAction = useCallback(async (action: "enable-all" | "disable-all" | "delete-all") => {
     if (action === "delete-all" && !window.confirm("Delete every stored server? This cannot be undone.")) {
       return;
@@ -1647,12 +1728,42 @@ export function AdminDashboard() {
       let newOpenVpnMode: OpenVpnMode = "udp";
       
       const proto = s.protocol.toLowerCase();
+      const trimmedRaw = (data.rawConfig || "").trim();
+
+      let isSsh =
+        proto.startsWith("ssh") ||
+        proto.includes("ssh") ||
+        trimmedRaw.toLowerCase().startsWith("ssh://");
+
+      if (!isSsh && (proto === "custom" || proto.startsWith("custom:"))) {
+        try {
+          const parsed = JSON.parse(trimmedRaw);
+          if (
+            parsed?.type === "ssh" ||
+            parsed?.type === "dnstt-ssh" ||
+            parsed?.type === "ssh-profile" ||
+            parsed?.protocol?.toLowerCase() === "ssh" ||
+            (Array.isArray(parsed?.outbounds) && parsed.outbounds.some((o: any) => o?.type === "ssh" || o?.protocol === "ssh"))
+          ) {
+            isSsh = true;
+          }
+        } catch {
+          if (
+            trimmedRaw.toLowerCase().includes("ssh server") ||
+            trimmedRaw.toLowerCase().includes("ssh host") ||
+            trimmedRaw.toLowerCase().includes("ssh-proxy-payload")
+          ) {
+            isSsh = true;
+          }
+        }
+      }
+
       if (proto.startsWith("v2ray:")) {
         newTab = "v2ray";
         newVariant = proto.replace("v2ray:", "");
-      } else if (proto.startsWith("ssh:")) {
+      } else if (isSsh) {
         newTab = "ssh";
-        newSshMode = proto.includes("dnstt") ? "dnstt" : "direct";
+        newSshMode = (proto.includes("dnstt") || trimmedRaw.includes('"dnstt-ssh"') || trimmedRaw.includes('"type": "dnstt-ssh"')) ? "dnstt" : "direct";
       } else if (proto.startsWith("wireguard") || proto === "wg") {
         newTab = "wireguard";
       } else if (proto.startsWith("openvpn:")) {
@@ -1686,6 +1797,21 @@ export function AdminDashboard() {
       let l2tpPassword = "";
       let l2tpPsk = "";
       let l2tpAuths: L2tpAuthItem[] = [];
+      let sshUser = "";
+      let sshPassword = "";
+      let sshPrivateKey = "";
+      let sshPrivateKeyPassphrase = "";
+      let sshHostKeys = "";
+      let sshClientVersion = "";
+      let sshResolver = "8.8.8.8:53";
+      let dnsttQuerySize = "1232";
+      let dnsttMtu = "1232";
+      let sshDomain = "";
+      let sshPublicKey = "";
+      let sshTunnelPort = "2222";
+      let sshLocalPort = "1080";
+      let sshHost = s.host;
+      let sshPort = String(s.port);
       let wgLocalAddress = "10.0.0.2/32";
       let wgPrivateKey = "";
       let wgPeerPublicKey = "";
@@ -1698,6 +1824,180 @@ export function AdminDashboard() {
       let wgHost = s.host;
       let wgPort = String(s.port);
       let rawConfig = data.rawConfig;
+
+      if (newTab === "ssh") {
+        const trimmed = (data.rawConfig || "").trim();
+
+        // 1. Try parsing JSON
+        try {
+          const parsed = JSON.parse(trimmed);
+          if (parsed && typeof parsed === "object") {
+            if (parsed.type === "dnstt-ssh" || parsed.tunnel) {
+              newSshMode = "dnstt";
+              setSshMode("dnstt");
+              if (parsed.ssh && typeof parsed.ssh === "object") {
+                sshUser = parsed.ssh.user || parsed.ssh.username || parsed.ssh.user_name || "";
+                sshPassword = parsed.ssh.password || parsed.ssh.pass || "";
+                if (parsed.ssh.host || parsed.ssh.server) sshHost = String(parsed.ssh.host || parsed.ssh.server);
+                if (parsed.ssh.port || parsed.ssh.server_port) sshPort = String(parsed.ssh.port || parsed.ssh.server_port);
+              }
+              if (parsed.tunnel && typeof parsed.tunnel === "object") {
+                if (parsed.tunnel.transport) {
+                  setSshResolverMode(parsed.tunnel.transport === "udp" ? "udp" : "doh");
+                }
+                sshResolver = parsed.tunnel.resolver || sshResolver;
+                sshDomain = parsed.tunnel.domain || "";
+                sshPublicKey = parsed.tunnel.public_key || parsed.tunnel.publicKey || "";
+                if (parsed.tunnel.local_port || parsed.tunnel.localPort) {
+                  sshLocalPort = String(parsed.tunnel.local_port || parsed.tunnel.localPort);
+                }
+                if (parsed.tunnel.tunnel_port || parsed.tunnel.tunnelPort) {
+                  sshTunnelPort = String(parsed.tunnel.tunnel_port || parsed.tunnel.tunnelPort);
+                }
+                if (parsed.tunnel.mtu) dnsttMtu = String(parsed.tunnel.mtu);
+                if (parsed.tunnel.query_size || parsed.tunnel.querySize) {
+                  dnsttQuerySize = String(parsed.tunnel.query_size || parsed.tunnel.querySize);
+                }
+              }
+            } else {
+              newSshMode = "direct";
+              setSshMode("direct");
+            }
+
+            // Target object can be root or outbounds[0] or nested ssh object
+            let target = parsed;
+            if (Array.isArray(parsed.outbounds)) {
+              const sshOut = parsed.outbounds.find((o: any) => o && (o.type === "ssh" || o.protocol === "ssh"));
+              if (sshOut) target = sshOut;
+            }
+
+            if (!sshUser) {
+              sshUser =
+                target.user ||
+                target.username ||
+                target.user_name ||
+                target.sshUser ||
+                (target.ssh && (target.ssh.user || target.ssh.username)) ||
+                (target.credentials && (target.credentials.user || target.credentials.username)) ||
+                (target.auth && (target.auth.user || target.auth.username)) ||
+                "";
+            }
+
+            if (!sshPassword) {
+              sshPassword =
+                target.password ||
+                target.pass ||
+                target.sshPassword ||
+                (target.ssh && (target.ssh.password || target.ssh.pass)) ||
+                (target.credentials && (target.credentials.password || target.credentials.pass)) ||
+                (target.auth && (target.auth.password || target.auth.pass)) ||
+                "";
+            }
+
+            if (!sshHost || sshHost === "embedded-config") {
+              if (target.server || target.host || target.address) {
+                sshHost = String(target.server || target.host || target.address);
+              }
+            }
+
+            if (!sshPort || sshPort === "22") {
+              const p = target.server_port || target.port;
+              if (p) sshPort = String(p);
+            }
+
+            if (!sshPrivateKey) {
+              sshPrivateKey = target.private_key || target.privateKey || "";
+            }
+            if (!sshPrivateKeyPassphrase) {
+              sshPrivateKeyPassphrase = target.private_key_passphrase || target.privateKeyPassphrase || "";
+            }
+            if (!sshHostKeys) {
+              if (Array.isArray(target.host_key)) {
+                sshHostKeys = target.host_key.join("\n");
+              } else if (typeof target.host_key === "string") {
+                sshHostKeys = target.host_key;
+              } else if (Array.isArray(target.hostKey)) {
+                sshHostKeys = target.hostKey.join("\n");
+              } else if (typeof target.hostKey === "string") {
+                sshHostKeys = target.hostKey;
+              }
+            }
+            if (!sshClientVersion) {
+              sshClientVersion = target.client_version || target.clientVersion || "";
+            }
+            if (!sshDomain && target.domain) sshDomain = String(target.domain);
+            if (!sshPublicKey && (target.public_key || target.publicKey)) {
+              sshPublicKey = String(target.public_key || target.publicKey);
+            }
+          }
+        } catch {
+          // Ignore JSON parse error, proceed to URI or text
+        }
+
+        // 2. Try URI format: ssh://user:pass@host:port or ssh://user@host:port
+        if (!sshUser || !sshPassword) {
+          if (trimmed.toLowerCase().startsWith("ssh://")) {
+            newSshMode = "direct";
+            setSshMode("direct");
+            try {
+              const url = new URL(trimmed);
+              if (url.username && !sshUser) sshUser = decodeURIComponent(url.username);
+              if (url.password && !sshPassword) sshPassword = decodeURIComponent(url.password);
+              if (url.hostname && (!sshHost || sshHost === "embedded-config")) sshHost = url.hostname;
+              if (url.port && (!sshPort || sshPort === "22")) sshPort = url.port;
+            } catch {
+              const m = trimmed.match(/^ssh:\/\/([^:@]+)(?::([^@]+))?@([^:#\/?]+)(?::(\d+))?/i);
+              if (m) {
+                if (m[1] && !sshUser) sshUser = decodeURIComponent(m[1]);
+                if (m[2] && !sshPassword) sshPassword = decodeURIComponent(m[2]);
+                if (m[3] && (!sshHost || sshHost === "embedded-config")) sshHost = m[3];
+                if (m[4] && (!sshPort || sshPort === "22")) sshPort = m[4];
+              }
+            }
+          }
+        }
+
+        // 3. Try table block or key-value text lines
+        if (!sshUser || !sshPassword) {
+          const lines = trimmed.split(/\r?\n/);
+          for (const line of lines) {
+            const idx = line.search(/[:=\t]/);
+            if (idx !== -1) {
+              const key = line.slice(0, idx).trim().toLowerCase();
+              const val = line.slice(idx + 1).trim().replace(/^[:=\t]+/, "").trim();
+              if ((key === "username" || key === "user" || key === "ssh user" || key === "ssh username") && !sshUser) {
+                sshUser = val;
+              } else if ((key === "password" || key === "pass" || key === "ssh password") && !sshPassword) {
+                sshPassword = val;
+              } else if ((key === "server" || key === "host" || key === "ssh server" || key === "ssh host") && (!sshHost || sshHost === "embedded-config")) {
+                sshHost = val;
+              } else if ((key === "port" || key === "ssh port") && (!sshPort || sshPort === "22")) {
+                sshPort = val;
+              }
+            }
+          }
+        }
+
+        // 4. Try from readStoredCredentials helper
+        if (!sshUser || !sshPassword) {
+          const stored = readStoredCredentials(trimmed, s.protocol);
+          if (stored) {
+            if (!sshUser && stored.username) sshUser = stored.username;
+            if (!sshPassword && stored.password) sshPassword = stored.password;
+          }
+        }
+
+        // 5. Try from server options or credentials
+        if (!sshUser && (s.options as any)?.user) sshUser = String((s.options as any).user);
+        if (!sshUser && (s.options as any)?.username) sshUser = String((s.options as any).username);
+        if (!sshUser && s.options?.extra?.user) sshUser = String(s.options.extra.user);
+        if (!sshUser && s.options?.extra?.username) sshUser = String(s.options.extra.username);
+
+        if (!sshPassword && (s.options as any)?.password) sshPassword = String((s.options as any).password);
+        if (!sshPassword && (s.options as any)?.pass) sshPassword = String((s.options as any).pass);
+        if (!sshPassword && s.options?.extra?.password) sshPassword = String(s.options.extra.password);
+        if (!sshPassword && s.options?.extra?.pass) sshPassword = String(s.options.extra.pass);
+      }
 
       if (newTab === "http") {
         try {
@@ -1815,8 +2115,8 @@ export function AdminDashboard() {
         ...BLANK,
         name: s.name,
         country: s.country,
-        host: newTab === "wireguard" ? wgHost : s.host,
-        port: newTab === "wireguard" ? wgPort : String(s.port),
+        host: newTab === "wireguard" ? wgHost : newTab === "ssh" && sshHost ? sshHost : s.host,
+        port: newTab === "wireguard" ? wgPort : newTab === "ssh" && sshPort ? sshPort : String(s.port),
         rawConfig,
         httpUsername,
         httpPassword,
@@ -1826,6 +2126,19 @@ export function AdminDashboard() {
         l2tpAuths,
         openVpnUsername,
         openVpnPassword,
+        sshUser,
+        sshPassword,
+        sshPrivateKey,
+        sshPrivateKeyPassphrase,
+        sshHostKeys,
+        sshClientVersion,
+        sshResolver,
+        dnsttQuerySize,
+        dnsttMtu,
+        sshDomain,
+        sshPublicKey,
+        sshTunnelPort,
+        sshLocalPort,
         wgLocalAddress,
         wgPrivateKey,
         wgPeerPublicKey,
@@ -1835,15 +2148,16 @@ export function AdminDashboard() {
         wgMtu,
         wgDns,
         wgConf,
-        mux: s.options.mux,
-        fragment: s.options.fragment,
-        sniffing: s.options.sniffing,
-        allowInsecure: s.options.allowInsecure,
-        extraJson: JSON.stringify(s.options.extra || {}),
+        mux: Boolean(s.options?.mux),
+        fragment: Boolean(s.options?.fragment),
+        sniffing: s.options?.sniffing ?? true,
+        allowInsecure: Boolean(s.options?.allowInsecure),
+        extraJson: JSON.stringify(s.options?.extra || {}),
       });
       setEditingServerId(id);
       window.scrollTo({ top: 0, behavior: "smooth" });
-    } catch {
+    } catch (err) {
+      console.error("Failed to load server details:", err);
       setMsg({ ok: false, text: "Failed to load server details" });
     } finally {
       setPendingServerId(null);
@@ -2965,6 +3279,14 @@ or
                       >
                         Disable ({selectedFilteredCount})
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => void bulkDeleteSelected()}
+                        disabled={busy || selectedFilteredCount === 0}
+                        className="flex-shrink-0 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        Delete ({selectedFilteredCount})
+                      </button>
                       {selectedFilteredCredentialCount > 0 && (
                         <button
                           type="button"
@@ -3160,6 +3482,15 @@ or
                           className="rounded-lg border border-white/8 px-3 py-1.5 text-xs text-zinc-400 transition hover:bg-white/6 hover:text-zinc-100"
                         >
                           Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void duplicateServer(server.id)}
+                          disabled={pendingServerId === server.id}
+                          className="rounded-lg border border-white/8 px-3 py-1.5 text-xs text-zinc-400 transition hover:bg-white/6 hover:text-zinc-100"
+                          title="Duplicate server"
+                        >
+                          {pendingServerId === server.id ? "..." : "Duplicate"}
                         </button>
                         <button
                           type="button"

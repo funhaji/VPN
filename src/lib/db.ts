@@ -488,6 +488,18 @@ export const setServersEnabledByIds = async (ids: string[], isEnabled: boolean):
   return rows.length;
 };
 
+export const deleteServersByIds = async (ids: string[]): Promise<number> => {
+  if (ids.length === 0) return 0;
+  await ensureSchema();
+  const query = getSql();
+  const rows = await query`
+    DELETE FROM vpn_servers
+    WHERE id = ANY(${ids}::uuid[])
+    RETURNING id;
+  ` as Array<{ id: string }>;
+  return rows.length;
+};
+
 export const updateServerEnabled = async (id: string, isEnabled: boolean): Promise<void> => {
   await ensureSchema();
   const query = getSql();

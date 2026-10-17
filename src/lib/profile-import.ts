@@ -239,6 +239,12 @@ const detectFromJson = (rawConfig: string, fallbackProtocol: string): ImportedPr
     label = pickString(parsed.name) ?? label;
   }
 
+  if (pickString(parsed.type)?.toLowerCase() === "ssh") {
+    host = pickString(parsed.server) ?? pickString(parsed.host) ?? host;
+    port = pickNumber(parsed.server_port) ?? pickNumber(parsed.port) ?? port;
+    label = pickString(parsed.tag) ?? pickString(parsed.user) ?? label;
+  }
+
   const outbounds = Array.isArray(parsed.outbounds) ? parsed.outbounds : [];
   const outbound = outbounds.find((entry) => isObject(entry));
   if (isObject(outbound)) {

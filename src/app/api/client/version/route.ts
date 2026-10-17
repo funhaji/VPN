@@ -4,7 +4,7 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 export async function GET() {
-  let androidVersion = "1.1.2";
+  let androidVersion = "1.2.0";
   let windowsVersion = "1.1.1";
 
   try {
@@ -46,7 +46,7 @@ export async function GET() {
   }
 
   if (!androidVersion) {
-    androidVersion = "1.1.2";
+    androidVersion = "1.2.0";
   }
 
   let locations = 62;
