@@ -37,15 +37,15 @@ export const DOWNLOAD_TARGETS: Record<string, DownloadTarget> = {
     contentType: "application/octet-stream",
   },
   android: {
-    url: "https://github.com/funhaji/AstroVPN/releases/download/Android/app-universal-release.apk",
+    url: "https://github.com/funhaji/AstroVPN/releases/download/Android/AstroVPN-arm64-v8a.apk",
     isRelease: true,
-    filename: "app-universal-release.apk",
+    filename: "AstroVPN-arm64-v8a.apk",
     contentType: "application/vnd.android.package-archive",
   },
   apk: {
-    url: "https://github.com/funhaji/AstroVPN/releases/download/Android/app-universal-release.apk",
+    url: "https://github.com/funhaji/AstroVPN/releases/download/Android/AstroVPN-arm64-v8a.apk",
     isRelease: true,
-    filename: "app-universal-release.apk",
+    filename: "AstroVPN-arm64-v8a.apk",
     contentType: "application/vnd.android.package-archive",
   },
   universal: {

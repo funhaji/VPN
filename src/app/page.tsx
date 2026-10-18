@@ -86,8 +86,8 @@ const COPY: Record<
     linuxSub: "Debian, Ubuntu, Fedora, Arch",
     androidTitle: "Android",
     androidSub: "Android 8.0+ (Universal & ARM64)",
-    androidUniversal: "Universal APK",
-    androidArm64: "ARM64-v8a APK",
+    androidUniversal: "Universal (Legacy/x86)",
+    androidArm64: "ARM64-v8a (Recommended)",
     architectureTitle: "Core Network Specifications",
     archProtocol: "Multi-Protocol Engine",
     archProtocolDesc: "Native support for WireGuard, V2Ray/Xray (VLESS Reality, VMess, Trojan), and L2TP IPsec.",
@@ -124,8 +124,8 @@ const COPY: Record<
     linuxSub: "دبیان، اوبونتو، فدورا، آرچ",
     androidTitle: "اندروید",
     androidSub: "اندروید ۸.۰ به بالا (Universal و ARM64)",
-    androidUniversal: "نسخه Universal",
-    androidArm64: "نسخه ARM64-v8a",
+    androidUniversal: "نسخه Universal (همه گوشی‌ها)",
+    androidArm64: "نسخه ARM64-v8a (پیشنهادی)",
     architectureTitle: "مشخصات فنی و امنیتی",
     archProtocol: "موتور چندپروتکله",
     archProtocolDesc: "پشتیبانی قدرتمند از وایرگارد، وی‌تو‌ری (VLESS Reality، VMess، Trojan) و L2TP IPsec.",
@@ -526,20 +526,20 @@ export default function DownloadPage() {
             </div>
             <div className="multi-links-grid">
               <a
-                href={ANDROID_URL}
-                download="app-universal-release.apk"
-                className="multi-link"
-                aria-label={`Download ${c.androidUniversal}`}
-              >
-                <span>{c.androidUniversal}</span>
-              </a>
-              <a
                 href={ANDROID_ARM64_URL}
                 download="AstroVPN-arm64-v8a.apk"
                 className="multi-link"
                 aria-label={`Download ${c.androidArm64}`}
               >
                 <span>{c.androidArm64}</span>
+              </a>
+              <a
+                href={ANDROID_URL}
+                download="app-universal-release.apk"
+                className="multi-link"
+                aria-label={`Download ${c.androidUniversal}`}
+              >
+                <span>{c.androidUniversal}</span>
               </a>
             </div>
           </div>
