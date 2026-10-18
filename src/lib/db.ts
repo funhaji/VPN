@@ -114,6 +114,23 @@ export const ensureSchema = async (): Promise<void> => {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `;
+  await query`
+    CREATE TABLE IF NOT EXISTS client_devices (
+      device_id VARCHAR(128) PRIMARY KEY,
+      platform VARCHAR(32) NOT NULL,
+      app_version VARCHAR(32) NOT NULL,
+      os_version VARCHAR(64) NOT NULL DEFAULT '',
+      model VARCHAR(64) NOT NULL DEFAULT '',
+      first_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `;
+  await query`
+    CREATE INDEX IF NOT EXISTS idx_client_devices_platform ON client_devices(platform);
+  `;
+  await query`
+    CREATE INDEX IF NOT EXISTS idx_client_devices_last_seen ON client_devices(last_seen);
+  `;
   if (!sortOrderMigrated) {
     try {
       const dupRows = (await query`
@@ -667,4 +684,120 @@ export const setL2tpSharedPool = async (accounts: L2tpPoolAccount[]): Promise<vo
   const jsonStr = JSON.stringify(accounts);
   const encrypted = encryptConfig(jsonStr);
   await setSetting("l2tp_shared_pool", JSON.stringify(encrypted));
+};
+
+export type HeartbeatPayload = {
+  deviceId: string;
+  platform: string;
+  appVersion: string;
+  osVersion?: string;
+  model?: string;
+};
+
+export const recordClientHeartbeat = async (payload: HeartbeatPayload): Promise<void> => {
+  await ensureSchema();
+  const query = getSql();
+  const deviceId = (payload.deviceId || "").trim().slice(0, 128);
+  const platform = (payload.platform || "").trim().toLowerCase().slice(0, 32);
+  const appVersion = (payload.appVersion || "unknown").trim().slice(0, 32);
+  const osVersion = (payload.osVersion || "").trim().slice(0, 64);
+  const model = (payload.model || "").trim().slice(0, 64);
+
+  if (!deviceId || !platform) return;
+
+  await query`
+    INSERT INTO client_devices (device_id, platform, app_version, os_version, model, first_seen, last_seen)
+    VALUES (${deviceId}, ${platform}, ${appVersion}, ${osVersion}, ${model}, NOW(), NOW())
+    ON CONFLICT (device_id) DO UPDATE SET
+      platform = EXCLUDED.platform,
+      app_version = EXCLUDED.app_version,
+      os_version = CASE WHEN EXCLUDED.os_version <> '' THEN EXCLUDED.os_version ELSE client_devices.os_version END,
+      model = CASE WHEN EXCLUDED.model <> '' THEN EXCLUDED.model ELSE client_devices.model END,
+      last_seen = NOW();
+  `;
+};
+
+export type PlatformAnalytics = {
+  platform: string;
+  total: number;
+  active24h: number;
+  active7d: number;
+  active30d: number;
+  versions: Record<string, number>;
+};
+
+export type ClientAnalyticsReport = {
+  platforms: Record<string, PlatformAnalytics>;
+  totalAll: number;
+  active24hAll: number;
+  updatedAt: string;
+};
+
+export const getClientAnalytics = async (): Promise<ClientAnalyticsReport> => {
+  await ensureSchema();
+  const query = getSql();
+
+  const platformRows = await query`
+    SELECT
+      platform,
+      COUNT(*)::int as total,
+      COUNT(*) FILTER (WHERE last_seen >= NOW() - INTERVAL '24 hours')::int as active_24h,
+      COUNT(*) FILTER (WHERE last_seen >= NOW() - INTERVAL '7 days')::int as active_7d,
+      COUNT(*) FILTER (WHERE last_seen >= NOW() - INTERVAL '30 days')::int as active_30d
+    FROM client_devices
+    GROUP BY platform;
+  ` as Array<{ platform: string; total: number; active_24h: number; active_7d: number; active_30d: number }>;
+
+  const versionRows = await query`
+    SELECT
+      platform,
+      app_version,
+      COUNT(*)::int as count
+    FROM client_devices
+    WHERE last_seen >= NOW() - INTERVAL '30 days'
+    GROUP BY platform, app_version
+    ORDER BY count DESC;
+  ` as Array<{ platform: string; app_version: string; count: number }>;
+
+  const platforms: Record<string, PlatformAnalytics> = {};
+  let totalAll = 0;
+  let active24hAll = 0;
+
+  for (const row of platformRows) {
+    totalAll += row.total;
+    active24hAll += row.active_24h;
+    platforms[row.platform] = {
+      platform: row.platform,
+      total: row.total,
+      active24h: row.active_24h,
+      active7d: row.active_7d,
+      active30d: row.active_30d,
+      versions: {},
+    };
+  }
+
+  // Ensure 'android' is always present in output even if 0 users yet
+  if (!platforms["android"]) {
+    platforms["android"] = {
+      platform: "android",
+      total: 0,
+      active24h: 0,
+      active7d: 0,
+      active30d: 0,
+      versions: {},
+    };
+  }
+
+  for (const v of versionRows) {
+    if (platforms[v.platform]) {
+      platforms[v.platform].versions[v.app_version] = v.count;
+    }
+  }
+
+  return {
+    platforms,
+    totalAll,
+    active24hAll,
+    updatedAt: new Date().toISOString(),
+  };
 };

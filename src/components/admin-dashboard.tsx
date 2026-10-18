@@ -589,6 +589,19 @@ export function AdminDashboard() {
   const [hasPendingReorder, setHasPendingReorder] = useState(false);
   const [servers, setServers] = useState<ServerRecord[]>([]);
   const [stats, setStats] = useState({ total: 0, enabled: 0, locations: 0, totalLocations: 0 });
+  const [userAnalytics, setUserAnalytics] = useState<{
+    platforms: Record<string, {
+      platform: string;
+      total: number;
+      active24h: number;
+      active7d: number;
+      active30d: number;
+      versions: Record<string, number>;
+    }>;
+    totalAll: number;
+    active24hAll: number;
+    updatedAt: string;
+  } | null>(null);
   const [pendingServerId, setPendingServerId] = useState<string | null>(null);
   const [editingServerId, setEditingServerId] = useState<string | null>(null);
   const [serversPage, setServersPage] = useState(0);
@@ -659,6 +672,13 @@ export function AdminDashboard() {
         locations: enabledLocations,
         totalLocations,
       });
+
+      try {
+        const uData = await api<any>("/api/admin/users");
+        setUserAnalytics(uData);
+      } catch {
+        // user analytics load is non-blocking
+      }
     } catch (error) {
       setMsg({ ok: false, text: error instanceof Error ? error.message : "Load failed" });
     } finally {
@@ -2219,6 +2239,39 @@ export function AdminDashboard() {
             </div>
           </div>
 
+          {/* Platform user counts */}
+          <div className="rounded-xl border border-white/6 bg-white/3 p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] uppercase tracking-[0.18em] text-zinc-500 flex items-center gap-1.5">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                Android Users
+              </span>
+              <span className="text-xs font-mono font-medium text-emerald-400">
+                {userAnalytics?.platforms?.android?.total ?? 0} total
+              </span>
+            </div>
+            <div className="grid grid-cols-3 gap-1 pt-1 text-center">
+              <div className="rounded-lg bg-black/30 p-1.5 border border-white/4">
+                <p className="text-[9px] uppercase tracking-[0.12em] text-zinc-500">24h</p>
+                <p className="text-xs font-mono font-semibold text-zinc-200">
+                  {userAnalytics?.platforms?.android?.active24h ?? 0}
+                </p>
+              </div>
+              <div className="rounded-lg bg-black/30 p-1.5 border border-white/4">
+                <p className="text-[9px] uppercase tracking-[0.12em] text-zinc-500">7d</p>
+                <p className="text-xs font-mono font-semibold text-zinc-200">
+                  {userAnalytics?.platforms?.android?.active7d ?? 0}
+                </p>
+              </div>
+              <div className="rounded-lg bg-black/30 p-1.5 border border-white/4">
+                <p className="text-[9px] uppercase tracking-[0.12em] text-zinc-500">30d</p>
+                <p className="text-xs font-mono font-semibold text-zinc-200">
+                  {userAnalytics?.platforms?.android?.active30d ?? 0}
+                </p>
+              </div>
+            </div>
+          </div>
+
           {/* Action buttons */}
           <div className="grid grid-cols-2 gap-2">
             <button
@@ -3160,13 +3213,17 @@ or
 
             <div className="rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-6">
               <div className="mb-4 flex items-center justify-between gap-3">
-                <h4 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
+                <h4 className="text-sm font-semibold text-zinc-100 flex flex-wrap items-center gap-2">
                   <span>Stored servers</span>
                   <span className="text-xs font-mono text-zinc-500">({stats.total})</span>
                   <span className="text-zinc-600">•</span>
                   <span className="text-xs text-cyan-400 font-medium">
                     {stats.locations} active locations
                     {protocolFilter !== "all" && filteredLocationsCount !== stats.locations ? ` (${filteredLocationsCount} in filter)` : ""}
+                  </span>
+                  <span className="text-zinc-600">•</span>
+                  <span className="text-xs text-emerald-400 font-medium">
+                    {userAnalytics?.platforms?.android?.total ?? 0} Android users ({userAnalytics?.platforms?.android?.active24h ?? 0} active today)
                   </span>
                 </h4>
                 <div className="flex flex-wrap items-center gap-2">
