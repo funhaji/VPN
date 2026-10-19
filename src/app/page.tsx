@@ -6,8 +6,8 @@ const WINDOWS_URL = "/api/download/windows";
 const DEB_URL = "/api/download/deb";
 const RPM_URL = "/api/download/rpm";
 const APPIMAGE_URL = "/api/download/appimage";
-const ANDROID_URL = "/api/download/android";
 const ANDROID_ARM64_URL = "/api/download/arm64";
+const ANDROID_UNIVERSAL_URL = "/api/download/universal";
 
 type Lang = "en" | "fa";
 
@@ -534,7 +534,7 @@ export default function DownloadPage() {
                 <span>{c.androidArm64}</span>
               </a>
               <a
-                href={ANDROID_URL}
+                href={ANDROID_UNIVERSAL_URL}
                 download="app-universal-release.apk"
                 className="multi-link"
                 aria-label={`Download ${c.androidUniversal}`}
