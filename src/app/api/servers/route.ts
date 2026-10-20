@@ -262,6 +262,7 @@ const normalizeProtocol = (protocol: string, rawConfig: string): string => {
   if (lowered.includes("socks")) return "socks";
   if (lowered.includes("ssh")) return "ssh";
   if (lowered.includes("wireguard") || lowered === "wg") return "wireguard";
+  if (lowered.includes("warp") || lowered === "warp") return "warp";
   if (lowered.includes("openvpn")) return "openvpn";
   return lowered;
 };
@@ -921,6 +922,15 @@ const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): JsonObjec
 
   if (loweredProtocol.includes("openvpn")) {
     return buildOpenVpnRuntimeProfile(trimmed);
+  }
+
+  if (loweredProtocol.includes("warp") || loweredProtocol === "warp") {
+    const outbound = isObject(parsedJson) ? parsedJson : { type: "warp", server: trimmed };
+    return {
+      engine: "warp",
+      supported: true,
+      outbound,
+    };
   }
 
   if (loweredProtocol.includes("wireguard") || loweredProtocol === "wg") {
