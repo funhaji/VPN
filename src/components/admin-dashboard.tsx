@@ -8,7 +8,7 @@ import { protocolSupportsCredentials, unwrapOpenVpnProfileContent, readStoredCre
 import { RoutingRulesPanel } from "@/components/routing-rules-panel";
 import { COUNTRIES, flagFromCountryCode, getCountryMeta, normalizeLocationCode } from "@/lib/countries";
 
-type TabId = "v2ray" | "ssh" | "openvpn" | "wireguard" | "custom" | "bulk" | "routing" | "http" | "l2tp";
+type TabId = "v2ray" | "ssh" | "openvpn" | "wireguard" | "warp" | "custom" | "bulk" | "routing" | "http" | "l2tp";
 type SshMode = "direct" | "dnstt";
 type SshResolverMode = "udp" | "dot" | "doh";
 type OpenVpnMode = "tcp" | "udp";
@@ -73,6 +73,10 @@ type FormState = {
   l2tpPassword: string;
   l2tpPsk: string;
   l2tpAuths: L2tpAuthItem[];
+  warpJc: string;
+  warpJmin: string;
+  warpJmax: string;
+  warpI1: string;
 };
 
 type L2tpAuthItem = {
@@ -123,6 +127,10 @@ const BLANK: FormState = {
   l2tpPassword: "",
   l2tpPsk: "",
   l2tpAuths: [],
+  warpJc: "4",
+  warpJmin: "40",
+  warpJmax: "70",
+  warpI1: "",
 };
 
 const PROTOCOLS: Array<{
@@ -133,6 +141,7 @@ const PROTOCOLS: Array<{
 }> = [
   { id: "v2ray", label: "V2Ray", badge: "vless / vmess / trojan / ss / hy2 / socks", support: "Desktop-ready" },
   { id: "ssh", label: "SSH", badge: "direct / dnstt", support: "Direct ready & DNSTT stored" },
+  { id: "warp", label: "WARP", badge: "Cloudflare Anycast", support: "Mobile & Desktop" },
   { id: "http", label: "HTTP", badge: "http proxy", support: "Desktop-ready" },
   { id: "wireguard", label: "WireGuard", badge: "structured profile", support: "Stored for rollout" },
   { id: "openvpn", label: "OpenVPN", badge: ".ovpn / inline", support: "Stored for rollout" },
@@ -231,6 +240,45 @@ const generateWireGuardConfFromForm = (form: FormState): string => {
   if (form.wgReserved.trim()) lines.push(`Reserved = ${form.wgReserved.trim()}`);
 
   return lines.join("\n");
+};
+
+const buildWarpProfile = (form: FormState): string => {
+  const host = form.host.trim();
+  const port = parseNumber(form.port) ?? 2408;
+  const jc = parseNumber(form.warpJc) ?? 4;
+  const jmin = parseNumber(form.warpJmin) ?? 40;
+  const jmax = parseNumber(form.warpJmax) ?? 70;
+  const i1 = form.warpI1.trim();
+
+  return JSON.stringify(
+    {
+      type: "warp",
+      tag: "proxy",
+      server: host,
+      server_port: port,
+      endpoint: {
+        host,
+        port,
+      },
+      options: {
+        jc,
+        jmin,
+        jmax,
+        ...(i1 ? { i1 } : {}),
+        s1: 0,
+        s2: 0,
+        s3: 0,
+        s4: 0,
+        h1: 1,
+        h2: 2,
+        h3: 3,
+        h4: 4,
+        mtu: 1280,
+      },
+    },
+    null,
+    2,
+  );
 };
 
 const buildWireGuardProfile = (form: FormState): string => {
@@ -583,6 +631,7 @@ export function AdminDashboard() {
   const [wgPastedText, setWgPastedText] = useState("");
   const [wgPreviewMode, setWgPreviewMode] = useState<"json" | "conf">("json");
   const [customProto, setCustomProto] = useState("custom:tcp");
+  const [showWarpAdvanced, setShowWarpAdvanced] = useState(false);
   const [bulk, setBulk] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -798,6 +847,7 @@ export function AdminDashboard() {
   );
 
   const protocol = useMemo(() => {
+    if (tab === "warp") return "warp";
     if (tab === "custom") return customProto.trim().toLowerCase();
     if (tab === "ssh") return `ssh:${sshMode}`;
     if (tab === "openvpn") return `openvpn:${openVpnMode}`;
@@ -887,6 +937,7 @@ export function AdminDashboard() {
     let v2ray = 0;
     let openvpn = 0;
     let wireguard = 0;
+    let warp = 0;
     let ssh = 0;
     let http = 0;
 
@@ -904,6 +955,7 @@ export function AdminDashboard() {
       ) {
         v2ray++;
       } else if (p.startsWith("openvpn")) openvpn++;
+      else if (p === "warp" || p.startsWith("warp")) warp++;
       else if (p.startsWith("wireguard") || p === "wg") wireguard++;
       else if (p.startsWith("ssh")) ssh++;
       else if (p === "http") http++;
@@ -915,6 +967,7 @@ export function AdminDashboard() {
       { id: "v2ray", label: "V2Ray", count: v2ray },
       { id: "openvpn", label: "OpenVPN", count: openvpn },
       { id: "wireguard", label: "WireGuard", count: wireguard },
+      { id: "warp", label: "WARP", count: warp },
       { id: "ssh", label: "SSH", count: ssh },
       { id: "http", label: "HTTP", count: http },
     ];
@@ -938,6 +991,7 @@ export function AdminDashboard() {
       }
       if (protocolFilter === "openvpn") return p.startsWith("openvpn");
       if (protocolFilter === "wireguard") return p.startsWith("wireguard") || p === "wg";
+      if (protocolFilter === "warp") return p === "warp" || p.startsWith("warp");
       if (protocolFilter === "ssh") return p.startsWith("ssh");
       if (protocolFilter === "http") return p === "http";
       return true;
@@ -1178,6 +1232,9 @@ export function AdminDashboard() {
     if (tab === "wireguard") {
       return buildWireGuardProfile(form);
     }
+    if (tab === "warp") {
+      return buildWarpProfile(form);
+    }
     if (tab === "openvpn") {
       return buildOpenVpnProfile(form, openVpnMode);
     }
@@ -1241,6 +1298,9 @@ export function AdminDashboard() {
         return wgFiles.some((f) => f.selected && f.parsed != null);
       }
       return Boolean(form.host.trim() && form.port.trim() && form.wgLocalAddress.trim() && form.wgPrivateKey.trim() && form.wgPeerPublicKey.trim());
+    }
+    if (tab === "warp") {
+      return Boolean(form.host.trim() && form.port.trim());
     }
     if (tab === "openvpn") {
       const detectedRemote = parseOvpnRemote(form.rawConfig);
@@ -1421,7 +1481,17 @@ export function AdminDashboard() {
           fragment: form.fragment,
           sniffing: form.sniffing,
           allowInsecure: form.allowInsecure,
-          extra: parseExtra(form.extraJson),
+          extra: {
+            ...parseExtra(form.extraJson),
+            ...(tab === "warp"
+              ? {
+                  jc: parseNumber(form.warpJc) ?? 4,
+                  jmin: parseNumber(form.warpJmin) ?? 40,
+                  jmax: parseNumber(form.warpJmax) ?? 70,
+                  ...(form.warpI1.trim() ? { i1: form.warpI1.trim() } : {}),
+                }
+              : {}),
+          },
         },
       };
 
@@ -1784,6 +1854,8 @@ export function AdminDashboard() {
       } else if (isSsh) {
         newTab = "ssh";
         newSshMode = (proto.includes("dnstt") || trimmedRaw.includes('"dnstt-ssh"') || trimmedRaw.includes('"type": "dnstt-ssh"')) ? "dnstt" : "direct";
+      } else if (proto === "warp" || proto.startsWith("warp")) {
+        newTab = "warp";
       } else if (proto.startsWith("wireguard") || proto === "wg") {
         newTab = "wireguard";
       } else if (proto.startsWith("openvpn:")) {
@@ -1804,7 +1876,7 @@ export function AdminDashboard() {
       setOpenVpnMode(newOpenVpnMode);
       setCustomProto(newCustomProto);
       
-      if (newTab !== "v2ray" && newTab !== "openvpn" && newTab !== "http" && newTab !== "ssh" && newTab !== "wireguard" && newTab !== "l2tp") {
+      if (newTab !== "v2ray" && newTab !== "openvpn" && newTab !== "http" && newTab !== "ssh" && newTab !== "wireguard" && newTab !== "l2tp" && newTab !== "warp") {
         setTab("custom");
         setCustomProto(proto);
       }
@@ -2131,6 +2203,31 @@ export function AdminDashboard() {
         }
       }
       
+      let warpJc = "4";
+      let warpJmin = "40";
+      let warpJmax = "70";
+      let warpI1 = "";
+      if (newTab === "warp") {
+        try {
+          const parsed = JSON.parse(data.rawConfig);
+          if (parsed && typeof parsed === "object") {
+            const opts = parsed.options || {};
+            if (opts.jc != null) warpJc = String(opts.jc);
+            if (opts.jmin != null) warpJmin = String(opts.jmin);
+            if (opts.jmax != null) warpJmax = String(opts.jmax);
+            if (opts.i1 != null) warpI1 = String(opts.i1);
+          }
+        } catch {
+          // ignore
+        }
+        if (s.options?.extra) {
+          if (s.options.extra.jc != null) warpJc = String(s.options.extra.jc);
+          if (s.options.extra.jmin != null) warpJmin = String(s.options.extra.jmin);
+          if (s.options.extra.jmax != null) warpJmax = String(s.options.extra.jmax);
+          if (s.options.extra.i1 != null) warpI1 = String(s.options.extra.i1);
+        }
+      }
+
       setForm({
         ...BLANK,
         name: s.name,
@@ -2138,6 +2235,10 @@ export function AdminDashboard() {
         host: newTab === "wireguard" ? wgHost : newTab === "ssh" && sshHost ? sshHost : s.host,
         port: newTab === "wireguard" ? wgPort : newTab === "ssh" && sshPort ? sshPort : String(s.port),
         rawConfig,
+        warpJc,
+        warpJmin,
+        warpJmax,
+        warpI1,
         httpUsername,
         httpPassword,
         l2tpUsername,
@@ -3082,6 +3183,97 @@ export function AdminDashboard() {
                           No extra accounts added yet. Only the primary credentials will be used.
                         </p>
                       )}
+                    </div>
+                  </div>
+                ) : null}
+
+                {tab === "warp" ? (
+                  <div className="mt-6 space-y-4">
+                    <div className="rounded-2xl border border-white/6 bg-white/2 p-4">
+                      <div className="flex items-center justify-between">
+                        <p className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
+                          Cloudflare Clean Endpoint
+                        </p>
+                        <span className="rounded-full bg-orange-500/15 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-orange-400">
+                          Stock WireGuard Peer
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-zinc-500">
+                        Enter a clean Cloudflare Anycast IP or hostname. Each user device automatically generates and securely saves their own dedicated keypair on launch.
+                      </p>
+
+                      <div className="mt-4 grid gap-4 md:grid-cols-2">
+                        <Field
+                          label="Endpoint Host / Clean IP"
+                          value={form.host}
+                          onChange={(value) => set("host", value)}
+                          placeholder="162.159.193.10 or engage.cloudflareclient.com"
+                        />
+                        <Field
+                          label="Endpoint Port"
+                          value={form.port}
+                          onChange={(value) => set("port", value)}
+                          placeholder="2408"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-white/6 bg-white/2 p-4">
+                      <button
+                        type="button"
+                        onClick={() => setShowWarpAdvanced((prev) => !prev)}
+                        className="flex w-full items-center justify-between text-left"
+                      >
+                        <div>
+                          <p className="text-sm font-semibold text-zinc-200">
+                            AmneziaWG Obfuscation (Anti-DPI)
+                          </p>
+                          <p className="mt-0.5 text-xs text-zinc-500">
+                            Pre-handshake junk packets and QUIC Initial decoys to bypass deep packet inspection
+                          </p>
+                        </div>
+                        <span className="text-xs font-medium text-cyan-400">
+                          {showWarpAdvanced ? "Collapse" : "Expand"}
+                        </span>
+                      </button>
+
+                      {showWarpAdvanced ? (
+                        <div className="mt-4 space-y-4 border-t border-white/6 pt-4">
+                          <div className="grid gap-4 sm:grid-cols-3">
+                            <Field
+                              label="Junk Packet Count (Jc)"
+                              value={form.warpJc}
+                              onChange={(value) => set("warpJc", value)}
+                              placeholder="4"
+                            />
+                            <Field
+                              label="Junk Min Size (Jmin)"
+                              value={form.warpJmin}
+                              onChange={(value) => set("warpJmin", value)}
+                              placeholder="40"
+                            />
+                            <Field
+                              label="Junk Max Size (Jmax)"
+                              value={form.warpJmax}
+                              onChange={(value) => set("warpJmax", value)}
+                              placeholder="70"
+                            />
+                          </div>
+
+                          <Field
+                            label="Custom I1 Decoy (Optional)"
+                            value={form.warpI1}
+                            onChange={(value) => set("warpI1", value)}
+                            placeholder="Leave empty to auto-generate QUIC Initial decoy"
+                            mono
+                          />
+
+                          <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 text-xs text-zinc-400">
+                            <span className="font-semibold text-zinc-300">Cloudflare Peer Invariants: </span>
+                            S1-S4=0, H1..H4=1,2,3,4, and MTU=1280 are hardcoded to match Cloudflare&apos;s stock WireGuard receiver.
+                          </div>
+                        </div>
+                      ) : null}
                     </div>
                   </div>
                 ) : null}

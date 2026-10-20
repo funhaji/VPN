@@ -74,6 +74,7 @@ const prettifyProtocol = (protocol: string): string => {
   if (normalized.includes("shadowsocks") || normalized === "ss") return "Shadowsocks";
   if (normalized.includes("hysteria2") || normalized.includes("hy2")) return "Hysteria2";
   if (normalized.includes("wireguard") || normalized === "wg") return "WireGuard";
+  if (normalized === "warp" || normalized.includes("warp")) return "WARP";
   if (normalized.includes("openvpn")) return "OpenVPN";
   if (normalized.includes("ssh")) return "SSH";
   if (normalized === "http") return "HTTP";
