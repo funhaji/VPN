@@ -1174,7 +1174,7 @@ export async function GET(request: NextRequest) {
     if (catalogCache && catalogCache.key === cacheKey && catalogCache.expiresAt > now) {
       return NextResponse.json(catalogCache.payload, {
         headers: {
-          "Cache-Control": "public, max-age=20, s-maxage=60, stale-while-revalidate=300",
+          "Cache-Control": "public, max-age=5, s-maxage=10, stale-while-revalidate=30",
         },
       });
     }
@@ -1243,12 +1243,12 @@ export async function GET(request: NextRequest) {
     catalogCache = {
       key: cacheKey,
       payload: encrypted,
-      expiresAt: now + 30 * 1000,
+      expiresAt: now + 10 * 1000,
     };
 
     return NextResponse.json(encrypted, {
       headers: {
-        "Cache-Control": "public, max-age=20, s-maxage=60, stale-while-revalidate=300",
+        "Cache-Control": "public, max-age=5, s-maxage=10, stale-while-revalidate=30",
       },
     });
   } catch (error) {
