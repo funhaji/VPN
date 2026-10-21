@@ -12,14 +12,44 @@ export async function GET() {
   const now = Date.now();
   if (versionCache && versionCache.expiresAt > now) {
     const res = NextResponse.json(versionCache.data);
-    res.headers.set("Cache-Control", "public, max-age=60, s-maxage=300, stale-while-revalidate=600");
+    res.headers.set("Cache-Control", "public, max-age=15, s-maxage=30, stale-while-revalidate=60");
     res.headers.set("Access-Control-Allow-Origin", "*");
     res.headers.set("Access-Control-Allow-Methods", "GET, OPTIONS");
     return res;
   }
 
-  const androidVersion = "1.2.2";
-  const windowsVersion = "1.2.2";
+  let androidVersion = "1.2.1";
+  let windowsVersion = "1.2.0.0";
+
+  try {
+    const rawRes = await fetch(
+      "https://raw.githubusercontent.com/funhaji/AstroVPN/main/android/version.txt",
+      { signal: AbortSignal.timeout(3000), cache: "no-store" }
+    );
+    if (rawRes.ok) {
+      const txt = (await rawRes.text()).trim();
+      if (txt && /^\d+(\.\d+)+$/.test(txt)) {
+        androidVersion = txt;
+      }
+    }
+  } catch (err) {
+    console.error("Failed to fetch android version from GitHub:", err);
+  }
+
+  try {
+    const rawWin = await fetch(
+      "https://raw.githubusercontent.com/funhaji/AstroVPN/main/version.txt",
+      { signal: AbortSignal.timeout(3000), cache: "no-store" }
+    );
+    if (rawWin.ok) {
+      const txt = (await rawWin.text()).trim();
+      if (txt && /^\d+(\.\d+)+$/.test(txt)) {
+        windowsVersion = txt;
+      }
+    }
+  } catch (err) {
+    console.error("Failed to fetch windows version from GitHub:", err);
+  }
 
   let locations = 62;
   let servers = 96;
@@ -48,11 +78,11 @@ export async function GET() {
 
   versionCache = {
     data: payload,
-    expiresAt: now + 5 * 60 * 1000,
+    expiresAt: now + 30 * 1000,
   };
 
   const response = NextResponse.json(payload);
-  response.headers.set("Cache-Control", "public, max-age=60, s-maxage=300, stale-while-revalidate=600");
+  response.headers.set("Cache-Control", "public, max-age=15, s-maxage=30, stale-while-revalidate=60");
   response.headers.set("Access-Control-Allow-Origin", "*");
   response.headers.set("Access-Control-Allow-Methods", "GET, OPTIONS");
   return response;
