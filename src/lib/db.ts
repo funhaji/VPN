@@ -856,3 +856,11 @@ export const getClientAnalytics = async (): Promise<ClientAnalyticsReport> => {
     updatedAt: new Date().toISOString(),
   };
 };
+
+export const deleteClientDevice = async (deviceId: string): Promise<void> => {
+  await ensureSchema();
+  const query = getSql();
+  const cleanId = (deviceId || "").trim().slice(0, 128);
+  if (!cleanId) return;
+  await query`DELETE FROM client_devices WHERE device_id = ${cleanId}`;
+};
