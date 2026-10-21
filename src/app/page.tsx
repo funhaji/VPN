@@ -2,12 +2,12 @@
 
 import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
 
-const WINDOWS_URL = "/api/download/windows";
-const DEB_URL = "/api/download/deb";
-const RPM_URL = "/api/download/rpm";
-const APPIMAGE_URL = "/api/download/appimage";
-const ANDROID_ARM64_URL = "/api/download/arm64";
-const ANDROID_UNIVERSAL_URL = "/api/download/universal";
+const WINDOWS_URL = "https://raw.githubusercontent.com/funhaji/AstroVPN/main/Astro%20VPN_setup.exe";
+const DEB_URL = "https://raw.githubusercontent.com/funhaji/AstroVPN/main/linux/AstroVPN.deb";
+const RPM_URL = "https://raw.githubusercontent.com/funhaji/AstroVPN/main/linux/AstroVPN.rpm";
+const APPIMAGE_URL = "https://github.com/funhaji/AstroVPN/releases/download/Main/AstroVPN.AppImage";
+const ANDROID_ARM64_URL = "https://github.com/funhaji/AstroVPN/releases/download/Android/AstroVPN-arm64-v8a.apk";
+const ANDROID_UNIVERSAL_URL = "https://github.com/funhaji/AstroVPN/releases/download/Android/app-universal-release.apk";
 
 type Lang = "en" | "fa";
 
@@ -1510,7 +1510,8 @@ export default function DownloadPage() {
         }
 
         @media (max-width: 767px) {
-          .tunnel-canvas {
+          .tunnel-canvas,
+          .grain {
             display: none !important;
           }
           .locations-hero-card,

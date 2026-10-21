@@ -5,7 +5,6 @@ import { parseWireGuardConf } from "@/lib/profile-import";
 import type { ProtocolOptions, ServerRecord } from "@/types/server";
 
 export const dynamic = "force-dynamic";
-export const revalidate = 0;
 
 type JsonObject = Record<string, unknown>;
 
@@ -1174,7 +1173,7 @@ export async function GET(request: NextRequest) {
     if (catalogCache && catalogCache.key === cacheKey && catalogCache.expiresAt > now) {
       return NextResponse.json(catalogCache.payload, {
         headers: {
-          "Cache-Control": "public, max-age=5, s-maxage=10, stale-while-revalidate=30",
+          "Cache-Control": "public, max-age=15, s-maxage=30, stale-while-revalidate=120",
         },
       });
     }
@@ -1243,12 +1242,12 @@ export async function GET(request: NextRequest) {
     catalogCache = {
       key: cacheKey,
       payload: encrypted,
-      expiresAt: now + 10 * 1000,
+      expiresAt: now + 30 * 1000,
     };
 
     return NextResponse.json(encrypted, {
       headers: {
-        "Cache-Control": "public, max-age=5, s-maxage=10, stale-while-revalidate=30",
+        "Cache-Control": "public, max-age=15, s-maxage=30, stale-while-revalidate=120",
       },
     });
   } catch (error) {

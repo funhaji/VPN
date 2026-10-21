@@ -2343,34 +2343,74 @@ export function AdminDashboard() {
           </div>
 
           {/* Platform user counts */}
-          <div className="rounded-xl border border-white/6 bg-white/3 p-3 space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] uppercase tracking-[0.18em] text-zinc-500 flex items-center gap-1.5">
-                <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                Android Users
-              </span>
-              <span className="text-xs font-mono font-medium text-emerald-400">
-                {userAnalytics?.platforms?.android?.total ?? 0} total
-              </span>
+          <div
+            onClick={() => { setTab("users"); setMsg(null); }}
+            className="cursor-pointer rounded-xl border border-white/6 bg-white/3 p-3 space-y-2.5 transition hover:border-cyan-500/30 hover:bg-white/5"
+            title="Click to view full Active Users telemetry"
+          >
+            {/* Windows summary */}
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] uppercase tracking-[0.18em] text-zinc-500 flex items-center gap-1.5">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-cyan-400" />
+                  Windows Users
+                </span>
+                <span className="text-xs font-mono font-medium text-cyan-300">
+                  {userAnalytics?.platforms?.windows?.total ?? 0} total
+                </span>
+              </div>
+              <div className="grid grid-cols-3 gap-1 pt-0.5 text-center">
+                <div className="rounded-lg bg-black/30 p-1 border border-white/4">
+                  <p className="text-[8px] uppercase tracking-[0.1em] text-zinc-500">24h</p>
+                  <p className="text-xs font-mono font-semibold text-zinc-200">
+                    {userAnalytics?.platforms?.windows?.active24h ?? 0}
+                  </p>
+                </div>
+                <div className="rounded-lg bg-black/30 p-1 border border-white/4">
+                  <p className="text-[8px] uppercase tracking-[0.1em] text-zinc-500">7d</p>
+                  <p className="text-xs font-mono font-semibold text-zinc-200">
+                    {userAnalytics?.platforms?.windows?.active7d ?? 0}
+                  </p>
+                </div>
+                <div className="rounded-lg bg-black/30 p-1 border border-white/4">
+                  <p className="text-[8px] uppercase tracking-[0.1em] text-zinc-500">30d</p>
+                  <p className="text-xs font-mono font-semibold text-zinc-200">
+                    {userAnalytics?.platforms?.windows?.active30d ?? 0}
+                  </p>
+                </div>
+              </div>
             </div>
-            <div className="grid grid-cols-3 gap-1 pt-1 text-center">
-              <div className="rounded-lg bg-black/30 p-1.5 border border-white/4">
-                <p className="text-[9px] uppercase tracking-[0.12em] text-zinc-500">24h</p>
-                <p className="text-xs font-mono font-semibold text-zinc-200">
-                  {userAnalytics?.platforms?.android?.active24h ?? 0}
-                </p>
+
+            {/* Android summary */}
+            <div className="pt-2 border-t border-white/5 space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] uppercase tracking-[0.18em] text-zinc-500 flex items-center gap-1.5">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                  Android Users
+                </span>
+                <span className="text-xs font-mono font-medium text-emerald-400">
+                  {userAnalytics?.platforms?.android?.total ?? 0} total
+                </span>
               </div>
-              <div className="rounded-lg bg-black/30 p-1.5 border border-white/4">
-                <p className="text-[9px] uppercase tracking-[0.12em] text-zinc-500">7d</p>
-                <p className="text-xs font-mono font-semibold text-zinc-200">
-                  {userAnalytics?.platforms?.android?.active7d ?? 0}
-                </p>
-              </div>
-              <div className="rounded-lg bg-black/30 p-1.5 border border-white/4">
-                <p className="text-[9px] uppercase tracking-[0.12em] text-zinc-500">30d</p>
-                <p className="text-xs font-mono font-semibold text-zinc-200">
-                  {userAnalytics?.platforms?.android?.active30d ?? 0}
-                </p>
+              <div className="grid grid-cols-3 gap-1 pt-0.5 text-center">
+                <div className="rounded-lg bg-black/30 p-1 border border-white/4">
+                  <p className="text-[8px] uppercase tracking-[0.1em] text-zinc-500">24h</p>
+                  <p className="text-xs font-mono font-semibold text-zinc-200">
+                    {userAnalytics?.platforms?.android?.active24h ?? 0}
+                  </p>
+                </div>
+                <div className="rounded-lg bg-black/30 p-1 border border-white/4">
+                  <p className="text-[8px] uppercase tracking-[0.1em] text-zinc-500">7d</p>
+                  <p className="text-xs font-mono font-semibold text-zinc-200">
+                    {userAnalytics?.platforms?.android?.active7d ?? 0}
+                  </p>
+                </div>
+                <div className="rounded-lg bg-black/30 p-1 border border-white/4">
+                  <p className="text-[8px] uppercase tracking-[0.1em] text-zinc-500">30d</p>
+                  <p className="text-xs font-mono font-semibold text-zinc-200">
+                    {userAnalytics?.platforms?.android?.active30d ?? 0}
+                  </p>
+                </div>
               </div>
             </div>
           </div>
@@ -2416,7 +2456,7 @@ export function AdminDashboard() {
         </div>
 
         <div className={`grid gap-6 p-3 sm:p-6 lg:p-8 min-w-0 ${tab === "users" || tab === "routing" ? "" : "xl:grid-cols-[minmax(0,1.5fr)_360px]"}`}>
-          <section className="space-y-6">
+          <section className="space-y-6 min-w-0 max-w-full">
             {tab === "routing" ? (
               <RoutingRulesPanel api={api} busy={busy} setBusy={setBusy} setMsg={setMsg} />
             ) : tab === "users" ? (
@@ -3407,8 +3447,8 @@ or
               </div>
             ) : null}
 
-            <div className="rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-6">
-              <div className="mb-4 flex items-center justify-between gap-3">
+            <div className="min-w-0 max-w-full overflow-hidden rounded-2xl sm:rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-3.5 sm:p-5 lg:p-6">
+              <div className="mb-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <h4 className="text-sm font-semibold text-zinc-100 flex flex-wrap items-center gap-2">
                   <span>Stored servers</span>
                   <span className="text-xs font-mono text-zinc-500">({stats.total})</span>
@@ -3709,12 +3749,12 @@ or
                           })()}
                         </div>
                       </div>
-                      <div className="flex flex-wrap items-center gap-1.5 justify-start lg:justify-end flex-shrink-0">
+                      <div className="flex flex-wrap items-center gap-1 sm:gap-1.5 justify-start lg:justify-end min-w-0">
                         <button
                           type="button"
                           onClick={() => void moveServer(server.id, 'up')}
                           disabled={isFirst || busy}
-                          className="rounded-lg border border-white/8 px-2.5 py-1.5 text-xs text-zinc-500 transition hover:bg-white/6 hover:text-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed"
+                          className="rounded-lg border border-white/8 px-2 py-1 text-xs text-zinc-500 transition hover:bg-white/6 hover:text-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed"
                           title="Move up"
                         >
                           ↑
@@ -3723,7 +3763,7 @@ or
                           type="button"
                           onClick={() => void moveServer(server.id, 'down')}
                           disabled={isLast || busy}
-                          className="rounded-lg border border-white/8 px-2.5 py-1.5 text-xs text-zinc-500 transition hover:bg-white/6 hover:text-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed"
+                          className="rounded-lg border border-white/8 px-2 py-1 text-xs text-zinc-500 transition hover:bg-white/6 hover:text-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed"
                           title="Move down"
                         >
                           ↓
@@ -3732,7 +3772,7 @@ or
                           type="button"
                           onClick={() => void editServer(server.id)}
                           disabled={pendingServerId === server.id}
-                          className="rounded-lg border border-white/8 px-3 py-1.5 text-xs text-zinc-400 transition hover:bg-white/6 hover:text-zinc-100"
+                          className="rounded-lg border border-white/8 px-2.5 py-1 text-xs text-zinc-400 transition hover:bg-white/6 hover:text-zinc-100"
                         >
                           Edit
                         </button>
@@ -3740,7 +3780,7 @@ or
                           type="button"
                           onClick={() => void duplicateServer(server.id)}
                           disabled={pendingServerId === server.id}
-                          className="rounded-lg border border-white/8 px-3 py-1.5 text-xs text-zinc-400 transition hover:bg-white/6 hover:text-zinc-100"
+                          className="rounded-lg border border-white/8 px-2.5 py-1 text-xs text-zinc-400 transition hover:bg-white/6 hover:text-zinc-100"
                           title="Duplicate server"
                         >
                           {pendingServerId === server.id ? "..." : "Duplicate"}
@@ -3749,7 +3789,7 @@ or
                           type="button"
                           onClick={() => void toggle(server.id, !server.isEnabled)}
                           disabled={pendingServerId === server.id}
-                          className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
+                          className={`rounded-lg border px-2.5 py-1 text-xs font-medium transition ${
                             server.isEnabled
                               ? "border-emerald-700/40 text-emerald-400 hover:bg-emerald-500/10"
                               : "border-white/8 text-zinc-400 hover:bg-white/6 hover:text-zinc-100"
@@ -3761,7 +3801,7 @@ or
                           type="button"
                           onClick={() => void remove(server.id)}
                           disabled={pendingServerId === server.id}
-                          className="rounded-lg border border-rose-700/30 px-3 py-1.5 text-xs text-rose-400/80 transition hover:bg-rose-500/10 hover:text-rose-300"
+                          className="rounded-lg border border-rose-700/30 px-2.5 py-1 text-xs text-rose-400/80 transition hover:bg-rose-500/10 hover:text-rose-300"
                         >
                           {pendingServerId === server.id ? "..." : "Delete"}
                         </button>
