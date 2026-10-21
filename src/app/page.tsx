@@ -3,6 +3,8 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
 
 const WINDOWS_URL = "https://raw.githubusercontent.com/funhaji/AstroVPN/main/Astro%20VPN_setup.exe";
+const WINDOWS_VERSION_URL = "https://raw.githubusercontent.com/funhaji/AstroVPN/main/version.txt";
+const ANDROID_VERSION_URL = "https://raw.githubusercontent.com/funhaji/AstroVPN/main/android/version.txt";
 const DEB_URL = "https://raw.githubusercontent.com/funhaji/AstroVPN/main/linux/AstroVPN.deb";
 const RPM_URL = "https://raw.githubusercontent.com/funhaji/AstroVPN/main/linux/AstroVPN.rpm";
 const APPIMAGE_URL = "https://github.com/funhaji/AstroVPN/releases/download/Main/AstroVPN.AppImage";
@@ -325,8 +327,8 @@ export default function DownloadPage() {
     locations: 62,
     servers: 96,
     countries: [],
-    androidVersion: "1.1.2",
-    windowsVersion: "1.1.1",
+    androidVersion: "1.2.1",
+    windowsVersion: "1.2.2.0",
   });
 
   useEffect(() => {
@@ -346,6 +348,26 @@ export default function DownloadPage() {
               servers: data.servers || prev.servers,
               countries: Array.isArray(data.countries) ? data.countries : prev.countries,
             }));
+          }
+        }
+      } catch {}
+
+      try {
+        const winRes = await fetch(`${WINDOWS_VERSION_URL}?t=${Date.now()}`, { cache: "no-store" });
+        if (winRes.ok) {
+          const winTxt = (await winRes.text()).trim();
+          if (winTxt && /^\d+(\.\d+)+$/.test(winTxt)) {
+            setStats((prev) => ({ ...prev, windowsVersion: winTxt }));
+          }
+        }
+      } catch {}
+
+      try {
+        const andRes = await fetch(`${ANDROID_VERSION_URL}?t=${Date.now()}`, { cache: "no-store" });
+        if (andRes.ok) {
+          const andTxt = (await andRes.text()).trim();
+          if (andTxt && /^\d+(\.\d+)+$/.test(andTxt)) {
+            setStats((prev) => ({ ...prev, androidVersion: andTxt }));
           }
         }
       } catch {}
