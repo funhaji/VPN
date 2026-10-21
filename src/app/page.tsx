@@ -189,6 +189,9 @@ function TunnelField() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
+    // Only run animated canvas on desktop viewports (>= 768px) to prevent mobile GPU thermal throttling and lag
+    if (typeof window === "undefined" || window.innerWidth < 768) return;
+
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
@@ -1504,6 +1507,47 @@ export default function DownloadPage() {
 
         .modal-dismiss-btn:hover {
           background: rgba(228, 228, 231, 0.15);
+        }
+
+        @media (max-width: 767px) {
+          .tunnel-canvas {
+            display: none !important;
+          }
+          .locations-hero-card,
+          .card,
+          .brand-badge,
+          .modal-dialog {
+            backdrop-filter: none !important;
+            -webkit-backdrop-filter: none !important;
+            background: rgba(18, 18, 24, 0.96) !important;
+          }
+          .top-bar {
+            top: 0.75rem;
+            inset-inline: 0.75rem;
+          }
+          .brand-badge {
+            padding: 0.35rem 0.65rem;
+          }
+          .brand-text {
+            font-size: 0.7rem;
+          }
+          .title {
+            font-size: clamp(1.85rem, 6.5vw, 2.75rem);
+            margin-bottom: 0.75rem;
+          }
+          .tagline {
+            font-size: 0.9rem;
+            margin-bottom: 1.25rem;
+            padding: 0;
+          }
+          .downloads-section {
+            padding: 0 0.5rem;
+            gap: 1rem;
+            margin-bottom: 2rem;
+          }
+          .card {
+            padding: 1.15rem;
+          }
         }
       `}</style>
     </main>

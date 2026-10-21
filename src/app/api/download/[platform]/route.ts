@@ -25,5 +25,9 @@ export async function GET(
     "Content-Disposition",
     `attachment; filename="${result.filename}"`
   );
+  response.headers.set(
+    "Cache-Control",
+    "public, max-age=300, s-maxage=3600, stale-while-revalidate=86400"
+  );
   return response;
 }

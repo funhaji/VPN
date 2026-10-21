@@ -1092,8 +1092,28 @@ const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): JsonObjec
   };
 };
 
+// In-memory catalog cache with 30s TTL to prevent heavy DB decrypt loops on Vercel
+let catalogCache: {
+  key: string;
+  payload: unknown;
+  expiresAt: number;
+} | null = null;
+
 export async function GET(request: NextRequest) {
   try {
+    const url = new URL(request.url);
+    const requestedProtocol = url.searchParams.get("protocol")?.trim().toLowerCase() || "all";
+    const cacheKey = requestedProtocol;
+
+    const now = Date.now();
+    if (catalogCache && catalogCache.key === cacheKey && catalogCache.expiresAt > now) {
+      return NextResponse.json(catalogCache.payload, {
+        headers: {
+          "Cache-Control": "public, max-age=20, s-maxage=60, stale-while-revalidate=300",
+        },
+      });
+    }
+
     const servers = await listServers(true);
     const catalogServers = [];
 
@@ -1117,10 +1137,6 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Support optional protocol filter query (?protocol=l2tp, etc.)
-    const url = new URL(request.url);
-    const requestedProtocol = url.searchParams.get("protocol")?.trim().toLowerCase();
-
     let filteredCatalog = catalogServers;
     if (requestedProtocol && requestedProtocol !== "all") {
       filteredCatalog = catalogServers.filter((s) => {
@@ -1141,6 +1157,7 @@ export async function GET(request: NextRequest) {
         if (requestedProtocol === "wireguard" || requestedProtocol === "wg") {
           return p.startsWith("wireguard") || p === "wg";
         }
+        if (requestedProtocol === "warp") return p === "warp";
         if (requestedProtocol === "ssh") return p.startsWith("ssh");
         if (requestedProtocol === "http") return p === "http";
         return p === requestedProtocol;
@@ -1148,11 +1165,17 @@ export async function GET(request: NextRequest) {
     }
 
     const { encryptCatalogPayload } = await import("@/lib/client-catalog");
-    return NextResponse.json(encryptCatalogPayload({ servers: filteredCatalog }), {
+    const encrypted = encryptCatalogPayload({ servers: filteredCatalog });
+
+    catalogCache = {
+      key: cacheKey,
+      payload: encrypted,
+      expiresAt: now + 30 * 1000,
+    };
+
+    return NextResponse.json(encrypted, {
       headers: {
-        "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0",
-        "Pragma": "no-cache",
-        "Expires": "0",
+        "Cache-Control": "public, max-age=20, s-maxage=60, stale-while-revalidate=300",
       },
     });
   } catch (error) {

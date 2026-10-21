@@ -726,10 +726,21 @@ export type PlatformAnalytics = {
   versions: Record<string, number>;
 };
 
+export type DeviceSummary = {
+  deviceId: string;
+  platform: string;
+  appVersion: string;
+  osVersion: string;
+  model: string;
+  firstSeen: string;
+  lastSeen: string;
+};
+
 export type ClientAnalyticsReport = {
   platforms: Record<string, PlatformAnalytics>;
   totalAll: number;
   active24hAll: number;
+  recentDevices: DeviceSummary[];
   updatedAt: string;
 };
 
@@ -794,10 +805,54 @@ export const getClientAnalytics = async (): Promise<ClientAnalyticsReport> => {
     }
   }
 
+  if (!platforms["windows"]) {
+    platforms["windows"] = {
+      platform: "windows",
+      total: 0,
+      active24h: 0,
+      active7d: 0,
+      active30d: 0,
+      versions: {},
+    };
+  }
+
+  const recentDeviceRows = (await query`
+    SELECT
+      device_id,
+      platform,
+      app_version,
+      os_version,
+      model,
+      first_seen,
+      last_seen
+    FROM client_devices
+    ORDER BY last_seen DESC
+    LIMIT 60;
+  `) as Array<{
+    device_id: string;
+    platform: string;
+    app_version: string;
+    os_version: string;
+    model: string;
+    first_seen: Date | string;
+    last_seen: Date | string;
+  }>;
+
+  const recentDevices: DeviceSummary[] = recentDeviceRows.map((r) => ({
+    deviceId: r.device_id,
+    platform: r.platform,
+    appVersion: r.app_version,
+    osVersion: r.os_version || "",
+    model: r.model || "",
+    firstSeen: new Date(r.first_seen).toISOString(),
+    lastSeen: new Date(r.last_seen).toISOString(),
+  }));
+
   return {
     platforms,
     totalAll,
     active24hAll,
+    recentDevices,
     updatedAt: new Date().toISOString(),
   };
 };

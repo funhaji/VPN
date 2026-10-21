@@ -1,21 +1,34 @@
 import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
-export const revalidate = 0;
+
+let versionCache: {
+  data: any;
+  expiresAt: number;
+} | null = null;
 
 export async function GET() {
+  const now = Date.now();
+  if (versionCache && versionCache.expiresAt > now) {
+    const res = NextResponse.json(versionCache.data);
+    res.headers.set("Cache-Control", "public, max-age=60, s-maxage=300, stale-while-revalidate=600");
+    res.headers.set("Access-Control-Allow-Origin", "*");
+    res.headers.set("Access-Control-Allow-Methods", "GET, OPTIONS");
+    return res;
+  }
+
   let androidVersion = "1.2.2";
-  let windowsVersion = "1.1.1";
+  let windowsVersion = "1.1.2";
 
   try {
     const res = await fetch(
-      `https://api.github.com/repos/funhaji/AstroVPN/contents/android/version.txt?ref=main&t=${Date.now()}`,
+      "https://api.github.com/repos/funhaji/AstroVPN/contents/android/version.txt?ref=main",
       {
         headers: {
           "User-Agent": "AstroVPN-Website",
           Accept: "application/vnd.github.v3+json",
         },
-        cache: "no-store",
+        signal: AbortSignal.timeout(3000),
       }
     );
 
@@ -35,8 +48,8 @@ export async function GET() {
   if (!androidVersion) {
     try {
       const rawRes = await fetch(
-        `https://raw.githubusercontent.com/funhaji/AstroVPN/main/android/version.txt?t=${Date.now()}`,
-        { cache: "no-store" }
+        "https://raw.githubusercontent.com/funhaji/AstroVPN/main/android/version.txt",
+        { signal: AbortSignal.timeout(3000) }
       );
       if (rawRes.ok) {
         const txt = (await rawRes.text()).trim();
@@ -63,7 +76,7 @@ export async function GET() {
     }
   } catch {}
 
-  const response = NextResponse.json({
+  const payload = {
     android: androidVersion,
     windows: windowsVersion,
     apkUrl: "https://github.com/funhaji/AstroVPN/releases/download/Android/app-universal-release.apk",
@@ -72,12 +85,16 @@ export async function GET() {
     locationCount: locations,
     servers,
     serverCount: servers,
-    timestamp: Date.now(),
-  });
+    timestamp: now,
+  };
 
-  response.headers.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0");
-  response.headers.set("Pragma", "no-cache");
-  response.headers.set("Expires", "0");
+  versionCache = {
+    data: payload,
+    expiresAt: now + 5 * 60 * 1000,
+  };
+
+  const response = NextResponse.json(payload);
+  response.headers.set("Cache-Control", "public, max-age=60, s-maxage=300, stale-while-revalidate=600");
   response.headers.set("Access-Control-Allow-Origin", "*");
   response.headers.set("Access-Control-Allow-Methods", "GET, OPTIONS");
   return response;

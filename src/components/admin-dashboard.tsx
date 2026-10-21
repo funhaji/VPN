@@ -6,9 +6,10 @@ import type { ServerRecord } from "@/types/server";
 import { detectProfileMetadata, splitImportedProfiles, parseWireGuardConf, type ParsedWireGuardProfile } from "@/lib/profile-import";
 import { protocolSupportsCredentials, unwrapOpenVpnProfileContent, readStoredCredentials } from "@/lib/credentials";
 import { RoutingRulesPanel } from "@/components/routing-rules-panel";
+import { ActiveUsersPanel } from "@/components/active-users-panel";
 import { COUNTRIES, flagFromCountryCode, getCountryMeta, normalizeLocationCode } from "@/lib/countries";
 
-type TabId = "v2ray" | "ssh" | "openvpn" | "wireguard" | "warp" | "custom" | "bulk" | "routing" | "http" | "l2tp";
+type TabId = "v2ray" | "ssh" | "openvpn" | "wireguard" | "warp" | "custom" | "bulk" | "routing" | "http" | "l2tp" | "users";
 type SshMode = "direct" | "dnstt";
 type SshResolverMode = "udp" | "dot" | "doh";
 type OpenVpnMode = "tcp" | "udp";
@@ -149,6 +150,7 @@ const PROTOCOLS: Array<{
   { id: "custom", label: "Custom", badge: "sing-box / xray / URI", support: "Advanced" },
   { id: "bulk", label: "Bulk", badge: "JSON array import", support: "Import" },
   { id: "routing", label: "Routing Rules", badge: "Iran Direct", support: "Geo IP bypass" },
+  { id: "users", label: "Active Users", badge: "Telemetry & Devices", support: "Live activity" },
 ];
 
 const stripLeadingCountryFlag = (value: string): string =>
@@ -2289,11 +2291,11 @@ export function AdminDashboard() {
     setForm((current) => ({ ...current, [key]: value }));
 
   return (
-    <div className="flex min-h-[calc(100vh-3.5rem)] overflow-hidden rounded-[24px] border border-white/6 bg-zinc-950/80 text-zinc-100 shadow-2xl backdrop-blur-xl">
+    <div className="flex flex-col md:flex-row min-h-[calc(100vh-3.5rem)] overflow-hidden rounded-[24px] border border-white/6 bg-zinc-950/80 text-zinc-100 shadow-2xl backdrop-blur-xl">
       {/* Sidebar */}
-      <aside className="flex w-52 flex-shrink-0 flex-col border-r border-white/5 bg-black/20">
+      <aside className="flex flex-col md:w-56 flex-shrink-0 border-b md:border-b-0 md:border-r border-white/5 bg-black/20">
         {/* Protocol nav */}
-        <nav className="flex-1 space-y-0.5 overflow-y-auto px-2 py-3">
+        <nav className="flex md:flex-col overflow-x-auto md:overflow-y-auto space-x-1 md:space-x-0 md:space-y-0.5 px-2 py-2 md:py-3 scrollbar-none">
           {PROTOCOLS.map((item) => {
             const isActive = tab === item.id;
             return (
@@ -2301,7 +2303,7 @@ export function AdminDashboard() {
                 key={item.id}
                 type="button"
                 onClick={() => { setTab(item.id); setMsg(null); }}
-                className={`group w-full rounded-lg px-3 py-2 text-left transition-all ${
+                className={`group whitespace-nowrap md:w-full rounded-lg px-3 py-1.5 md:py-2 text-left transition-all ${
                   isActive ? "bg-white/8 ring-1 ring-white/10" : "hover:bg-white/4"
                 }`}
               >
@@ -2314,7 +2316,7 @@ export function AdminDashboard() {
         </nav>
 
         {/* Stats + actions */}
-        <div className="border-t border-white/5 px-3 py-3 space-y-2">
+        <div className="hidden md:block border-t border-white/5 px-3 py-3 space-y-2">
           {/* Server & Location stats */}
           <div className="rounded-xl border border-white/6 bg-white/3 p-3 space-y-2.5">
             <div>
@@ -2403,7 +2405,7 @@ export function AdminDashboard() {
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 overflow-y-auto">
+      <main className="flex-1 overflow-y-auto min-w-0 max-w-full">
         <div className="border-b border-white/5 px-6 py-4">
           <div className="flex items-center justify-between gap-4">
             <h3 className="text-base font-semibold text-zinc-100">
@@ -2413,10 +2415,12 @@ export function AdminDashboard() {
           </div>
         </div>
 
-        <div className="grid gap-6 p-8 xl:grid-cols-[minmax(0,1.5fr)_360px]">
+        <div className={`grid gap-6 p-3 sm:p-6 lg:p-8 min-w-0 ${tab === "users" || tab === "routing" ? "" : "xl:grid-cols-[minmax(0,1.5fr)_360px]"}`}>
           <section className="space-y-6">
             {tab === "routing" ? (
               <RoutingRulesPanel api={api} busy={busy} setBusy={setBusy} setMsg={setMsg} />
+            ) : tab === "users" ? (
+              <ActiveUsersPanel api={api} busy={busy} setBusy={setBusy} setMsg={setMsg} />
             ) : tab !== "bulk" ? (
               <div className="rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-6">
                 <div className="grid gap-4 md:grid-cols-2">
@@ -3663,8 +3667,8 @@ or
                     return "bg-zinc-800 text-zinc-400";
                   })();
                   return (
-                  <div key={server.id} className="group rounded-xl border border-white/5 bg-white/3 px-4 py-3 transition hover:border-white/8 hover:bg-white/4">
-                    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div key={server.id} className="group min-w-0 max-w-full overflow-hidden rounded-xl border border-white/5 bg-white/3 px-3 sm:px-4 py-3 transition hover:border-white/8 hover:bg-white/4">
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between min-w-0">
                       <div className="flex min-w-0 items-start gap-3">
                         <input
                           type="checkbox"
@@ -3699,13 +3703,13 @@ or
                                     {meta.name} <span className="font-mono text-zinc-500">({meta.code})</span> ·
                                   </span>
                                 ) : null}
-                                <span className="font-mono text-zinc-400">{server.host}:{server.port}</span>
+                                <span className="font-mono text-zinc-400 truncate max-w-[220px] sm:max-w-none">{server.host}:{server.port}</span>
                               </p>
                             );
                           })()}
                         </div>
                       </div>
-                      <div className="flex flex-wrap gap-1.5 md:flex-nowrap">
+                      <div className="flex flex-wrap items-center gap-1.5 justify-start lg:justify-end flex-shrink-0">
                         <button
                           type="button"
                           onClick={() => void moveServer(server.id, 'up')}
@@ -3800,7 +3804,8 @@ or
             </div>
           </section>
 
-          <aside className="space-y-4">
+          {tab !== "users" && tab !== "routing" && (
+          <aside className="space-y-4 min-w-0">
             <div className="rounded-2xl border border-white/6 bg-white/3 p-4">
               <div className="flex items-center justify-between">
                 <p className="text-xs font-medium text-zinc-400">Config preview</p>
@@ -3846,6 +3851,7 @@ or
               )}
             </div>
           </aside>
+        )}
         </div>
       </main>
     </div>

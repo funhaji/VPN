@@ -1,0 +1,5 @@
+public/downloads/*.apk
+public/downloads/*.exe
+public/downloads/*.deb
+public/downloads/*.rpm
+public/downloads/*.AppImage
