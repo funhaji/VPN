@@ -751,6 +751,13 @@ const buildOutboundFromXrayJson = (
                 short_id: pickString(realitySettings.shortId),
               }
             : undefined,
+          echConfigList: pickString(tlsSettings.echConfigList),
+          ech: pickString(tlsSettings.echConfigList)
+            ? {
+                enabled: true,
+                config: pickString(tlsSettings.echConfigList),
+              }
+            : undefined,
         },
       )
     : undefined;
@@ -813,21 +820,47 @@ const buildOutboundFromXrayJson = (
               : undefined;
 
   if (protocol === "vless" || protocol === "vmess") {
+    let server = "";
+    let server_port = 443;
+    let uuid = "";
+    let flow = pickString(settings.flow);
+    let security = pickString(settings.security);
+    let alter_id = pickNumber(settings.alterId);
+
     const vnext = Array.isArray(settings.vnext) ? settings.vnext[0] : null;
     const user = isObject(vnext) && Array.isArray(vnext.users) ? vnext.users[0] : null;
-    if (!isObject(vnext) || !isObject(user)) return null;
+    if (isObject(vnext) && isObject(user)) {
+      server = pickString(vnext.address) ?? "";
+      server_port = pickNumber(vnext.port) ?? 443;
+      uuid = pickString(user.id) ?? "";
+      flow = pickString(user.flow) ?? flow;
+      security = pickString(user.security) ?? security;
+      alter_id = pickNumber(user.alterId) ?? alter_id;
+    } else if (pickString(settings.address) && pickString(settings.id)) {
+      // Flattened Xray JSON format (e.g. tapsell.ir / @VpnMaan)
+      server = pickString(settings.address) ?? "";
+      server_port = pickNumber(settings.port) ?? 443;
+      uuid = pickString(settings.id) ?? "";
+    } else {
+      return null;
+    }
+
+    if (!server || !uuid) return null;
+
+    const dnsHosts = isObject(json.dns) && isObject(json.dns.hosts) ? json.dns.hosts : undefined;
+
     return withOptional(
       {
         type: protocol,
         tag: "proxy",
-        server: pickString(vnext.address) ?? "",
-        server_port: pickNumber(vnext.port) ?? 443,
-        uuid: pickString(user.id) ?? "",
+        server,
+        server_port,
+        uuid,
       },
       {
-        flow: protocol === "vless" ? pickString(user.flow) : undefined,
-        security: protocol === "vmess" ? pickString(user.security) ?? "auto" : undefined,
-        alter_id: protocol === "vmess" ? pickNumber(user.alterId) ?? 0 : undefined,
+        flow: protocol === "vless" ? flow : undefined,
+        security: protocol === "vmess" ? security ?? "auto" : undefined,
+        alter_id: protocol === "vmess" ? alter_id ?? 0 : undefined,
         packet_encoding:
           pickString(options.extra.packetEncoding) ??
           pickString(options.extra.packet_encoding) ??
@@ -835,6 +868,7 @@ const buildOutboundFromXrayJson = (
         tls,
         transport,
         multiplex: buildMultiplex(options),
+        dns_hosts: dnsHosts,
       },
     );
   }
@@ -897,7 +931,10 @@ const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): JsonObjec
     const enc = pickString((outbound as JsonObject).encryption);
     if (enc && enc.toLowerCase() !== "none") return true;
     const tls = (outbound as JsonObject).tls;
-    if (isObject(tls) && pickString((tls as JsonObject).pinned_peer_cert_sha256)) return true;
+    if (isObject(tls)) {
+      if (pickString((tls as JsonObject).pinned_peer_cert_sha256)) return true;
+      if (pickString((tls as JsonObject).echConfigList)) return true;
+    }
     return false;
   };
 
@@ -1044,32 +1081,60 @@ const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): JsonObjec
   }
 
   if (normalizedProtocol === "vless") {
-    const outbound = buildOutboundFromVless(trimmed, server.options);
-    return { engine: requiresXray(outbound) ? "xray-core" : "sing-box", supported: true, outbound };
+    try {
+      const outbound = buildOutboundFromVless(trimmed, server.options);
+      return { engine: requiresXray(outbound) ? "xray-core" : "sing-box", supported: true, outbound };
+    } catch {
+      return { engine: "unsupported", supported: false, reason: "Invalid VLESS format" };
+    }
   }
   if (normalizedProtocol === "vmess") {
-    const outbound = buildOutboundFromVmess(trimmed, server.options);
-    return { engine: requiresXray(outbound) ? "xray-core" : "sing-box", supported: true, outbound };
+    try {
+      const outbound = buildOutboundFromVmess(trimmed, server.options);
+      return { engine: requiresXray(outbound) ? "xray-core" : "sing-box", supported: true, outbound };
+    } catch {
+      return { engine: "unsupported", supported: false, reason: "Invalid VMess format" };
+    }
   }
   if (normalizedProtocol === "trojan") {
-    const outbound = buildOutboundFromTrojan(trimmed, server.options);
-    return { engine: requiresXray(outbound) ? "xray-core" : "sing-box", supported: true, outbound };
+    try {
+      const outbound = buildOutboundFromTrojan(trimmed, server.options);
+      return { engine: requiresXray(outbound) ? "xray-core" : "sing-box", supported: true, outbound };
+    } catch {
+      return { engine: "unsupported", supported: false, reason: "Invalid Trojan format" };
+    }
   }
   if (normalizedProtocol === "shadowsocks") {
-    const outbound = buildOutboundFromShadowsocks(trimmed, server.options);
-    return { engine: requiresXray(outbound) ? "xray-core" : "sing-box", supported: true, outbound };
+    try {
+      const outbound = buildOutboundFromShadowsocks(trimmed, server.options);
+      return { engine: requiresXray(outbound) ? "xray-core" : "sing-box", supported: true, outbound };
+    } catch {
+      return { engine: "unsupported", supported: false, reason: "Invalid Shadowsocks format" };
+    }
   }
   if (normalizedProtocol === "hysteria2") {
-    const outbound = buildOutboundFromHysteria2(trimmed, server.options);
-    return { engine: requiresXray(outbound) ? "xray-core" : "sing-box", supported: true, outbound };
+    try {
+      const outbound = buildOutboundFromHysteria2(trimmed, server.options);
+      return { engine: requiresXray(outbound) ? "xray-core" : "sing-box", supported: true, outbound };
+    } catch {
+      return { engine: "unsupported", supported: false, reason: "Invalid Hysteria2 format" };
+    }
   }
   if (normalizedProtocol === "socks") {
-    const outbound = buildOutboundFromSocks(trimmed, server.options);
-    return { engine: "xray", supported: true, outbound };
+    try {
+      const outbound = buildOutboundFromSocks(trimmed, server.options);
+      return { engine: "xray", supported: true, outbound };
+    } catch {
+      return { engine: "unsupported", supported: false, reason: "Invalid Socks format" };
+    }
   }
   if (normalizedProtocol === "http") {
-    const outbound = buildOutboundFromHttpUri(trimmed);
-    return { engine: requiresXray(outbound) ? "xray-core" : "sing-box", supported: true, outbound };
+    try {
+      const outbound = buildOutboundFromHttpUri(trimmed);
+      return { engine: requiresXray(outbound) ? "xray-core" : "sing-box", supported: true, outbound };
+    } catch {
+      return { engine: "unsupported", supported: false, reason: "Invalid HTTP proxy format" };
+    }
   }
   if (normalizedProtocol === "ssh") {
     try {
@@ -1120,6 +1185,13 @@ export async function GET(request: NextRequest) {
     for (const server of servers) {
       try {
         const rawConfig = decryptConfig(server.encryptedConfig);
+        let runtimeProfile: JsonObject;
+        try {
+          runtimeProfile = buildRuntimeProfile(server, rawConfig);
+        } catch (profileErr) {
+          console.error(`Failed to build runtime profile for server ${server.id} (${server.name}):`, profileErr);
+          runtimeProfile = { engine: "unsupported", supported: false, reason: "Error building profile" };
+        }
         catalogServers.push({
           id: server.id,
           name: server.name,
@@ -1129,10 +1201,11 @@ export async function GET(request: NextRequest) {
           country: server.country,
           options: server.options,
           rawConfig: "",
-          runtimeProfile: buildRuntimeProfile(server, rawConfig),
+          runtimeProfile,
           updatedAt: server.updatedAt,
         });
-      } catch {
+      } catch (decryptErr) {
+        console.error(`Failed to decrypt server ${server.id}:`, decryptErr);
         // Skip individual broken records instead of failing the whole catalog.
       }
     }

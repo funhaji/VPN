@@ -211,9 +211,9 @@ const detectFromJson = (rawConfig: string, fallbackProtocol: string): ImportedPr
     pickNumber(parsed.port) ??
     pickNumber(parsed.server_port);
   let label =
+    pickString(parsed.remarks) ??
     pickString(parsed.name) ??
     pickString(parsed.tag) ??
-    pickString(parsed.remarks) ??
     pickString(parsed.ps);
 
   if (pickString(parsed.type)?.toLowerCase() === "wireguard-profile" && isObject(parsed.endpoint)) {
@@ -257,9 +257,7 @@ const detectFromJson = (rawConfig: string, fallbackProtocol: string): ImportedPr
       pickNumber(outbound.server_port) ??
       pickNumber(outbound.port) ??
       port;
-    label =
-      pickString(outbound.tag) ??
-      label;
+    label = label ?? pickString(outbound.tag);
 
     const settings = isObject(outbound.settings) ? outbound.settings : {};
     const vnext = Array.isArray(settings.vnext) ? settings.vnext[0] : null;
@@ -267,10 +265,12 @@ const detectFromJson = (rawConfig: string, fallbackProtocol: string): ImportedPr
     if (isObject(vnext)) {
       host = pickString(vnext.address) ?? host;
       port = pickNumber(vnext.port) ?? port;
-    }
-    if (isObject(servers)) {
+    } else if (isObject(servers)) {
       host = pickString(servers.address) ?? host;
       port = pickNumber(servers.port) ?? port;
+    } else if (pickString(settings.address)) {
+      host = pickString(settings.address) ?? host;
+      port = pickNumber(settings.port) ?? port;
     }
   }
 
@@ -633,7 +633,39 @@ export const splitImportedProfiles = (raw: string): string[] => {
   const trimmed = raw.trim();
   if (!trimmed) return [];
 
-  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+  if (trimmed.startsWith("{")) {
+    const parsed = parseJson(trimmed);
+    if (isObject(parsed) && Array.isArray(parsed.outbounds)) {
+      const proxyOutbounds = parsed.outbounds.filter((entry) => {
+        if (!isObject(entry)) return false;
+        const proto = pickString(entry.protocol)?.toLowerCase() || pickString(entry.type)?.toLowerCase();
+        return Boolean(proto && !["direct", "freedom", "blackhole", "dns", "block"].includes(proto));
+      });
+      if (proxyOutbounds.length > 1) {
+        // Multi-proxy config (e.g. @VpnMaan with 10 proxies)
+        // Split into separate standalone configs preserving top-level remarks and DNS hosts
+        const baseRemarks = pickString(parsed.remarks) || pickString(parsed.name) || "Proxy";
+        return proxyOutbounds.map((outbound, idx) => {
+          const obObj = outbound as JsonObject;
+          const tag = pickString(obObj.tag) || `proxy-${idx + 1}`;
+          const singleConfig: JsonObject = {
+            ...parsed,
+            remarks: `${baseRemarks} - ${tag}`,
+            outbounds: [outbound, { protocol: "freedom", tag: "direct" }],
+          };
+          if (isObject(singleConfig.routing)) {
+            const routingCopy = { ...(singleConfig.routing as JsonObject) };
+            delete routingCopy.balancers;
+            singleConfig.routing = routingCopy;
+          }
+          return JSON.stringify(singleConfig, null, 2);
+        });
+      }
+    }
+    return [trimmed];
+  }
+
+  if (trimmed.startsWith("[")) {
     return [trimmed];
   }
 
