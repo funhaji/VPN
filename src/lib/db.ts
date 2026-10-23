@@ -826,8 +826,7 @@ export const getClientAnalytics = async (): Promise<ClientAnalyticsReport> => {
       first_seen,
       last_seen
     FROM client_devices
-    ORDER BY last_seen DESC
-    LIMIT 60;
+    ORDER BY last_seen DESC;
   `) as Array<{
     device_id: string;
     platform: string;
