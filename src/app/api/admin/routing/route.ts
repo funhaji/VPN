@@ -7,8 +7,13 @@ export async function GET(request: NextRequest) {
   if (!limitRequest(request)) return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   if (!isAuthorized(request)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const rules = await listRoutingRules();
-  return NextResponse.json({ rules });
+  try {
+    const rules = await listRoutingRules();
+    return NextResponse.json({ rules });
+  } catch (err) {
+    console.warn("Failed to load routing rules:", err instanceof Error ? err.message : String(err));
+    return NextResponse.json({ rules: [], warning: err instanceof Error ? err.message : "Database unavailable" }, { status: 200 });
+  }
 }
 
 export async function POST(request: NextRequest) {

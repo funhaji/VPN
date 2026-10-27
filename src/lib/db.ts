@@ -23,6 +23,7 @@ const schemaReady: Record<DbProvider, boolean> = {
 let legacyMigrationChecked = false;
 let readCounter = 0;
 let catalogCacheVersion = 0;
+let autoSyncRunning = false;
 
 const heartbeatDebounce = new Map<string, { timestamp: number; appVersion: string }>();
 
@@ -68,7 +69,7 @@ const isProviderHealthy = (provider: DbProvider): boolean =>
 const markProviderError = (provider: DbProvider, error: unknown): void => {
   const msg = error instanceof Error ? error.message : String(error);
   const isQuota = msg.includes("402") || msg.includes("quota") || msg.includes("exceeded");
-  const duration = isQuota ? 300_000 : 60_000;
+  const duration = isQuota ? 3600_000 : 60_000;
   cooldownUntil[provider] = Date.now() + duration;
   console.warn(`[DB Provider] Marked ${provider} unhealthy for ${duration / 1000}s (${msg.slice(0, 120)})`);
 };
@@ -196,16 +197,6 @@ export const queryRead = async <T = unknown>(
     throw new Error("No database configured (neither Neon nor Supabase URL provided)");
   }
 
-  if (configured.length === 1) {
-    const single = configured[0];
-    try {
-      return await executeOnProvider<T>(single, strings, values);
-    } catch (err) {
-      markProviderError(single, err);
-      throw err;
-    }
-  }
-
   const healthy = configured.filter(isProviderHealthy);
   const candidates = healthy.length > 0 ? healthy : configured;
 
@@ -218,7 +209,7 @@ export const queryRead = async <T = unknown>(
   } catch (err) {
     markProviderError(primary, err);
 
-    if (secondary) {
+    if (secondary && secondary !== primary) {
       try {
         return await executeOnProvider<T>(secondary, strings, values);
       } catch (secErr) {
@@ -1047,6 +1038,30 @@ export const getDatabaseStatus = async (): Promise<Record<DbProvider, DatabasePr
   };
 
   await Promise.allSettled([checkProvider("neon"), checkProvider("supabase")]);
+
+  if (
+    status.neon.healthy &&
+    status.supabase.healthy &&
+    status.neon.serverCount !== null &&
+    status.supabase.serverCount !== null
+  ) {
+    if (status.neon.serverCount > status.supabase.serverCount && !autoSyncRunning) {
+      autoSyncRunning = true;
+      syncDatabases("neon", "supabase")
+        .catch(() => {})
+        .finally(() => {
+          autoSyncRunning = false;
+        });
+    } else if (status.supabase.serverCount > status.neon.serverCount && !autoSyncRunning) {
+      autoSyncRunning = true;
+      syncDatabases("supabase", "neon")
+        .catch(() => {})
+        .finally(() => {
+          autoSyncRunning = false;
+        });
+    }
+  }
+
   return status;
 };
 

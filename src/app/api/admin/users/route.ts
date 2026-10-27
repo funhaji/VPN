@@ -16,10 +16,20 @@ export async function GET(request: NextRequest) {
     const report = await getClientAnalytics();
     return NextResponse.json(report);
   } catch (err) {
-    console.error("Failed to get client analytics:", err);
+    console.warn("Client analytics fallback:", err instanceof Error ? err.message : String(err));
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Failed to load client analytics" },
-      { status: 500 },
+      {
+        platforms: {
+          windows: { platform: "windows", total: 0, active24h: 0, active7d: 0, active30d: 0, versions: {} },
+          android: { platform: "android", total: 0, active24h: 0, active7d: 0, active30d: 0, versions: {} },
+        },
+        totalAll: 0,
+        active24hAll: 0,
+        recentDevices: [],
+        updatedAt: new Date().toISOString(),
+        warning: err instanceof Error ? err.message : "Database unavailable",
+      },
+      { status: 200 },
     );
   }
 }
@@ -41,7 +51,6 @@ export async function DELETE(request: NextRequest) {
     await deleteClientDevice(deviceId);
     return NextResponse.json({ ok: true });
   } catch (err) {
-    console.error("Failed to delete client device:", err);
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Failed to delete client device" },
       { status: 500 },

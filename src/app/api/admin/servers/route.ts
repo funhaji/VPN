@@ -37,25 +37,36 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const servers = await listServers(false);
+  try {
+    const servers = await listServers(false);
 
-  const enriched = servers.map((server) => {
-    let accountCount: number | undefined = undefined;
+    const enriched = servers.map((server) => {
+      let accountCount: number | undefined = undefined;
 
-    if (server.protocol.toLowerCase().startsWith("l2tp")) {
-      try {
-        const raw = decryptConfig(server.encryptedConfig);
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed.auths) && parsed.auths.length > 0) {
-          accountCount = parsed.auths.length + (parsed.username ? 1 : 0);
-        } else if (parsed.username) {
-          accountCount = 1;
-        }
-      } catch {}
-    }
-    return { ...server, accountCount };
-  });
-  return NextResponse.json({ servers: enriched });
+      if (server.protocol.toLowerCase().startsWith("l2tp")) {
+        try {
+          const raw = decryptConfig(server.encryptedConfig);
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed.auths) && parsed.auths.length > 0) {
+            accountCount = parsed.auths.length + (parsed.username ? 1 : 0);
+          } else if (parsed.username) {
+            accountCount = 1;
+          }
+        } catch {}
+      }
+      return { ...server, accountCount };
+    });
+    return NextResponse.json({ servers: enriched });
+  } catch (error) {
+    console.error("Failed to list servers:", error);
+    return NextResponse.json(
+      {
+        servers: [],
+        error: error instanceof Error ? error.message : "Failed to load servers",
+      },
+      { status: 200 },
+    );
+  }
 }
 
 export async function POST(request: NextRequest) {
@@ -130,8 +141,11 @@ export async function POST(request: NextRequest) {
 
     revalidateServerCatalog();
     return NextResponse.json({ ok: true });
-  } catch {
-    return NextResponse.json({ error: "Request failed" }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Request failed" },
+      { status: 500 },
+    );
   }
 }
 
@@ -302,8 +316,11 @@ export async function PATCH(request: NextRequest) {
     const changed = await setAllServersEnabled(action === "enable-all");
     revalidateServerCatalog();
     return NextResponse.json({ ok: true, changed });
-  } catch {
-    return NextResponse.json({ error: "Request failed" }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Request failed" },
+      { status: 500 },
+    );
   }
 }
 
@@ -336,7 +353,10 @@ export async function DELETE(request: NextRequest) {
     const deleted = await deleteAllServers();
     revalidateServerCatalog();
     return NextResponse.json({ ok: true, deleted });
-  } catch {
-    return NextResponse.json({ error: "Request failed" }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Request failed" },
+      { status: 500 },
+    );
   }
 }
