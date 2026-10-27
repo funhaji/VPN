@@ -23,7 +23,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const body = (await request.json()) as {
+    const body = (await request.json().catch(() => ({}))) as {
       deviceId?: string;
       platform?: string;
       appVersion?: string;
@@ -52,7 +52,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ ok: true }, { headers: corsHeaders });
   } catch (err) {
-    console.error("Client heartbeat error:", err);
-    return NextResponse.json({ error: "Failed to record heartbeat" }, { status: 500, headers: corsHeaders });
+    console.warn("Heartbeat skipped due to database status:", err instanceof Error ? err.message : String(err));
+    return NextResponse.json({ ok: true }, { headers: corsHeaders });
   }
 }

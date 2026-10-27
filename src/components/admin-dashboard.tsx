@@ -662,6 +662,11 @@ export function AdminDashboard() {
   const [bulkCredPsk, setBulkCredPsk] = useState("");
   const [bulkExtraAuthText, setBulkExtraAuthText] = useState("");
   const [bulkExtraAuthBusy, setBulkExtraAuthBusy] = useState(false);
+  const [dbStatus, setDbStatus] = useState<{
+    neon: { configured: boolean; healthy: boolean; serverCount: number | null; error: string | null };
+    supabase: { configured: boolean; healthy: boolean; serverCount: number | null; error: string | null };
+  } | null>(null);
+  const [syncingDb, setSyncingDb] = useState(false);
   const [dnsttDefaults, setDnsttDefaults] = useState<{ dns: string; querySize: string; mtu: string }>({
     dns: "8.8.8.8:53",
     querySize: "1232",
@@ -727,6 +732,10 @@ export function AdminDashboard() {
       try {
         const uData = await api<any>("/api/admin/users");
         setUserAnalytics(uData);
+      } catch {}
+      try {
+        const dbData = await api<any>("/api/admin/db-sync");
+        if (dbData?.status) setDbStatus(dbData.status);
       } catch {
         // user analytics load is non-blocking
       }
@@ -740,6 +749,29 @@ export function AdminDashboard() {
   useEffect(() => {
     void load();
   }, [load]);
+  const handleSyncDatabases = useCallback(async () => {
+    setSyncingDb(true);
+    try {
+      const res = await api<{
+        ok: boolean;
+        source: string;
+        target: string;
+        synced: { servers: number; routingRules: number; settings: number };
+      }>("/api/admin/db-sync", {
+        method: "POST",
+      });
+      setMsg({
+        ok: true,
+        text: `Databases synced (${res.synced?.servers ?? 0} servers copied from ${res.source} to ${res.target})`,
+      });
+      await load();
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : "Sync failed" });
+    } finally {
+      setSyncingDb(false);
+    }
+  }, [api, load]);
+
 
   const handleOvpnFiles = useCallback(async (files: File[]) => {
     const loaded = await Promise.all(
@@ -2411,6 +2443,49 @@ export function AdminDashboard() {
                     {userAnalytics?.platforms?.android?.active30d ?? 0}
                   </p>
                 </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Database Engine & Sync */}
+          <div className="rounded-xl border border-white/6 bg-white/3 p-3 space-y-2.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] uppercase tracking-[0.18em] text-zinc-500 flex items-center gap-1.5">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-violet-400" />
+                Databases
+              </span>
+              <button
+                type="button"
+                onClick={() => void handleSyncDatabases()}
+                disabled={syncingDb || busy}
+                className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-violet-500/20 text-violet-300 hover:bg-violet-500/30 border border-violet-500/30 transition disabled:opacity-40"
+                title="Sync servers, rules, and settings between Neon and Supabase"
+              >
+                {syncingDb ? "Syncing..." : "Sync DBs"}
+              </button>
+            </div>
+            <div className="space-y-1.5 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-zinc-400 flex items-center gap-1.5">
+                  <span className={`inline-block w-1.5 h-1.5 rounded-full ${
+                    !dbStatus?.neon?.configured ? "bg-zinc-600" : dbStatus?.neon?.healthy ? "bg-emerald-400" : "bg-rose-400"
+                  }`} />
+                  Neon
+                </span>
+                <span className="font-mono text-[11px] text-zinc-300">
+                  {!dbStatus?.neon?.configured ? "Not set" : dbStatus?.neon?.healthy ? `${dbStatus.neon.serverCount ?? 0} servers` : "Quota / Err"}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-zinc-400 flex items-center gap-1.5">
+                  <span className={`inline-block w-1.5 h-1.5 rounded-full ${
+                    !dbStatus?.supabase?.configured ? "bg-zinc-600" : dbStatus?.supabase?.healthy ? "bg-emerald-400" : "bg-rose-400"
+                  }`} />
+                  Supabase
+                </span>
+                <span className="font-mono text-[11px] text-zinc-300">
+                  {!dbStatus?.supabase?.configured ? "Not set" : dbStatus?.supabase?.healthy ? `${dbStatus.supabase.serverCount ?? 0} servers` : "Error"}
+                </span>
               </div>
             </div>
           </div>

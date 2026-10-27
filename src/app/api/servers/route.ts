@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { decryptConfig } from "@/lib/crypto";
-import { listServers } from "@/lib/db";
+import { getCatalogCacheVersion, listServers } from "@/lib/db";
 import { parseWireGuardConf } from "@/lib/profile-import";
 import type { ProtocolOptions, ServerRecord } from "@/types/server";
 
@@ -1159,6 +1159,7 @@ const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): JsonObjec
 // In-memory catalog cache with 30s TTL to prevent heavy DB decrypt loops on Vercel
 let catalogCache: {
   key: string;
+  version: number;
   payload: unknown;
   expiresAt: number;
 } | null = null;
@@ -1170,7 +1171,8 @@ export async function GET(request: NextRequest) {
     const cacheKey = requestedProtocol;
 
     const now = Date.now();
-    if (catalogCache && catalogCache.key === cacheKey && catalogCache.expiresAt > now) {
+    const currentVersion = getCatalogCacheVersion();
+    if (catalogCache && catalogCache.key === cacheKey && catalogCache.version === currentVersion && catalogCache.expiresAt > now) {
       return NextResponse.json(catalogCache.payload, {
         headers: {
           "Cache-Control": "public, max-age=15, s-maxage=30, stale-while-revalidate=120",
@@ -1241,6 +1243,7 @@ export async function GET(request: NextRequest) {
 
     catalogCache = {
       key: cacheKey,
+      version: currentVersion,
       payload: encrypted,
       expiresAt: now + 30 * 1000,
     };
