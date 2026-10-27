@@ -1206,7 +1206,7 @@ export async function GET(request: NextRequest) {
           updatedAt: server.updatedAt,
         });
       } catch (decryptErr) {
-        console.error(`Failed to decrypt server ${server.id}:`, decryptErr);
+        console.error(`Failed to decrypt server "${server.name}" (id: ${server.id}):`, decryptErr);
         // Skip individual broken records instead of failing the whole catalog.
       }
     }

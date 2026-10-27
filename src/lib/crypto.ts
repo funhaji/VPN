@@ -7,7 +7,12 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import type { EncryptedConfig } from "@/types/server";
-import { getPassphrase } from "@/lib/env";
+import {
+  getDeploymentSalt,
+  getDeploymentSaltCandidates,
+  getPassphrase,
+  getPassphraseCandidates,
+} from "@/lib/env";
 
 const ALGORITHM = "aes-256-gcm";
 const KEY_LENGTH = 32;
@@ -20,53 +25,25 @@ const RECORD_SALT_LENGTH = 32;
 const V2_AAD = Buffer.from("astro-vpn-config:v2", "utf8");
 const AAD = Buffer.from("astro-vpn-config:v3", "utf8");
 
-let cachedLegacyKey: Buffer | null = null;
-let cachedV2MasterKey: Buffer | null = null;
-let cachedMasterKey: Buffer | null = null;
+const masterKeyCache = new Map<string, Buffer>();
 
-const getDeploymentSalt = (): string => process.env.ENCRYPTION_SALT ?? "AUGabgabgoag";
-
-const getLegacyKey = (): Buffer => {
-  if (cachedLegacyKey) {
-    return cachedLegacyKey;
-  }
-  cachedLegacyKey = pbkdf2Sync(
-    getPassphrase(),
-    getDeploymentSalt(),
-    LEGACY_ITERATIONS,
-    KEY_LENGTH,
-    "sha256",
-  );
-  return cachedLegacyKey;
+const getMasterKeyWith = (passphrase: string, salt: string, iterations: number): Buffer => {
+  const cacheKey = `${passphrase}:${salt}:${iterations}`;
+  const existing = masterKeyCache.get(cacheKey);
+  if (existing) return existing;
+  const derived = pbkdf2Sync(passphrase, salt, iterations, KEY_LENGTH, "sha256");
+  masterKeyCache.set(cacheKey, derived);
+  return derived;
 };
 
-const getV2MasterKey = (): Buffer => {
-  if (cachedV2MasterKey) {
-    return cachedV2MasterKey;
-  }
-  cachedV2MasterKey = pbkdf2Sync(
-    getPassphrase(),
-    getDeploymentSalt(),
-    V2_ITERATIONS,
-    KEY_LENGTH,
-    "sha256",
-  );
-  return cachedV2MasterKey;
-};
+const getLegacyKey = (): Buffer =>
+  getMasterKeyWith(getPassphrase(), getDeploymentSalt(), LEGACY_ITERATIONS);
 
-const getMasterKey = (): Buffer => {
-  if (cachedMasterKey) {
-    return cachedMasterKey;
-  }
-  cachedMasterKey = pbkdf2Sync(
-    getPassphrase(),
-    getDeploymentSalt(),
-    CURRENT_ITERATIONS,
-    KEY_LENGTH,
-    "sha256",
-  );
-  return cachedMasterKey;
-};
+const getV2MasterKey = (): Buffer =>
+  getMasterKeyWith(getPassphrase(), getDeploymentSalt(), V2_ITERATIONS);
+
+const getMasterKey = (): Buffer =>
+  getMasterKeyWith(getPassphrase(), getDeploymentSalt(), CURRENT_ITERATIONS);
 
 const deriveV2RecordKey = (salt: Buffer): Buffer =>
   Buffer.from(hkdfSync("sha256", getV2MasterKey(), salt, "astro-vpn-config", KEY_LENGTH));
@@ -105,16 +82,6 @@ export const needsEncryptionUpgrade = (encrypted: EncryptedConfig): boolean =>
   typeof encrypted.salt !== "string" ||
   encrypted.salt.length === 0;
 
-const decryptLegacyConfig = (encrypted: EncryptedConfig): string => {
-  const decipher = createDecipheriv(ALGORITHM, getLegacyKey(), Buffer.from(encrypted.iv, "base64"));
-  decipher.setAuthTag(Buffer.from(encrypted.authTag, "base64"));
-  const decrypted = Buffer.concat([
-    decipher.update(Buffer.from(encrypted.cipherText, "base64")),
-    decipher.final(),
-  ]);
-  return decrypted.toString("utf8");
-};
-
 export const encryptConfig = (plainText: string): EncryptedConfig => {
   const salt = randomBytes(RECORD_SALT_LENGTH);
   const iv = randomBytes(12);
@@ -133,65 +100,85 @@ export const encryptConfig = (plainText: string): EncryptedConfig => {
 };
 
 export const decryptConfig = (encrypted: EncryptedConfig): string => {
-  // v1 (legacy) - no salt, no AAD, 310k iterations
-  if (needsEncryptionUpgrade(encrypted) && encrypted.version !== 2) {
-    try {
-      return decryptLegacyConfig(encrypted);
-    } catch {
-      const legacyCandidate = Buffer.from(encrypted.cipherText, "base64").toString("utf8");
-      if (looksLikePlaintextConfig(legacyCandidate)) {
-        return legacyCandidate;
+  const passCandidates = getPassphraseCandidates();
+  const saltCandidates = getDeploymentSaltCandidates();
+
+  const rawSalt = encrypted.salt ?? "";
+  const saltBuf = rawSalt ? Buffer.from(rawSalt, "base64") : null;
+  const isV3 = encrypted.version === 3 || (saltBuf && saltBuf.length === RECORD_SALT_LENGTH);
+  const isV2 = encrypted.version === 2 || (saltBuf && saltBuf.length === V2_SALT_LENGTH);
+
+  // 1. Try V3 decryption with all candidate passphrases and salts
+  if (isV3 && saltBuf) {
+    const iv = Buffer.from(encrypted.iv, "base64");
+    const authTag = Buffer.from(encrypted.authTag, "base64");
+    const cipherBuf = Buffer.from(encrypted.cipherText, "base64");
+
+    for (const pass of passCandidates) {
+      for (const salt of saltCandidates) {
+        try {
+          const mKey = getMasterKeyWith(pass, salt, CURRENT_ITERATIONS);
+          const rKey = Buffer.from(hkdfSync("sha256", mKey, saltBuf, "astro-vpn-config", KEY_LENGTH));
+          const decipher = createDecipheriv(ALGORITHM, rKey, iv);
+          decipher.setAAD(AAD);
+          decipher.setAuthTag(authTag);
+          const dec = Buffer.concat([decipher.update(cipherBuf), decipher.final()]);
+          return dec.toString("utf8");
+        } catch {}
       }
-      if (looksLikePlaintextConfig(encrypted.cipherText)) {
-        return encrypted.cipherText;
-      }
-      throw new Error("Unable to decrypt server config");
     }
   }
 
-  // v2 - 16-byte salt, v2 AAD, 600k iterations
-  if (encrypted.version === 2) {
-    try {
-      const decipher = createDecipheriv(
-        ALGORITHM,
-        deriveV2RecordKey(Buffer.from(encrypted.salt ?? "", "base64")),
-        Buffer.from(encrypted.iv, "base64"),
-      );
-      decipher.setAAD(V2_AAD);
-      decipher.setAuthTag(Buffer.from(encrypted.authTag, "base64"));
-      const decrypted = Buffer.concat([
-        decipher.update(Buffer.from(encrypted.cipherText, "base64")),
-        decipher.final(),
-      ]);
-      return decrypted.toString("utf8");
-    } catch {
-      const candidate = Buffer.from(encrypted.cipherText, "base64").toString("utf8");
-      if (looksLikePlaintextConfig(candidate)) return candidate;
-      if (looksLikePlaintextConfig(encrypted.cipherText)) return encrypted.cipherText;
-      throw new Error("Unable to decrypt server config");
+  // 2. Try V2 decryption with all candidate passphrases and salts
+  if (isV2 && saltBuf) {
+    const iv = Buffer.from(encrypted.iv, "base64");
+    const authTag = Buffer.from(encrypted.authTag, "base64");
+    const cipherBuf = Buffer.from(encrypted.cipherText, "base64");
+
+    for (const pass of passCandidates) {
+      for (const salt of saltCandidates) {
+        try {
+          const mKey = getMasterKeyWith(pass, salt, V2_ITERATIONS);
+          const rKey = Buffer.from(hkdfSync("sha256", mKey, saltBuf, "astro-vpn-config", KEY_LENGTH));
+          const decipher = createDecipheriv(ALGORITHM, rKey, iv);
+          decipher.setAAD(V2_AAD);
+          decipher.setAuthTag(authTag);
+          const dec = Buffer.concat([decipher.update(cipherBuf), decipher.final()]);
+          return dec.toString("utf8");
+        } catch {}
+      }
     }
   }
 
-  // v3 (current) - 32-byte salt, v3 AAD, 900k iterations
+  // 3. Try Legacy V1 decryption with all candidate passphrases and salts
   try {
-    const decipher = createDecipheriv(
-      ALGORITHM,
-      deriveRecordKey(Buffer.from(encrypted.salt ?? "", "base64")),
-      Buffer.from(encrypted.iv, "base64"),
-    );
-    decipher.setAAD(AAD);
-    decipher.setAuthTag(Buffer.from(encrypted.authTag, "base64"));
-    const decrypted = Buffer.concat([
-      decipher.update(Buffer.from(encrypted.cipherText, "base64")),
-      decipher.final(),
-    ]);
-    return decrypted.toString("utf8");
-  } catch {
+    const iv = Buffer.from(encrypted.iv, "base64");
+    const authTag = Buffer.from(encrypted.authTag, "base64");
+    const cipherBuf = Buffer.from(encrypted.cipherText, "base64");
+
+    for (const pass of passCandidates) {
+      for (const salt of saltCandidates) {
+        try {
+          const legacyKey = getMasterKeyWith(pass, salt, LEGACY_ITERATIONS);
+          const decipher = createDecipheriv(ALGORITHM, legacyKey, iv);
+          decipher.setAuthTag(authTag);
+          const dec = Buffer.concat([decipher.update(cipherBuf), decipher.final()]);
+          return dec.toString("utf8");
+        } catch {}
+      }
+    }
+  } catch {}
+
+  // 4. Fallback: check if cipherText is plaintext or base64 plaintext
+  try {
     const candidate = Buffer.from(encrypted.cipherText, "base64").toString("utf8");
     if (looksLikePlaintextConfig(candidate)) return candidate;
-    if (looksLikePlaintextConfig(encrypted.cipherText)) return encrypted.cipherText;
-    throw new Error("Unable to decrypt server config");
+  } catch {}
+  if (looksLikePlaintextConfig(encrypted.cipherText)) {
+    return encrypted.cipherText;
   }
+
+  throw new Error("Unable to decrypt server config");
 };
 
 export const safeEquals = (left: string, right: string): boolean => {

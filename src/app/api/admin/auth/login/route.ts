@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { safeEquals } from "@/lib/crypto";
-import { getPassphrase } from "@/lib/env";
+import { getPassphraseCandidates } from "@/lib/env";
 import { limitRequest } from "@/lib/auth";
 import { createSessionToken, SESSION_COOKIE } from "@/lib/session";
 
@@ -11,7 +11,10 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = (await request.json()) as { pass?: string };
-    if (!body.pass || !safeEquals(body.pass, getPassphrase())) {
+    const rawPass = typeof body?.pass === "string" ? body.pass.trim().replace(/^["']|["']$/g, "") : "";
+    const candidates = getPassphraseCandidates();
+
+    if (!rawPass || !candidates.some((pass) => safeEquals(rawPass, pass))) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 

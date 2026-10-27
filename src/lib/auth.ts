@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { safeEquals } from "@/lib/crypto";
-import { getPassphrase } from "@/lib/env";
+import { getPassphrase, getPassphraseCandidates } from "@/lib/env";
 import { hasValidSessionToken, SESSION_COOKIE } from "@/lib/session";
 
 const WINDOW_MS = 60_000;
@@ -41,9 +41,12 @@ export const limitRequest = (request: NextRequest): boolean => {
 };
 
 export const isAuthorized = (request: NextRequest): boolean => {
-  const headerToken = request.headers.get("x-admin-pass");
-  if (headerToken && safeEquals(headerToken, getPassphrase())) {
-    return true;
+  const headerToken = request.headers.get("x-admin-pass")?.trim().replace(/^["']|["']$/g, "");
+  if (headerToken) {
+    const candidates = getPassphraseCandidates();
+    if (candidates.some((pass) => safeEquals(headerToken, pass))) {
+      return true;
+    }
   }
   const sessionToken = request.cookies.get(SESSION_COOKIE)?.value;
   return hasValidSessionToken(sessionToken);
