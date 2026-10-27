@@ -1068,7 +1068,7 @@ export const getDatabaseStatus = async (): Promise<Record<DbProvider, DatabasePr
 export const syncDatabases = async (
   source: DbProvider,
   target: DbProvider,
-): Promise<{ servers: number; routingRules: number; settings: number }> => {
+): Promise<{ servers: number; routingRules: number; settings: number; devices: number }> => {
   if (source === target) {
     throw new Error("Source and target databases must be different");
   }
@@ -1253,11 +1253,89 @@ export const syncDatabases = async (
     );
   }
 
+  const devices = (await executeOnProvider<DeviceSummary>(
+    source,
+    Object.assign([`SELECT device_id, platform, app_version, os_version, model, first_seen, last_seen FROM client_devices`], {
+      raw: [`SELECT device_id, platform, app_version, os_version, model, first_seen, last_seen FROM client_devices`],
+    }) as unknown as TemplateStringsArray,
+    [],
+  )) as DeviceSummary[];
+
+  const DEVICE_CHUNK_SIZE = 500;
+  for (let i = 0; i < devices.length; i += DEVICE_CHUNK_SIZE) {
+    const chunk = devices.slice(i, i + DEVICE_CHUNK_SIZE);
+    await executeOnProvider(
+      target,
+      Object.assign(
+        [
+          `INSERT INTO client_devices (device_id, platform, app_version, os_version, model, first_seen, last_seen)
+           SELECT
+             device_id,
+             platform,
+             app_version,
+             os_version,
+             model,
+             first_seen::timestamptz,
+             last_seen::timestamptz
+           FROM jsonb_to_recordset(`,
+          `::jsonb) AS x(
+             device_id text,
+             platform text,
+             app_version text,
+             os_version text,
+             model text,
+             first_seen text,
+             last_seen text
+           )
+           ON CONFLICT (device_id) DO UPDATE SET
+             platform = EXCLUDED.platform,
+             app_version = EXCLUDED.app_version,
+             os_version = CASE WHEN EXCLUDED.os_version <> '' THEN EXCLUDED.os_version ELSE client_devices.os_version END,
+             model = CASE WHEN EXCLUDED.model <> '' THEN EXCLUDED.model ELSE client_devices.model END,
+             first_seen = LEAST(client_devices.first_seen, EXCLUDED.first_seen),
+             last_seen = GREATEST(client_devices.last_seen, EXCLUDED.last_seen);`,
+        ],
+        {
+          raw: [
+            `INSERT INTO client_devices (device_id, platform, app_version, os_version, model, first_seen, last_seen)
+           SELECT
+             device_id,
+             platform,
+             app_version,
+             os_version,
+             model,
+             first_seen::timestamptz,
+             last_seen::timestamptz
+           FROM jsonb_to_recordset(`,
+            `::jsonb) AS x(
+             device_id text,
+             platform text,
+             app_version text,
+             os_version text,
+             model text,
+             first_seen text,
+             last_seen text
+           )
+           ON CONFLICT (device_id) DO UPDATE SET
+             platform = EXCLUDED.platform,
+             app_version = EXCLUDED.app_version,
+             os_version = CASE WHEN EXCLUDED.os_version <> '' THEN EXCLUDED.os_version ELSE client_devices.os_version END,
+             model = CASE WHEN EXCLUDED.model <> '' THEN EXCLUDED.model ELSE client_devices.model END,
+             first_seen = LEAST(client_devices.first_seen, EXCLUDED.first_seen),
+             last_seen = GREATEST(client_devices.last_seen, EXCLUDED.last_seen);`,
+          ],
+        },
+      ) as unknown as TemplateStringsArray,
+      [JSON.stringify(chunk)],
+    );
+  }
+
   invalidateServerCatalogCache();
 
   return {
     servers: servers.length,
     routingRules: rules.length,
     settings: settings.length,
+    devices: devices.length,
   };
 };
