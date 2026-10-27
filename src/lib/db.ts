@@ -176,7 +176,28 @@ const executeOnProvider = async <T = unknown>(
 
     const client = getSupabaseClient();
     if (!client) throw new Error("Supabase DB is not configured");
-    const rows = await client(strings, ...(values as any[]));
+
+    const normalizedValues = values.map((val, idx) => {
+      if (typeof val === "string" && (val.startsWith("[") || val.startsWith("{"))) {
+        const preceding = strings[idx] || "";
+        const following = strings[idx + 1] || "";
+        if (
+          preceding.includes("jsonb_to_recordset") ||
+          preceding.includes("json_to_recordset") ||
+          following.includes("::jsonb") ||
+          following.includes("::json")
+        ) {
+          try {
+            return JSON.parse(val);
+          } catch {
+            return val;
+          }
+        }
+      }
+      return val;
+    });
+
+    const rows = await client(strings, ...(normalizedValues as any[]));
     return (rows as unknown as T[]) ?? [];
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
