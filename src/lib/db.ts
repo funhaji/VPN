@@ -58,8 +58,10 @@ const getSupabaseClient = (): Sql | null => {
 
 export const getConfiguredProviders = (): DbProvider[] => {
   const providers: DbProvider[] = [];
-  if (getNeonUrl()) providers.push("neon");
   if (getSupabaseUrl()) providers.push("supabase");
+  if (getNeonUrl() && process.env.DISABLE_NEON !== "true" && process.env.DISABLE_NEON !== "1") {
+    providers.push("neon");
+  }
   return providers;
 };
 
@@ -251,8 +253,11 @@ export const queryWrite = async <T = unknown>(
     throw new Error("No database configured (neither Neon nor Supabase URL provided)");
   }
 
-  if (configured.length === 1) {
-    const single = configured[0];
+  const healthy = configured.filter(isProviderHealthy);
+  const targets = healthy.length > 0 ? healthy : configured;
+
+  if (targets.length === 1) {
+    const single = targets[0];
     try {
       const res = await executeOnProvider<T>(single, strings, values);
       invalidateServerCatalogCache();
@@ -264,14 +269,14 @@ export const queryWrite = async <T = unknown>(
   }
 
   const results = await Promise.allSettled(
-    configured.map((p) => executeOnProvider<T>(p, strings, values)),
+    targets.map((p) => executeOnProvider<T>(p, strings, values)),
   );
 
   let successResult: T[] | null = null;
   const errors: string[] = [];
 
   results.forEach((res, idx) => {
-    const provider = configured[idx];
+    const provider = targets[idx];
     if (res.status === "fulfilled") {
       if (!successResult) successResult = res.value;
     } else {
@@ -307,25 +312,52 @@ type DatabaseServer = {
   updated_at: string;
 };
 
+const parseOptions = (raw: unknown): ProtocolOptions => {
+  const fallback: ProtocolOptions = {
+    mux: false,
+    fragment: false,
+    sniffing: true,
+    allowInsecure: false,
+    extra: {},
+  };
+  if (!raw || raw === "undefined" || raw === "null") return fallback;
+  if (typeof raw === "object") return raw as ProtocolOptions;
+  try {
+    const parsed = JSON.parse(String(raw));
+    return (parsed && typeof parsed === "object") ? (parsed as ProtocolOptions) : fallback;
+  } catch {
+    return fallback;
+  }
+};
+
+const formatIsoDate = (val: unknown): string => {
+  if (!val) return new Date().toISOString();
+  if (val instanceof Date) {
+    return isNaN(val.getTime()) ? new Date().toISOString() : val.toISOString();
+  }
+  const d = new Date(String(val));
+  return isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString();
+};
+
 const mapServer = (row: DatabaseServer): ServerRecord => ({
-  id: row.id,
-  name: row.name,
-  protocol: row.protocol,
-  host: row.host,
-  port: row.port,
-  country: row.country,
-  isEnabled: row.is_enabled,
-  options: JSON.parse(row.options_json) as ProtocolOptions,
+  id: String(row.id || ""),
+  name: String(row.name || ""),
+  protocol: String(row.protocol || ""),
+  host: String(row.host || ""),
+  port: Number(row.port) || 443,
+  country: String(row.country || ""),
+  isEnabled: Boolean(row.is_enabled),
+  options: parseOptions(row.options_json),
   encryptedConfig: {
     version: row.config_version ?? undefined,
-    cipherText: row.config_cipher,
+    cipherText: String(row.config_cipher || ""),
     salt: row.config_salt ?? undefined,
-    iv: row.config_iv,
-    authTag: row.config_tag,
+    iv: String(row.config_iv || ""),
+    authTag: String(row.config_tag || ""),
   },
-  sortOrder: row.sort_order,
-  createdAt: row.created_at,
-  updatedAt: row.updated_at,
+  sortOrder: Number(row.sort_order) || 0,
+  createdAt: formatIsoDate(row.created_at),
+  updatedAt: formatIsoDate(row.updated_at),
 });
 
 const migrateLegacyEncryption = async (): Promise<void> => {
@@ -982,8 +1014,8 @@ export const getClientAnalytics = async (): Promise<ClientAnalyticsReport> => {
     appVersion: r.app_version,
     osVersion: r.os_version || "",
     model: r.model || "",
-    firstSeen: new Date(r.first_seen).toISOString(),
-    lastSeen: new Date(r.last_seen).toISOString(),
+    firstSeen: formatIsoDate(r.first_seen),
+    lastSeen: formatIsoDate(r.last_seen),
   }));
 
   return {
@@ -1032,6 +1064,11 @@ export const getDatabaseStatus = async (): Promise<Record<DbProvider, DatabasePr
 
   const checkProvider = async (provider: DbProvider) => {
     if (!status[provider].configured) return;
+    if (!isProviderHealthy(provider)) {
+      status[provider].healthy = false;
+      status[provider].error = "Provider is in cooldown";
+      return;
+    }
     try {
       const serverRes = (await executeOnProvider<{ count: number }>(
         provider,
