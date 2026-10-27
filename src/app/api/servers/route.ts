@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { decryptConfig } from "@/lib/crypto";
-import { getCatalogCacheVersion, listServers } from "@/lib/db";
+import { getCatalogCacheVersion, getLastUsedProvider, listServers } from "@/lib/db";
 import { parseWireGuardConf } from "@/lib/profile-import";
 import type { ProtocolOptions, ServerRecord } from "@/types/server";
 
@@ -1161,6 +1161,7 @@ let catalogCache: {
   key: string;
   version: number;
   payload: unknown;
+  provider: string;
   expiresAt: number;
 } | null = null;
 
@@ -1170,12 +1171,20 @@ export async function GET(request: NextRequest) {
     const requestedProtocol = url.searchParams.get("protocol")?.trim().toLowerCase() || "all";
     const cacheKey = requestedProtocol;
 
+    const isManualRefresh =
+      url.searchParams.has("t") ||
+      url.searchParams.has("refresh") ||
+      request.headers.get("cache-control")?.includes("no-cache") ||
+      request.headers.get("pragma")?.includes("no-cache");
+
     const now = Date.now();
     const currentVersion = getCatalogCacheVersion();
-    if (catalogCache && catalogCache.key === cacheKey && catalogCache.version === currentVersion && catalogCache.expiresAt > now) {
+    if (!isManualRefresh && catalogCache && catalogCache.key === cacheKey && catalogCache.version === currentVersion && catalogCache.expiresAt > now) {
       return NextResponse.json(catalogCache.payload, {
         headers: {
           "Cache-Control": "public, max-age=15, s-maxage=30, stale-while-revalidate=120",
+          "x-database-provider": catalogCache.provider,
+          "Access-Control-Expose-Headers": "x-database-provider",
         },
       });
     }
@@ -1241,16 +1250,22 @@ export async function GET(request: NextRequest) {
     const { encryptCatalogPayload } = await import("@/lib/client-catalog");
     const encrypted = encryptCatalogPayload({ servers: filteredCatalog });
 
+    const activeDb = getLastUsedProvider() || "supabase";
     catalogCache = {
       key: cacheKey,
       version: currentVersion,
       payload: encrypted,
+      provider: activeDb,
       expiresAt: now + 30 * 1000,
     };
 
     return NextResponse.json(encrypted, {
       headers: {
-        "Cache-Control": "public, max-age=15, s-maxage=30, stale-while-revalidate=120",
+        "Cache-Control": isManualRefresh
+          ? "no-cache, no-store, must-revalidate"
+          : "public, max-age=15, s-maxage=30, stale-while-revalidate=120",
+        "x-database-provider": activeDb,
+        "Access-Control-Expose-Headers": "x-database-provider",
       },
     });
   } catch (error) {

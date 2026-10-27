@@ -211,6 +211,9 @@ const executeOnProvider = async <T = unknown>(
   }
 };
 
+let lastUsedProvider: DbProvider | null = null;
+export const getLastUsedProvider = (): DbProvider | null => lastUsedProvider;
+
 export const queryRead = async <T = unknown>(
   strings: TemplateStringsArray,
   ...values: unknown[]
@@ -223,18 +226,22 @@ export const queryRead = async <T = unknown>(
   const healthy = configured.filter(isProviderHealthy);
   const candidates = healthy.length > 0 ? healthy : configured;
 
-  const primaryIdx = Math.abs(readCounter++) % candidates.length;
+  const primaryIdx = Math.floor(Math.random() * candidates.length);
   const primary = candidates[primaryIdx];
   const secondary = configured.find((p) => p !== primary);
 
   try {
-    return await executeOnProvider<T>(primary, strings, values);
+    const res = await executeOnProvider<T>(primary, strings, values);
+    lastUsedProvider = primary;
+    return res;
   } catch (err) {
     markProviderError(primary, err);
 
     if (secondary && secondary !== primary) {
       try {
-        return await executeOnProvider<T>(secondary, strings, values);
+        const res = await executeOnProvider<T>(secondary, strings, values);
+        lastUsedProvider = secondary;
+        return res;
       } catch (secErr) {
         markProviderError(secondary, secErr);
         throw secErr;
@@ -1123,50 +1130,66 @@ export const getDatabaseStatus = async (): Promise<Record<DbProvider, DatabasePr
   return status;
 };
 
+export type SyncEntityOptions = {
+  servers?: {
+    enabled: boolean;
+    direction?: "supabase-to-neon" | "neon-to-supabase" | "two-way";
+    strategy?: "overwrite" | "keep-target";
+  };
+  users?: {
+    enabled: boolean;
+    strategy?: "two-way-merge" | "supabase-to-neon" | "neon-to-supabase";
+  };
+  routingRules?: {
+    enabled: boolean;
+    strategy?: "two-way-merge" | "supabase-to-neon" | "neon-to-supabase";
+  };
+  settings?: {
+    enabled: boolean;
+    direction?: "supabase-to-neon" | "neon-to-supabase";
+  };
+};
+
+export type SyncResult = {
+  servers: number;
+  routingRules: number;
+  settings: number;
+  devices: number;
+  details: string[];
+};
+
 export const syncDatabases = async (
   source: DbProvider,
   target: DbProvider,
-): Promise<{ servers: number; routingRules: number; settings: number; devices: number }> => {
+  options?: SyncEntityOptions,
+): Promise<SyncResult> => {
   if (source === target) {
     throw new Error("Source and target databases must be different");
   }
 
+  const details: string[] = [];
+  let totalServers = 0;
+  let totalRules = 0;
+  let totalSettings = 0;
+  let totalDevices = 0;
+
+  await ensureSchemaForProvider(source);
   await ensureSchemaForProvider(target);
 
-  const servers = (await executeOnProvider<DatabaseServer>(
-    source,
-    Object.assign([`SELECT * FROM vpn_servers ORDER BY sort_order ASC, created_at DESC`], {
-      raw: [`SELECT * FROM vpn_servers ORDER BY sort_order ASC, created_at DESC`],
-    }) as unknown as TemplateStringsArray,
-    [],
-  )) as DatabaseServer[];
+  // 1. Synchronize Servers
+  const syncServersConfig = options?.servers ?? {
+    enabled: true,
+    direction: source === "supabase" ? "supabase-to-neon" : "neon-to-supabase",
+    strategy: "overwrite" as const,
+  };
 
-  for (const s of servers) {
-    await executeOnProvider(
-      target,
-      Object.assign(
-        [
-          `INSERT INTO vpn_servers (
-            id, name, protocol, host, port, country, is_enabled, options_json,
-            config_cipher, config_salt, config_iv, config_tag, config_version, sort_order, created_at, updated_at
-          ) VALUES (
-            `,
-          `, `,
-          `, `,
-          `, `,
-          `, `,
-          `, `,
-          `, `,
-          `, `,
-          `, `,
-          `, `,
-          `, `,
-          `, `,
-          `, `,
-          `, `,
-          `, `,
-          `
-          ) ON CONFLICT (id) DO UPDATE SET
+  if (syncServersConfig.enabled) {
+    const direction = syncServersConfig.direction ?? (source === "supabase" ? "supabase-to-neon" : "neon-to-supabase");
+    const strategy = syncServersConfig.strategy ?? "overwrite";
+
+    const upsertServerToTarget = async (tgt: DbProvider, s: DatabaseServer, strat: "overwrite" | "keep-target") => {
+      const conflictClause = strat === "overwrite"
+        ? `ON CONFLICT (id) DO UPDATE SET
             name = EXCLUDED.name,
             protocol = EXCLUDED.protocol,
             host = EXCLUDED.host,
@@ -1180,49 +1203,19 @@ export const syncDatabases = async (
             config_tag = EXCLUDED.config_tag,
             config_version = EXCLUDED.config_version,
             sort_order = EXCLUDED.sort_order,
-            updated_at = EXCLUDED.updated_at;`,
-        ],
-        {
-          raw: [
-            `INSERT INTO vpn_servers (
-            id, name, protocol, host, port, country, is_enabled, options_json,
-            config_cipher, config_salt, config_iv, config_tag, config_version, sort_order, created_at, updated_at
-          ) VALUES (
-            `,
-            `, `,
-            `, `,
-            `, `,
-            `, `,
-            `, `,
-            `, `,
-            `, `,
-            `, `,
-            `, `,
-            `, `,
-            `, `,
-            `, `,
-            `, `,
-            `, `,
-            `
-          ) ON CONFLICT (id) DO UPDATE SET
-            name = EXCLUDED.name,
-            protocol = EXCLUDED.protocol,
-            host = EXCLUDED.host,
-            port = EXCLUDED.port,
-            country = EXCLUDED.country,
-            is_enabled = EXCLUDED.is_enabled,
-            options_json = EXCLUDED.options_json,
-            config_cipher = EXCLUDED.config_cipher,
-            config_salt = EXCLUDED.config_salt,
-            config_iv = EXCLUDED.config_iv,
-            config_tag = EXCLUDED.config_tag,
-            config_version = EXCLUDED.config_version,
-            sort_order = EXCLUDED.sort_order,
-            updated_at = EXCLUDED.updated_at;`,
-          ],
-        },
-      ) as unknown as TemplateStringsArray,
-      [
+            updated_at = EXCLUDED.updated_at;`
+        : `ON CONFLICT (id) DO NOTHING;`;
+
+      const ddl = `INSERT INTO vpn_servers (
+        id, name, protocol, host, port, country, is_enabled, options_json,
+        config_cipher, config_salt, config_iv, config_tag, config_version, sort_order, created_at, updated_at
+      ) VALUES (
+        $1, $2, $3, $4, $5, $6, $7, $8,
+        $9, $10, $11, $12, $13, $14, $15, $16
+      ) ${conflictClause}`;
+
+      const wrapped = Object.assign([ddl], { raw: [ddl] }) as unknown as TemplateStringsArray;
+      await executeOnProvider(tgt, wrapped, [
         s.id,
         s.name,
         s.protocol,
@@ -1239,161 +1232,239 @@ export const syncDatabases = async (
         s.sort_order,
         s.created_at,
         s.updated_at,
-      ],
-    );
+      ]);
+    };
+
+    if (direction === "two-way") {
+      const srcServers = await executeOnProvider<DatabaseServer>(
+        "supabase",
+        Object.assign([`SELECT * FROM vpn_servers ORDER BY sort_order ASC, created_at DESC`], { raw: [`SELECT * FROM vpn_servers ORDER BY sort_order ASC, created_at DESC`] }) as unknown as TemplateStringsArray,
+        [],
+      );
+      const dstServers = await executeOnProvider<DatabaseServer>(
+        "neon",
+        Object.assign([`SELECT * FROM vpn_servers ORDER BY sort_order ASC, created_at DESC`], { raw: [`SELECT * FROM vpn_servers ORDER BY sort_order ASC, created_at DESC`] }) as unknown as TemplateStringsArray,
+        [],
+      );
+
+      for (const s of srcServers) {
+        await upsertServerToTarget("neon", s, strategy);
+      }
+      for (const s of dstServers) {
+        await upsertServerToTarget("supabase", s, strategy);
+      }
+      totalServers = srcServers.length + dstServers.length;
+      details.push(`Two-way server sync complete (${srcServers.length} Supabase, ${dstServers.length} Neon).`);
+    } else {
+      const srcProvider: DbProvider = direction === "supabase-to-neon" ? "supabase" : "neon";
+      const dstProvider: DbProvider = direction === "supabase-to-neon" ? "neon" : "supabase";
+
+      const servers = await executeOnProvider<DatabaseServer>(
+        srcProvider,
+        Object.assign([`SELECT * FROM vpn_servers ORDER BY sort_order ASC, created_at DESC`], { raw: [`SELECT * FROM vpn_servers ORDER BY sort_order ASC, created_at DESC`] }) as unknown as TemplateStringsArray,
+        [],
+      );
+
+      for (const s of servers) {
+        await upsertServerToTarget(dstProvider, s, strategy);
+      }
+      totalServers = servers.length;
+      details.push(`Synced ${servers.length} server(s) from ${srcProvider} to ${dstProvider} (strategy: ${strategy}).`);
+    }
   }
 
-  const rules = (await executeOnProvider<RoutingRuleRecord>(
-    source,
-    Object.assign([`SELECT id, type, value, created_at FROM routing_rules`], {
-      raw: [`SELECT id, type, value, created_at FROM routing_rules`],
-    }) as unknown as TemplateStringsArray,
-    [],
-  )) as RoutingRuleRecord[];
+  // 2. Synchronize Active Users / Client Devices
+  const syncUsersConfig = options?.users ?? {
+    enabled: true,
+    strategy: "two-way-merge" as const,
+  };
 
-  for (const r of rules) {
-    await executeOnProvider(
-      target,
-      Object.assign(
-        [
-          `INSERT INTO routing_rules (id, type, value, created_at)
-           VALUES (`,
-          `, `,
-          `, `,
-          `, `,
-          `) ON CONFLICT (type, value) DO NOTHING;`,
-        ],
-        {
-          raw: [
-            `INSERT INTO routing_rules (id, type, value, created_at)
-           VALUES (`,
-            `, `,
-            `, `,
-            `, `,
-            `) ON CONFLICT (type, value) DO NOTHING;`,
-          ],
-        },
-      ) as unknown as TemplateStringsArray,
-      [r.id, r.type, r.value, r.created_at],
-    );
+  if (syncUsersConfig.enabled) {
+    const strategy = syncUsersConfig.strategy ?? "two-way-merge";
+
+    type RawDeviceRow = {
+      device_id: string;
+      platform: string;
+      app_version: string;
+      os_version: string;
+      model: string;
+      first_seen: string;
+      last_seen: string;
+    };
+
+    const upsertDeviceChunk = async (tgt: DbProvider, chunk: RawDeviceRow[]) => {
+      const ddl = `INSERT INTO client_devices (device_id, platform, app_version, os_version, model, first_seen, last_seen)
+        SELECT
+          device_id,
+          platform,
+          app_version,
+          os_version,
+          model,
+          first_seen::timestamptz,
+          last_seen::timestamptz
+        FROM jsonb_to_recordset($1::jsonb) AS x(
+          device_id text,
+          platform text,
+          app_version text,
+          os_version text,
+          model text,
+          first_seen text,
+          last_seen text
+        )
+        ON CONFLICT (device_id) DO UPDATE SET
+          platform = EXCLUDED.platform,
+          app_version = EXCLUDED.app_version,
+          os_version = CASE WHEN EXCLUDED.os_version <> '' THEN EXCLUDED.os_version ELSE client_devices.os_version END,
+          model = CASE WHEN EXCLUDED.model <> '' THEN EXCLUDED.model ELSE client_devices.model END,
+          first_seen = LEAST(client_devices.first_seen, EXCLUDED.first_seen),
+          last_seen = GREATEST(client_devices.last_seen, EXCLUDED.last_seen);`;
+      const wrapped = Object.assign([ddl], { raw: [ddl] }) as unknown as TemplateStringsArray;
+      await executeOnProvider(tgt, wrapped, [JSON.stringify(chunk)]);
+    };
+
+    if (strategy === "two-way-merge") {
+      const supaDevices = await executeOnProvider<RawDeviceRow>(
+        "supabase",
+        Object.assign([`SELECT device_id, platform, app_version, os_version, model, first_seen, last_seen FROM client_devices`], { raw: [`SELECT device_id, platform, app_version, os_version, model, first_seen, last_seen FROM client_devices`] }) as unknown as TemplateStringsArray,
+        [],
+      );
+      const neonDevices = await executeOnProvider<RawDeviceRow>(
+        "neon",
+        Object.assign([`SELECT device_id, platform, app_version, os_version, model, first_seen, last_seen FROM client_devices`], { raw: [`SELECT device_id, platform, app_version, os_version, model, first_seen, last_seen FROM client_devices`] }) as unknown as TemplateStringsArray,
+        [],
+      );
+
+      const mergedMap = new Map<string, RawDeviceRow>();
+      for (const d of [...supaDevices, ...neonDevices]) {
+        const existing = mergedMap.get(d.device_id);
+        if (!existing) {
+          mergedMap.set(d.device_id, { ...d });
+        } else {
+          const t1 = new Date(existing.first_seen).getTime();
+          const t2 = new Date(d.first_seen).getTime();
+          const l1 = new Date(existing.last_seen).getTime();
+          const l2 = new Date(d.last_seen).getTime();
+
+          existing.first_seen = (isNaN(t1) || t2 < t1) ? d.first_seen : existing.first_seen;
+          if (isNaN(l1) || l2 >= l1) {
+            existing.last_seen = d.last_seen;
+            existing.platform = d.platform || existing.platform;
+            existing.app_version = d.app_version || existing.app_version;
+            existing.os_version = d.os_version || existing.os_version;
+            existing.model = d.model || existing.model;
+          }
+        }
+      }
+
+      const allMerged = Array.from(mergedMap.values());
+      const CHUNK = 500;
+      for (let i = 0; i < allMerged.length; i += CHUNK) {
+        const slice = allMerged.slice(i, i + CHUNK);
+        await upsertDeviceChunk("supabase", slice);
+        await upsertDeviceChunk("neon", slice);
+      }
+      totalDevices = allMerged.length;
+      details.push(`Two-way merged ${allMerged.length} unique active user devices across Supabase and Neon.`);
+    } else {
+      const srcProvider: DbProvider = strategy === "supabase-to-neon" ? "supabase" : "neon";
+      const dstProvider: DbProvider = strategy === "supabase-to-neon" ? "neon" : "supabase";
+
+      const devices = await executeOnProvider<RawDeviceRow>(
+        srcProvider,
+        Object.assign([`SELECT device_id, platform, app_version, os_version, model, first_seen, last_seen FROM client_devices`], { raw: [`SELECT device_id, platform, app_version, os_version, model, first_seen, last_seen FROM client_devices`] }) as unknown as TemplateStringsArray,
+        [],
+      );
+
+      const CHUNK = 500;
+      for (let i = 0; i < devices.length; i += CHUNK) {
+        await upsertDeviceChunk(dstProvider, devices.slice(i, i + CHUNK));
+      }
+      totalDevices = devices.length;
+      details.push(`Synced ${devices.length} user devices from ${srcProvider} to ${dstProvider}.`);
+    }
   }
 
-  const settings = (await executeOnProvider<{ key: string; value: string }>(
-    source,
-    Object.assign([`SELECT key, value FROM app_settings`], {
-      raw: [`SELECT key, value FROM app_settings`],
-    }) as unknown as TemplateStringsArray,
-    [],
-  )) as Array<{ key: string; value: string }>;
+  // 3. Synchronize Routing Rules
+  const syncRulesConfig = options?.routingRules ?? {
+    enabled: true,
+    strategy: "two-way-merge" as const,
+  };
 
-  for (const st of settings) {
-    await executeOnProvider(
-      target,
-      Object.assign(
-        [
-          `INSERT INTO app_settings (key, value, updated_at)
-           VALUES (`,
-          `, `,
-          `, NOW())
-           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW();`,
-        ],
-        {
-          raw: [
-            `INSERT INTO app_settings (key, value, updated_at)
-           VALUES (`,
-            `, `,
-            `, NOW())
-           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW();`,
-          ],
-        },
-      ) as unknown as TemplateStringsArray,
-      [st.key, st.value],
-    );
+  if (syncRulesConfig.enabled) {
+    const strategy = syncRulesConfig.strategy ?? "two-way-merge";
+
+    const insertRule = async (tgt: DbProvider, r: RoutingRuleRecord) => {
+      const ddl = `INSERT INTO routing_rules (id, type, value, created_at)
+        VALUES ($1, $2, $3, $4) ON CONFLICT (type, value) DO NOTHING;`;
+      const wrapped = Object.assign([ddl], { raw: [ddl] }) as unknown as TemplateStringsArray;
+      await executeOnProvider(tgt, wrapped, [r.id, r.type, r.value, r.created_at]);
+    };
+
+    if (strategy === "two-way-merge") {
+      const supaRules = await executeOnProvider<RoutingRuleRecord>(
+        "supabase",
+        Object.assign([`SELECT id, type, value, created_at FROM routing_rules`], { raw: [`SELECT id, type, value, created_at FROM routing_rules`] }) as unknown as TemplateStringsArray,
+        [],
+      );
+      const neonRules = await executeOnProvider<RoutingRuleRecord>(
+        "neon",
+        Object.assign([`SELECT id, type, value, created_at FROM routing_rules`], { raw: [`SELECT id, type, value, created_at FROM routing_rules`] }) as unknown as TemplateStringsArray,
+        [],
+      );
+
+      for (const r of supaRules) await insertRule("neon", r);
+      for (const r of neonRules) await insertRule("supabase", r);
+      totalRules = supaRules.length + neonRules.length;
+      details.push(`Two-way merged routing rules (${supaRules.length} Supabase, ${neonRules.length} Neon).`);
+    } else {
+      const srcProvider: DbProvider = strategy === "supabase-to-neon" ? "supabase" : "neon";
+      const dstProvider: DbProvider = strategy === "supabase-to-neon" ? "neon" : "supabase";
+
+      const rules = await executeOnProvider<RoutingRuleRecord>(
+        srcProvider,
+        Object.assign([`SELECT id, type, value, created_at FROM routing_rules`], { raw: [`SELECT id, type, value, created_at FROM routing_rules`] }) as unknown as TemplateStringsArray,
+        [],
+      );
+      for (const r of rules) await insertRule(dstProvider, r);
+      totalRules = rules.length;
+      details.push(`Synced ${rules.length} routing rules from ${srcProvider} to ${dstProvider}.`);
+    }
   }
 
-  const devices = (await executeOnProvider<DeviceSummary>(
-    source,
-    Object.assign([`SELECT device_id, platform, app_version, os_version, model, first_seen, last_seen FROM client_devices`], {
-      raw: [`SELECT device_id, platform, app_version, os_version, model, first_seen, last_seen FROM client_devices`],
-    }) as unknown as TemplateStringsArray,
-    [],
-  )) as DeviceSummary[];
+  // 4. Synchronize App Settings
+  const syncSettingsConfig = options?.settings ?? {
+    enabled: true,
+    direction: source === "supabase" ? "supabase-to-neon" : "neon-to-supabase",
+  };
 
-  const DEVICE_CHUNK_SIZE = 500;
-  for (let i = 0; i < devices.length; i += DEVICE_CHUNK_SIZE) {
-    const chunk = devices.slice(i, i + DEVICE_CHUNK_SIZE);
-    await executeOnProvider(
-      target,
-      Object.assign(
-        [
-          `INSERT INTO client_devices (device_id, platform, app_version, os_version, model, first_seen, last_seen)
-           SELECT
-             device_id,
-             platform,
-             app_version,
-             os_version,
-             model,
-             first_seen::timestamptz,
-             last_seen::timestamptz
-           FROM jsonb_to_recordset(`,
-          `::jsonb) AS x(
-             device_id text,
-             platform text,
-             app_version text,
-             os_version text,
-             model text,
-             first_seen text,
-             last_seen text
-           )
-           ON CONFLICT (device_id) DO UPDATE SET
-             platform = EXCLUDED.platform,
-             app_version = EXCLUDED.app_version,
-             os_version = CASE WHEN EXCLUDED.os_version <> '' THEN EXCLUDED.os_version ELSE client_devices.os_version END,
-             model = CASE WHEN EXCLUDED.model <> '' THEN EXCLUDED.model ELSE client_devices.model END,
-             first_seen = LEAST(client_devices.first_seen, EXCLUDED.first_seen),
-             last_seen = GREATEST(client_devices.last_seen, EXCLUDED.last_seen);`,
-        ],
-        {
-          raw: [
-            `INSERT INTO client_devices (device_id, platform, app_version, os_version, model, first_seen, last_seen)
-           SELECT
-             device_id,
-             platform,
-             app_version,
-             os_version,
-             model,
-             first_seen::timestamptz,
-             last_seen::timestamptz
-           FROM jsonb_to_recordset(`,
-            `::jsonb) AS x(
-             device_id text,
-             platform text,
-             app_version text,
-             os_version text,
-             model text,
-             first_seen text,
-             last_seen text
-           )
-           ON CONFLICT (device_id) DO UPDATE SET
-             platform = EXCLUDED.platform,
-             app_version = EXCLUDED.app_version,
-             os_version = CASE WHEN EXCLUDED.os_version <> '' THEN EXCLUDED.os_version ELSE client_devices.os_version END,
-             model = CASE WHEN EXCLUDED.model <> '' THEN EXCLUDED.model ELSE client_devices.model END,
-             first_seen = LEAST(client_devices.first_seen, EXCLUDED.first_seen),
-             last_seen = GREATEST(client_devices.last_seen, EXCLUDED.last_seen);`,
-          ],
-        },
-      ) as unknown as TemplateStringsArray,
-      [JSON.stringify(chunk)],
+  if (syncSettingsConfig.enabled) {
+    const srcProvider: DbProvider = syncSettingsConfig.direction === "supabase-to-neon" ? "supabase" : "neon";
+    const dstProvider: DbProvider = syncSettingsConfig.direction === "supabase-to-neon" ? "neon" : "supabase";
+
+    const settings = await executeOnProvider<{ key: string; value: string }>(
+      srcProvider,
+      Object.assign([`SELECT key, value FROM app_settings`], { raw: [`SELECT key, value FROM app_settings`] }) as unknown as TemplateStringsArray,
+      [],
     );
+
+    for (const st of settings) {
+      const ddl = `INSERT INTO app_settings (key, value, updated_at)
+        VALUES ($1, $2, NOW())
+        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW();`;
+      const wrapped = Object.assign([ddl], { raw: [ddl] }) as unknown as TemplateStringsArray;
+      await executeOnProvider(dstProvider, wrapped, [st.key, st.value]);
+    }
+    totalSettings = settings.length;
+    details.push(`Synced ${settings.length} app settings from ${srcProvider} to ${dstProvider}.`);
   }
 
   invalidateServerCatalogCache();
 
   return {
-    servers: servers.length,
-    routingRules: rules.length,
-    settings: settings.length,
-    devices: devices.length,
+    servers: totalServers,
+    routingRules: totalRules,
+    settings: totalSettings,
+    devices: totalDevices,
+    details,
   };
 };

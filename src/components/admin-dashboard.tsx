@@ -7,6 +7,7 @@ import { detectProfileMetadata, splitImportedProfiles, parseWireGuardConf, type 
 import { protocolSupportsCredentials, unwrapOpenVpnProfileContent, readStoredCredentials } from "@/lib/credentials";
 import { RoutingRulesPanel } from "@/components/routing-rules-panel";
 import { ActiveUsersPanel } from "@/components/active-users-panel";
+import { DbSyncModal } from "@/components/db-sync-modal";
 import { COUNTRIES, flagFromCountryCode, getCountryMeta, normalizeLocationCode } from "@/lib/countries";
 
 type TabId = "v2ray" | "ssh" | "openvpn" | "wireguard" | "warp" | "custom" | "bulk" | "routing" | "http" | "l2tp" | "users";
@@ -667,6 +668,7 @@ export function AdminDashboard() {
     supabase: { configured: boolean; healthy: boolean; serverCount: number | null; error: string | null };
   } | null>(null);
   const [syncingDb, setSyncingDb] = useState(false);
+  const [syncModalOpen, setSyncModalOpen] = useState(false);
   const [dnsttDefaults, setDnsttDefaults] = useState<{ dns: string; querySize: string; mtu: string }>({
     dns: "8.8.8.8:53",
     querySize: "1232",
@@ -2456,12 +2458,12 @@ export function AdminDashboard() {
               </span>
               <button
                 type="button"
-                onClick={() => void handleSyncDatabases()}
-                disabled={syncingDb || busy}
+                onClick={() => setSyncModalOpen(true)}
+                disabled={busy}
                 className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-violet-500/20 text-violet-300 hover:bg-violet-500/30 border border-violet-500/30 transition disabled:opacity-40"
-                title="Sync servers, rules, and settings between Neon and Supabase"
+                title="Open Database Sync & Migration Center"
               >
-                {syncingDb ? "Syncing..." : "Sync DBs"}
+                Sync DBs
               </button>
             </div>
             <div className="space-y-1.5 text-xs">
@@ -3969,6 +3971,14 @@ or
         )}
         </div>
       </main>
+
+      <DbSyncModal
+        isOpen={syncModalOpen}
+        onClose={() => setSyncModalOpen(false)}
+        dbStatus={dbStatus}
+        onSuccess={load}
+        api={api}
+      />
     </div>
   );
 }

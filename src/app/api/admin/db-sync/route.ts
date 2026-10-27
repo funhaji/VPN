@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDatabaseStatus, syncDatabases, type DbProvider } from "@/lib/db";
+import {
+  getDatabaseStatus,
+  syncDatabases,
+  type DbProvider,
+  type SyncEntityOptions,
+} from "@/lib/db";
 import { isAuthorized, limitRequest } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
@@ -35,40 +40,32 @@ export async function POST(request: NextRequest) {
     const body = (await request.json().catch(() => ({}))) as {
       source?: DbProvider;
       target?: DbProvider;
+      options?: SyncEntityOptions;
     };
 
     let source = body.source;
     let target = body.target;
 
     if (!source || !target) {
-      const status = await getDatabaseStatus();
-      const neonCount = status.neon.serverCount ?? 0;
-      const supabaseCount = status.supabase.serverCount ?? 0;
-
-      if (neonCount > supabaseCount) {
-        source = "neon";
-        target = "supabase";
-      } else if (supabaseCount > neonCount) {
-        source = "supabase";
-        target = "neon";
-      } else {
-        source = "neon";
-        target = "supabase";
-      }
+      source = "supabase";
+      target = "neon";
     }
 
     if (source === target) {
-      return NextResponse.json(
-        { error: "Source and target database providers must be different" },
-        { status: 400 },
-      );
+      target = source === "supabase" ? "neon" : "supabase";
     }
 
-    const synced = await syncDatabases(source, target);
+    const synced = await syncDatabases(source, target, body.options);
     return NextResponse.json({ ok: true, source, target, synced });
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const isNeon402 = msg.includes("402") || msg.includes("quota");
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Failed to sync databases" },
+      {
+        error: isNeon402
+          ? "Neon DB is currently quota-limited (HTTP 402). Sync involving Neon cannot complete until the quota is reset."
+          : msg || "Failed to sync databases",
+      },
       { status: 500 },
     );
   }
