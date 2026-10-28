@@ -1271,6 +1271,17 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to build server catalog";
+    if (catalogCache && catalogCache.payload) {
+      console.warn("[API/servers] Serving cached catalog due to DB error:", message);
+      return NextResponse.json(catalogCache.payload, {
+        headers: {
+          "Cache-Control": "public, max-age=15, s-maxage=30, stale-while-revalidate=120",
+          "x-database-provider": catalogCache.provider || "cache",
+          "Access-Control-Expose-Headers": "x-database-provider",
+        },
+      });
+    }
+    console.error("[API/servers] Fatal catalog error with no cache:", message);
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

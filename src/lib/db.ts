@@ -47,10 +47,11 @@ const getSupabaseClient = (): Sql | null => {
   if (!url) return null;
   if (!supabaseClient) {
     supabaseClient = postgres(url, {
-      max: 1,
+      max: 5,
       prepare: false,
-      idle_timeout: 20,
-      connect_timeout: 10,
+      idle_timeout: 15,
+      connect_timeout: 5,
+      timeout: 7,
     });
   }
   return supabaseClient;
@@ -71,7 +72,7 @@ const isProviderHealthy = (provider: DbProvider): boolean =>
 const markProviderError = (provider: DbProvider, error: unknown): void => {
   const msg = error instanceof Error ? error.message : String(error);
   const isQuota = msg.includes("402") || msg.includes("quota") || msg.includes("exceeded");
-  const duration = isQuota ? 3600_000 : 60_000;
+  const duration = isQuota ? 24 * 3600_000 : 60_000;
   cooldownUntil[provider] = Date.now() + duration;
   console.warn(`[DB Provider] Marked ${provider} unhealthy for ${duration / 1000}s (${msg.slice(0, 120)})`);
 };
@@ -163,6 +164,18 @@ export const ensureSchema = async (): Promise<void> => {
   }
 };
 
+async function runWithTimeout<R>(promise: Promise<R>, timeoutMs = 7000): Promise<R> {
+  let timer: NodeJS.Timeout | null = null;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("Database operation timed out after " + timeoutMs + "ms")), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 const executeOnProvider = async <T = unknown>(
   provider: DbProvider,
   strings: TemplateStringsArray,
@@ -172,7 +185,7 @@ const executeOnProvider = async <T = unknown>(
     if (provider === "neon") {
       const client = getNeonClient();
       if (!client) throw new Error("Neon DB is not configured");
-      const rows = await client(strings, ...(values as any[]));
+      const rows = await runWithTimeout(client(strings, ...(values as any[])), 6000);
       return (rows as unknown as T[]) ?? [];
     }
 
@@ -199,7 +212,7 @@ const executeOnProvider = async <T = unknown>(
       return val;
     });
 
-    const rows = await client(strings, ...(normalizedValues as any[]));
+    const rows = await runWithTimeout(client(strings, ...(normalizedValues as any[])), 7000);
     return (rows as unknown as T[]) ?? [];
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -226,9 +239,8 @@ export const queryRead = async <T = unknown>(
   const healthy = configured.filter(isProviderHealthy);
   const candidates = healthy.length > 0 ? healthy : configured;
 
-  const primaryIdx = Math.floor(Math.random() * candidates.length);
-  const primary = candidates[primaryIdx];
-  const secondary = configured.find((p) => p !== primary);
+  const primary = candidates[0];
+  const secondary = configured.find((p) => p !== primary && isProviderHealthy(p));
 
   try {
     const res = await executeOnProvider<T>(primary, strings, values);
