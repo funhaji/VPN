@@ -678,6 +678,121 @@ export const createServers = async (
   }
 };
 
+export const replaceServers = async (
+  oldIds: string[],
+  newItems: Array<{
+    id: string;
+    name: string;
+    protocol: string;
+    host: string;
+    port: number;
+    country: string;
+    isEnabled: boolean;
+    options: ProtocolOptions;
+    encryptedConfig: { version?: number; cipherText: string; salt?: string; iv: string; authTag: string };
+  }>,
+): Promise<{ inserted: number; deleted: number }> => {
+  if (oldIds.length === 0 || newItems.length === 0) {
+    return { inserted: 0, deleted: 0 };
+  }
+
+  const currentServers = await listServers(false);
+  const oldIdSet = new Set(oldIds);
+  const remainingNew = [...newItems];
+
+  const totalSelectedInList = currentServers.filter((s) => oldIdSet.has(s.id)).length;
+  let selectedEncountered = 0;
+  const finalOrderedIds: string[] = [];
+
+  for (const server of currentServers) {
+    if (!oldIdSet.has(server.id)) {
+      finalOrderedIds.push(server.id);
+    } else {
+      selectedEncountered++;
+      if (selectedEncountered === totalSelectedInList) {
+        while (remainingNew.length > 0) {
+          const next = remainingNew.shift()!;
+          finalOrderedIds.push(next.id);
+        }
+      } else {
+        if (remainingNew.length > 0) {
+          const next = remainingNew.shift()!;
+          finalOrderedIds.push(next.id);
+        }
+      }
+    }
+  }
+
+  while (remainingNew.length > 0) {
+    finalOrderedIds.push(remainingNew.shift()!.id);
+  }
+
+  const BATCH_SIZE = 100;
+  for (let index = 0; index < newItems.length; index += BATCH_SIZE) {
+    const chunk = newItems.slice(index, index + BATCH_SIZE);
+    const rows = chunk.map((item, offset) => ({
+      id: item.id,
+      name: item.name,
+      protocol: item.protocol,
+      host: item.host,
+      port: item.port,
+      country: item.country,
+      is_enabled: item.isEnabled,
+      options_json: JSON.stringify(item.options),
+      config_cipher: item.encryptedConfig.cipherText,
+      config_salt: item.encryptedConfig.salt ?? null,
+      config_iv: item.encryptedConfig.iv,
+      config_tag: item.encryptedConfig.authTag,
+      config_version: item.encryptedConfig.version ?? 2,
+      sort_order: 999999 + index + offset,
+    }));
+    await queryWrite`
+      INSERT INTO vpn_servers (
+        id, name, protocol, host, port, country, is_enabled, options_json,
+        config_cipher, config_salt, config_iv, config_tag, config_version, sort_order
+      )
+      SELECT
+        id::uuid,
+        name,
+        protocol,
+        host,
+        port,
+        country,
+        is_enabled,
+        options_json,
+        config_cipher,
+        config_salt,
+        config_iv,
+        config_tag,
+        config_version,
+        sort_order
+      FROM jsonb_to_recordset(${JSON.stringify(rows)}::jsonb) AS x(
+        id text,
+        name text,
+        protocol text,
+        host text,
+        port int,
+        country text,
+        is_enabled boolean,
+        options_json text,
+        config_cipher text,
+        config_salt text,
+        config_iv text,
+        config_tag text,
+        config_version int,
+        sort_order int
+      );
+    `;
+  }
+
+  const deleted = await deleteServersByIds(oldIds);
+
+  const orders = finalOrderedIds.map((id, sort_order) => ({ id, sort_order }));
+  await updateServerOrders(orders);
+
+  return { inserted: newItems.length, deleted };
+};
+
 export const deleteServer = async (id: string): Promise<void> => {
   await queryWrite`DELETE FROM vpn_servers WHERE id = ${id};`;
 };

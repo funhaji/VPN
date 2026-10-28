@@ -8,6 +8,7 @@ import { protocolSupportsCredentials, unwrapOpenVpnProfileContent, readStoredCre
 import { RoutingRulesPanel } from "@/components/routing-rules-panel";
 import { ActiveUsersPanel } from "@/components/active-users-panel";
 import { DbSyncModal } from "@/components/db-sync-modal";
+import { BulkReplaceModal } from "@/components/bulk-replace-modal";
 import { COUNTRIES, flagFromCountryCode, getCountryMeta, normalizeLocationCode } from "@/lib/countries";
 
 type TabId = "v2ray" | "ssh" | "openvpn" | "wireguard" | "warp" | "custom" | "bulk" | "routing" | "http" | "l2tp" | "users";
@@ -682,6 +683,7 @@ export function AdminDashboard() {
   } | null>(null);
   const [syncingDb, setSyncingDb] = useState(false);
   const [syncModalOpen, setSyncModalOpen] = useState(false);
+  const [bulkReplaceOpen, setBulkReplaceOpen] = useState(false);
   const [dnsttDefaults, setDnsttDefaults] = useState<{ dns: string; querySize: string; mtu: string }>({
     dns: "8.8.8.8:53",
     querySize: "1232",
@@ -1090,6 +1092,11 @@ export function AdminDashboard() {
       return next;
     });
   }, []);
+
+  const selectedServersList = useMemo(
+    () => servers.filter((server) => selectedServerIds.has(server.id)),
+    [servers, selectedServerIds],
+  );
 
   const selectedFilteredCount = useMemo(
     () => filteredServers.filter((server) => selectedServerIds.has(server.id)).length,
@@ -3740,6 +3747,14 @@ or
                       >
                         {showBulkV2ray ? "Hide V2Ray Bulk" : "Bulk Edit V2Ray"}
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => setBulkReplaceOpen(true)}
+                        disabled={busy || selectedFilteredCount === 0}
+                        className="flex-shrink-0 rounded-xl border border-indigo-500/30 bg-indigo-500/10 px-3 py-1.5 text-xs font-semibold text-indigo-300 transition hover:bg-indigo-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        Bulk Replace ({selectedFilteredCount})
+                      </button>
                       {selectedFilteredCredentialCount > 0 && (
                         <button
                           type="button"
@@ -4143,6 +4158,18 @@ or
         onClose={() => setSyncModalOpen(false)}
         dbStatus={dbStatus}
         onSuccess={load}
+        api={api}
+      />
+      <BulkReplaceModal
+        isOpen={bulkReplaceOpen}
+        onClose={() => setBulkReplaceOpen(false)}
+        selectedServers={selectedServersList}
+        allServers={servers}
+        onSuccess={async () => {
+          setSelectedServerIds(new Set());
+          await load();
+          setMsg({ ok: true, text: "Servers replaced successfully in place" });
+        }}
         api={api}
       />
     </div>
