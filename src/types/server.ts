@@ -25,6 +25,7 @@ export type ServerRecord = {
   options: ProtocolOptions;
   encryptedConfig: EncryptedConfig;
   sortOrder: number;
+  notice?: string;
   createdAt: string;
   updatedAt: string;
   accountCount?: number;

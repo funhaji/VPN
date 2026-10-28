@@ -37,6 +37,7 @@ type OvpnFile = {
 type FormState = {
   name: string;
   country: string;
+  notice: string;
   host: string;
   port: string;
   rawConfig: string;
@@ -91,6 +92,7 @@ type L2tpAuthItem = {
 const BLANK: FormState = {
   name: "",
   country: "",
+  notice: "",
   host: "",
   port: "",
   rawConfig: "",
@@ -663,6 +665,17 @@ export function AdminDashboard() {
   const [bulkCredPsk, setBulkCredPsk] = useState("");
   const [bulkExtraAuthText, setBulkExtraAuthText] = useState("");
   const [bulkExtraAuthBusy, setBulkExtraAuthBusy] = useState(false);
+  const [bulkNoticeText, setBulkNoticeText] = useState("");
+  const [bulkNoticeBusy, setBulkNoticeBusy] = useState(false);
+  const [showBulkV2ray, setShowBulkV2ray] = useState(false);
+  const [bulkV2rayHost, setBulkV2rayHost] = useState("");
+  const [bulkV2rayPort, setBulkV2rayPort] = useState("");
+  const [bulkV2rayUuid, setBulkV2rayUuid] = useState("");
+  const [bulkV2raySni, setBulkV2raySni] = useState("");
+  const [bulkV2rayPath, setBulkV2rayPath] = useState("");
+  const [bulkV2rayNetwork, setBulkV2rayNetwork] = useState("");
+  const [bulkV2rayMux, setBulkV2rayMux] = useState<"keep" | "enable" | "disable">("keep");
+  const [bulkV2rayBusy, setBulkV2rayBusy] = useState(false);
   const [dbStatus, setDbStatus] = useState<{
     neon: { configured: boolean; healthy: boolean; serverCount: number | null; error: string | null };
     supabase: { configured: boolean; healthy: boolean; serverCount: number | null; error: string | null };
@@ -1232,6 +1245,58 @@ export function AdminDashboard() {
     [api, bulkExtraAuthText, load, selectedL2tpServerIds],
   );
 
+  const bulkSetNotice = useCallback(async (clear = false) => {
+    if (selectedServerIds.size === 0) return;
+    setBulkNoticeBusy(true);
+    try {
+      const res = await api<{ ok: boolean; updated: number }>("/api/admin/servers", {
+        method: "PATCH",
+        body: JSON.stringify({
+          action: "bulk-set-notice",
+          ids: Array.from(selectedServerIds),
+          notice: clear ? "" : bulkNoticeText,
+        }),
+      });
+      setMsg({ ok: true, text: clear ? `Cleared notice for ${res.updated} server(s)` : `Set notice for ${res.updated} server(s)` });
+      if (clear) setBulkNoticeText("");
+      await load();
+    } catch (e) {
+      setMsg({ ok: false, text: e instanceof Error ? e.message : "Failed to set notice" });
+    } finally {
+      setBulkNoticeBusy(false);
+    }
+  }, [api, bulkNoticeText, load, selectedServerIds]);
+
+  const bulkUpdateV2ray = useCallback(async () => {
+    if (selectedServerIds.size === 0) return;
+    setBulkV2rayBusy(true);
+    try {
+      const res = await api<{ ok: boolean; updated: number; warnings?: string[] }>("/api/admin/servers", {
+        method: "PATCH",
+        body: JSON.stringify({
+          action: "bulk-edit-v2ray",
+          ids: Array.from(selectedServerIds),
+          v2ray: {
+            host: bulkV2rayHost.trim() || undefined,
+            port: bulkV2rayPort ? Number(bulkV2rayPort) : undefined,
+            uuid: bulkV2rayUuid.trim() || undefined,
+            sni: bulkV2raySni.trim() || undefined,
+            path: bulkV2rayPath.trim() || undefined,
+            network: bulkV2rayNetwork.trim() || undefined,
+            mux: bulkV2rayMux === "enable" ? true : bulkV2rayMux === "disable" ? false : undefined,
+          },
+        }),
+      });
+      setMsg({ ok: true, text: `Successfully updated ${res.updated} V2Ray server(s)` });
+      setShowBulkV2ray(false);
+      await load();
+    } catch (e) {
+      setMsg({ ok: false, text: e instanceof Error ? e.message : "Failed to update V2Ray servers" });
+    } finally {
+      setBulkV2rayBusy(false);
+    }
+  }, [api, bulkV2rayHost, bulkV2rayMux, bulkV2rayNetwork, bulkV2rayPath, bulkV2rayPort, bulkV2raySni, bulkV2rayUuid, load, selectedServerIds]);
+
   const bulkClearExtraAuths = useCallback(async () => {
     if (selectedL2tpServerIds.length === 0) {
       setMsg({ ok: false, text: "Select at least one L2TP server" });
@@ -1519,6 +1584,7 @@ export function AdminDashboard() {
           allowInsecure: form.allowInsecure,
           extra: {
             ...parseExtra(form.extraJson),
+            ...(form.notice.trim() ? { notice: form.notice.trim() } : {}),
             ...(tab === "warp"
               ? {
                   jc: parseNumber(form.warpJc) ?? 4,
@@ -2305,6 +2371,7 @@ export function AdminDashboard() {
         wgMtu,
         wgDns,
         wgConf,
+        notice: s.notice || (typeof s.options?.extra?.notice === "string" ? s.options.extra.notice : ""),
         mux: Boolean(s.options?.mux),
         fragment: Boolean(s.options?.fragment),
         sniffing: s.options?.sniffing ?? true,
@@ -2543,6 +2610,14 @@ export function AdminDashboard() {
                 <div className="grid gap-4 md:grid-cols-2">
                   <Field label="Server name" value={form.name} onChange={(value) => set("name", value)} placeholder="Germany Premium #1" />
                   <CountrySelector country={form.country} name={form.name} set={set} />
+                </div>
+                <div className="mt-4">
+                  <Field
+                    label="Server Notice / Announcement (Optional)"
+                    value={form.notice}
+                    onChange={(value) => set("notice", value)}
+                    placeholder="e.g. Low ping gaming server (90ms) · requires Wi-Fi"
+                  />
                 </div>
                 {(tab === "v2ray" || tab === "custom") ? (
                   <p className="mt-3 text-xs leading-6 text-zinc-500">
@@ -3657,6 +3732,14 @@ or
                       >
                         Delete ({selectedFilteredCount})
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowBulkV2ray((v) => !v)}
+                        disabled={busy || selectedFilteredCount === 0}
+                        className="flex-shrink-0 rounded-xl border border-purple-500/30 bg-purple-500/10 px-3 py-1.5 text-xs font-semibold text-purple-300 transition hover:bg-purple-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        {showBulkV2ray ? "Hide V2Ray Bulk" : "Bulk Edit V2Ray"}
+                      </button>
                       {selectedFilteredCredentialCount > 0 && (
                         <button
                           type="button"
@@ -3669,6 +3752,84 @@ or
                       )}
                     </div>
                   </div>
+
+                  {/* Bulk Notice Toolbar */}
+                  <div className="mt-4 border-t border-white/5 pt-3">
+                    <p className="mb-2 text-xs font-medium text-zinc-400">
+                      Set server notice for {selectedFilteredCount} selected server{selectedFilteredCount === 1 ? "" : "s"}:
+                    </p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <input
+                        type="text"
+                        value={bulkNoticeText}
+                        onChange={(e) => setBulkNoticeText(e.target.value)}
+                        placeholder="Notice text (e.g. High-speed gaming 90ms route, requires Wi-Fi...)"
+                        className="flex-1 min-w-[240px] rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-xs text-zinc-200 placeholder-zinc-500 focus:border-amber-500 focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => void bulkSetNotice(false)}
+                        disabled={bulkNoticeBusy || !bulkNoticeText.trim() || selectedFilteredCount === 0}
+                        className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-300 transition hover:bg-amber-500/20 disabled:opacity-40"
+                      >
+                        {bulkNoticeBusy ? "Setting..." : `Set Notice (${selectedFilteredCount})`}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void bulkSetNotice(true)}
+                        disabled={bulkNoticeBusy || selectedFilteredCount === 0}
+                        className="rounded-xl border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs font-semibold text-zinc-300 transition hover:bg-zinc-700 disabled:opacity-40"
+                      >
+                        Clear Notice
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Bulk V2Ray Fleet Editor */}
+                  {showBulkV2ray && selectedFilteredCount > 0 ? (
+                    <div className="mt-4 rounded-xl border border-purple-500/20 bg-purple-950/20 p-4">
+                      <div className="flex items-center justify-between mb-3">
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-wider text-purple-300">
+                            V2Ray Fleet Bulk Configuration
+                          </p>
+                          <p className="text-[11px] text-zinc-400 mt-0.5">
+                            Modify address/IPs, ports, UUIDs, SNI, transport path and mux across {selectedFilteredCount} selected servers. Blank fields are preserved.
+                          </p>
+                        </div>
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3">
+                        <Field label="Host / IP / Address" value={bulkV2rayHost} onChange={setBulkV2rayHost} placeholder="Keep current address" />
+                        <Field label="Port" value={bulkV2rayPort} onChange={setBulkV2rayPort} placeholder="Keep current port" />
+                        <Field label="UUID / User ID" value={bulkV2rayUuid} onChange={setBulkV2rayUuid} placeholder="Keep current UUID" />
+                        <Field label="SNI / ServerName" value={bulkV2raySni} onChange={setBulkV2raySni} placeholder="Keep current SNI" />
+                        <Field label="Path / ServiceName" value={bulkV2rayPath} onChange={setBulkV2rayPath} placeholder="Keep current path" />
+                        <Field label="Transport (tcp, ws, xhttp...)" value={bulkV2rayNetwork} onChange={setBulkV2rayNetwork} placeholder="Keep current network" />
+                      </div>
+                      <div className="mt-3 flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-zinc-400">Mux:</span>
+                          <select
+                            value={bulkV2rayMux}
+                            onChange={(e) => setBulkV2rayMux(e.target.value as any)}
+                            className="rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-xs text-zinc-300 focus:outline-none"
+                          >
+                            <option value="keep">Keep Current</option>
+                            <option value="enable">Enable Mux</option>
+                            <option value="disable">Disable Mux</option>
+                          </select>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void bulkUpdateV2ray()}
+                          disabled={bulkV2rayBusy || selectedFilteredCount === 0}
+                          className="rounded-xl bg-purple-500 px-4 py-1.5 text-xs font-semibold text-white transition hover:bg-purple-400 disabled:opacity-40"
+                        >
+                          {bulkV2rayBusy ? "Updating..." : `Apply to ${selectedFilteredCount} Selected Servers`}
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
 
                   {/* Fields row for credentials - only if credential servers selected */}
                   {selectedFilteredCredentialCount > 0 ? (
@@ -3808,6 +3969,11 @@ or
                             <span className={`rounded-full px-2 py-0.5 text-[9px] uppercase tracking-[0.16em] ${server.isEnabled ? "bg-emerald-500/12 text-emerald-400" : "bg-zinc-800 text-zinc-500"}`}>
                               {server.isEnabled ? "Live" : "Off"}
                             </span>
+                            {server.notice ? (
+                              <span className="rounded-full bg-amber-500/15 border border-amber-500/30 px-2 py-0.5 text-[9px] font-semibold text-amber-300">
+                                ⚡ {server.notice}
+                              </span>
+                            ) : null}
                           </div>
                           {(() => {
                             const locCode = normalizeLocationCode(server.country || server.name);

@@ -1212,6 +1212,7 @@ export async function GET(request: NextRequest) {
           options: server.options,
           rawConfig: "",
           runtimeProfile,
+          notice: server.notice || undefined,
           updatedAt: server.updatedAt,
         });
       } catch (decryptErr) {

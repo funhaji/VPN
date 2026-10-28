@@ -296,6 +296,108 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ ok: true, updated });
     }
 
+    if (action === "bulk-set-notice") {
+      if (!Array.isArray(payload.ids) || payload.ids.length === 0) {
+        return NextResponse.json({ error: "Select at least one server" }, { status: 400 });
+      }
+      const notice = typeof (payload as { notice?: unknown }).notice === "string"
+        ? (payload as { notice: string }).notice.trim()
+        : "";
+      let updated = 0;
+      for (const rawId of payload.ids) {
+        if (typeof rawId !== "string" || !/^[0-9a-f-]{36}$/i.test(rawId)) continue;
+        const server = await getServer(rawId);
+        if (!server) continue;
+        const options = { ...server.options, extra: { ...server.options.extra } };
+        if (notice) {
+          options.extra.notice = notice;
+        } else {
+          delete options.extra.notice;
+        }
+        await updateServer(rawId, { options });
+        updated += 1;
+      }
+      revalidateServerCatalog();
+      return NextResponse.json({ ok: true, updated });
+    }
+
+    if (action === "bulk-edit-v2ray") {
+      if (!Array.isArray(payload.ids) || payload.ids.length === 0) {
+        return NextResponse.json({ error: "Select at least one server" }, { status: 400 });
+      }
+      const v2Data = (payload as { v2ray?: Record<string, unknown> }).v2ray || {};
+      const host = typeof v2Data.host === "string" ? v2Data.host.trim() : "";
+      const port = typeof v2Data.port === "number" ? v2Data.port : (Number(v2Data.port) || 0);
+      const uuid = typeof v2Data.uuid === "string" ? v2Data.uuid.trim() : "";
+      const sni = typeof v2Data.sni === "string" ? v2Data.sni.trim() : "";
+      const path = typeof v2Data.path === "string" ? v2Data.path.trim() : "";
+      const network = typeof v2Data.network === "string" ? v2Data.network.trim() : "";
+      const mux = typeof v2Data.mux === "boolean" ? v2Data.mux : undefined;
+
+      let updated = 0;
+      const errors: string[] = [];
+      for (const rawId of payload.ids) {
+        if (typeof rawId !== "string" || !/^[0-9a-f-]{36}$/i.test(rawId)) continue;
+        const server = await getServer(rawId);
+        if (!server) continue;
+        try {
+          const raw = decryptConfig(server.encryptedConfig);
+          let nextRaw = raw;
+          if (raw.trim().startsWith("{")) {
+            const parsed = JSON.parse(raw);
+            if (parsed.outbounds && Array.isArray(parsed.outbounds)) {
+              for (const ob of parsed.outbounds) {
+                if (ob.settings?.vnext && Array.isArray(ob.settings.vnext) && ob.settings.vnext[0]) {
+                  if (host) ob.settings.vnext[0].address = host;
+                  if (port > 0) ob.settings.vnext[0].port = port;
+                  if (uuid && Array.isArray(ob.settings.vnext[0].users) && ob.settings.vnext[0].users[0]) {
+                    ob.settings.vnext[0].users[0].id = uuid;
+                  }
+                }
+                if (ob.settings?.servers && Array.isArray(ob.settings.servers) && ob.settings.servers[0]) {
+                  if (host) ob.settings.servers[0].address = host;
+                  if (port > 0) ob.settings.servers[0].port = port;
+                  if (uuid) ob.settings.servers[0].password = uuid;
+                }
+                if (ob.streamSettings) {
+                  if (network) ob.streamSettings.network = network;
+                  if (sni) {
+                    if (ob.streamSettings.tlsSettings) ob.streamSettings.tlsSettings.serverName = sni;
+                    if (ob.streamSettings.realitySettings) ob.streamSettings.realitySettings.serverNames = [sni];
+                  }
+                  if (path) {
+                    if (ob.streamSettings.wsSettings) ob.streamSettings.wsSettings.path = path;
+                    if (ob.streamSettings.xhttpSettings) ob.streamSettings.xhttpSettings.path = path;
+                    if (ob.streamSettings.httpSettings) ob.streamSettings.httpSettings.path = path;
+                    if (ob.streamSettings.grpcSettings) ob.streamSettings.grpcSettings.serviceName = path;
+                  }
+                }
+                if (mux !== undefined) {
+                  ob.mux = ob.mux || {};
+                  ob.mux.enabled = mux;
+                }
+              }
+              nextRaw = JSON.stringify(parsed, null, 2);
+            }
+          }
+          const updatePayload: Parameters<typeof updateServer>[1] = {
+            encryptedConfig: encryptConfig(nextRaw),
+          };
+          if (host) updatePayload.host = host;
+          if (port > 0) updatePayload.port = port;
+          if (mux !== undefined) {
+            updatePayload.options = { ...server.options, mux };
+          }
+          await updateServer(rawId, updatePayload);
+          updated += 1;
+        } catch (err) {
+          errors.push(`${server.name}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      revalidateServerCatalog();
+      return NextResponse.json({ ok: true, updated, warnings: errors.length > 0 ? errors : undefined });
+    }
+
     if (action === "enable-selected" || action === "disable-selected") {
       if (!Array.isArray(payload.ids) || payload.ids.length === 0) {
         return NextResponse.json({ error: "Select at least one server" }, { status: 400 });

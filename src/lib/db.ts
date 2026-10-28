@@ -315,6 +315,7 @@ type DatabaseServer = {
   config_tag: string;
   config_version: number | null;
   sort_order: number;
+  notice?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -346,26 +347,33 @@ const formatIsoDate = (val: unknown): string => {
   return isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString();
 };
 
-const mapServer = (row: DatabaseServer): ServerRecord => ({
-  id: String(row.id || ""),
-  name: String(row.name || ""),
-  protocol: String(row.protocol || ""),
-  host: String(row.host || ""),
-  port: Number(row.port) || 443,
-  country: String(row.country || ""),
-  isEnabled: Boolean(row.is_enabled),
-  options: parseOptions(row.options_json),
-  encryptedConfig: {
-    version: row.config_version ?? undefined,
-    cipherText: String(row.config_cipher || ""),
-    salt: row.config_salt ?? undefined,
-    iv: String(row.config_iv || ""),
-    authTag: String(row.config_tag || ""),
-  },
-  sortOrder: Number(row.sort_order) || 0,
-  createdAt: formatIsoDate(row.created_at),
-  updatedAt: formatIsoDate(row.updated_at),
-});
+const mapServer = (row: DatabaseServer): ServerRecord => {
+  const options = parseOptions(row.options_json);
+  const notice = typeof options.extra?.notice === "string" && options.extra.notice.trim()
+    ? options.extra.notice.trim()
+    : (row.notice ? String(row.notice).trim() : undefined);
+  return {
+    id: String(row.id || ""),
+    name: String(row.name || ""),
+    protocol: String(row.protocol || ""),
+    host: String(row.host || ""),
+    port: Number(row.port) || 443,
+    country: String(row.country || ""),
+    isEnabled: Boolean(row.is_enabled),
+    options,
+    notice,
+    encryptedConfig: {
+      version: row.config_version ?? undefined,
+      cipherText: String(row.config_cipher || ""),
+      salt: row.config_salt ?? undefined,
+      iv: String(row.config_iv || ""),
+      authTag: String(row.config_tag || ""),
+    },
+    sortOrder: Number(row.sort_order) || 0,
+    createdAt: formatIsoDate(row.created_at),
+    updatedAt: formatIsoDate(row.updated_at),
+  };
+};
 
 const migrateLegacyEncryption = async (): Promise<void> => {
   if (legacyMigrationChecked) return;
