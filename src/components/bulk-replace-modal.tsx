@@ -29,14 +29,13 @@ export function BulkReplaceModal({
   api,
 }: BulkReplaceModalProps) {
   const [rawInput, setRawInput] = useState("");
-  const [keepFirstReplacedName, setKeepFirstReplacedName] = useState(false);
+  const [nameMode, setNameMode] = useState<"replacing" | "keep_replaced">("replacing");
+  const [applyToAllSlots, setApplyToAllSlots] = useState(true);
   const [inheritOptions, setInheritOptions] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const rawInputId = useId();
-  const keepNameId = useId();
-  const inheritOptionsId = useId();
 
   const firstSelectedPosition = useMemo(() => {
     if (selectedServers.length === 0) return 1;
@@ -44,33 +43,56 @@ export function BulkReplaceModal({
     return idx !== -1 ? idx + 1 : 1;
   }, [allServers, selectedServers]);
 
-  const parsedIncomingProfiles = useMemo(() => {
+  const rawProfiles = useMemo(() => {
     const trimmed = rawInput.trim();
     if (!trimmed) return [];
-    const profiles = splitImportedProfiles(trimmed);
+    return splitImportedProfiles(trimmed);
+  }, [rawInput]);
+
+  const shouldExpandSingle = rawProfiles.length === 1 && selectedServers.length > 1 && applyToAllSlots;
+
+  const parsedIncomingProfiles = useMemo(() => {
+    if (rawProfiles.length === 0) return [];
+
+    const profiles = shouldExpandSingle
+      ? Array.from({ length: selectedServers.length }, () => rawProfiles[0])
+      : rawProfiles;
+
     return profiles.map((p, idx) => {
       const meta = detectProfileMetadata(p, "custom:tcp");
+      const targetServer = selectedServers[idx] || selectedServers[0];
+
       let resolvedName = meta.name;
-      if (keepFirstReplacedName && selectedServers[0]) {
-        resolvedName =
-          profiles.length === 1
-            ? selectedServers[0].name
-            : `${selectedServers[0].name} #${idx + 1}`;
+      let countryCode = "GLOBAL";
+
+      if (nameMode === "keep_replaced" && targetServer) {
+        resolvedName = targetServer.name;
+        countryCode = targetServer.country || "GLOBAL";
+      } else {
+        // Use replacing config's name
+        if (shouldExpandSingle) {
+          resolvedName = `${meta.name} #${idx + 1}`;
+        } else {
+          resolvedName = meta.name;
+        }
+
+        const detectedNameCountry = normalizeLocationCode(meta.name);
+        countryCode = normalizeLocationCode(
+          meta.country && meta.country !== "XX" && meta.country !== "GLOBAL"
+            ? meta.country
+            : detectedNameCountry && detectedNameCountry !== "GLOBAL" && detectedNameCountry !== "XX"
+              ? detectedNameCountry
+              : targetServer?.country || resolvedName,
+        );
+
+        const flag = countryCode !== "GLOBAL" && countryCode !== "XX" ? flagFromCountryCode(countryCode) : "";
+        if (flag && !resolvedName.startsWith(flag)) {
+          resolvedName = `${flag} ${stripLeadingCountryFlag(resolvedName).trim()}`;
+        }
       }
 
-      const countryCode = normalizeLocationCode(
-        meta.country && meta.country !== "XX" && meta.country !== "GLOBAL"
-          ? meta.country
-          : selectedServers[0]?.country || resolvedName,
-      );
-
-      const flag = countryCode !== "GLOBAL" && countryCode !== "XX" ? flagFromCountryCode(countryCode) : "";
-      if (flag && !resolvedName.startsWith(flag)) {
-        resolvedName = `${flag} ${stripLeadingCountryFlag(resolvedName).trim()}`;
-      }
-
-      const options: ProtocolOptions = inheritOptions && selectedServers[0]?.options
-        ? { ...selectedServers[0].options }
+      const options: ProtocolOptions = inheritOptions && targetServer?.options
+        ? { ...targetServer.options }
         : { mux: false, fragment: false, sniffing: true, allowInsecure: false, extra: {} };
 
       return {
@@ -84,7 +106,7 @@ export function BulkReplaceModal({
         options,
       };
     });
-  }, [rawInput, keepFirstReplacedName, inheritOptions, selectedServers]);
+  }, [rawProfiles, shouldExpandSingle, selectedServers, nameMode, inheritOptions]);
 
   if (!isOpen) return null;
 
@@ -209,13 +231,16 @@ export function BulkReplaceModal({
             ) : (
               <div className="rounded-xl border border-emerald-500/20 bg-emerald-950/20 p-3 space-y-2">
                 <div className="flex items-center justify-between text-xs text-emerald-300 font-medium">
-                  <span>✓ {parsedIncomingProfiles.length} new server{parsedIncomingProfiles.length === 1 ? "" : "s"} detected</span>
+                  <span>
+                    ✓ {parsedIncomingProfiles.length} new server{parsedIncomingProfiles.length === 1 ? "" : "s"} detected
+                    {shouldExpandSingle ? ` (1 config applied to ${selectedServers.length} slots)` : ""}
+                  </span>
                   <span className="text-zinc-400 font-normal">
                     Will insert at position #{firstSelectedPosition}
                   </span>
                 </div>
 
-                <div className="space-y-1.5 max-h-32 overflow-y-auto pr-1">
+                <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
                   {parsedIncomingProfiles.map((p, idx) => (
                     <div
                       key={idx}
@@ -238,30 +263,73 @@ export function BulkReplaceModal({
         )}
 
         {/* Options */}
-        <div className="grid gap-3 sm:grid-cols-2 border-t border-white/5 pt-3">
-          <label htmlFor={keepNameId} className="flex items-center gap-2.5 text-xs text-zinc-300 cursor-pointer">
-            <input
-              id={keepNameId}
-              type="checkbox"
-              checked={keepFirstReplacedName}
-              onChange={(e) => setKeepFirstReplacedName(e.target.checked)}
-              disabled={loading}
-              className="rounded border-zinc-700 bg-zinc-900 accent-indigo-400"
-            />
-            <span>Keep name of replaced server ({selectedServers[0]?.name || "First selected"})</span>
-          </label>
+        <div className="space-y-3 rounded-xl border border-white/5 bg-white/[0.02] p-3.5">
+          <div className="grid gap-4 sm:grid-cols-2">
+            {/* Naming Mode */}
+            <div className="space-y-1.5">
+              <label className="block text-xs font-medium text-zinc-300">
+                Server Names
+              </label>
+              <div className="flex rounded-lg border border-white/10 bg-black/40 p-0.5 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setNameMode("replacing")}
+                  disabled={loading}
+                  className={`flex-1 rounded-md px-2.5 py-1.5 font-medium transition ${
+                    nameMode === "replacing"
+                      ? "bg-indigo-600 text-white shadow-sm"
+                      : "text-zinc-400 hover:text-zinc-200"
+                  }`}
+                >
+                  Use replacing config name
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setNameMode("keep_replaced")}
+                  disabled={loading}
+                  className={`flex-1 rounded-md px-2.5 py-1.5 font-medium transition ${
+                    nameMode === "keep_replaced"
+                      ? "bg-indigo-600 text-white shadow-sm"
+                      : "text-zinc-400 hover:text-zinc-200"
+                  }`}
+                >
+                  Keep replaced name
+                </button>
+              </div>
+              <p className="text-[11px] text-zinc-400">
+                {nameMode === "replacing"
+                  ? "Uses remarks / hash title from the new config."
+                  : "Preserves the original names of the servers being replaced."}
+              </p>
+            </div>
 
-          <label htmlFor={inheritOptionsId} className="flex items-center gap-2.5 text-xs text-zinc-300 cursor-pointer">
-            <input
-              id={inheritOptionsId}
-              type="checkbox"
-              checked={inheritOptions}
-              onChange={(e) => setInheritOptions(e.target.checked)}
-              disabled={loading}
-              className="rounded border-zinc-700 bg-zinc-900 accent-indigo-400"
-            />
-            <span>Inherit options (mux, fragment, sniffing)</span>
-          </label>
+            {/* Checkbox Options */}
+            <div className="space-y-2 pt-1">
+              {rawProfiles.length === 1 && selectedServers.length > 1 && (
+                <label className="flex items-center gap-2.5 text-xs text-zinc-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={applyToAllSlots}
+                    onChange={(e) => setApplyToAllSlots(e.target.checked)}
+                    disabled={loading}
+                    className="rounded border-zinc-700 bg-zinc-900 accent-indigo-400"
+                  />
+                  <span>Apply config to all {selectedServers.length} selected slots</span>
+                </label>
+              )}
+
+              <label className="flex items-center gap-2.5 text-xs text-zinc-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={inheritOptions}
+                  onChange={(e) => setInheritOptions(e.target.checked)}
+                  disabled={loading}
+                  className="rounded border-zinc-700 bg-zinc-900 accent-indigo-400"
+                />
+                <span>Inherit options (mux, fragment, sniffing)</span>
+              </label>
+            </div>
+          </div>
         </div>
 
         {error && (
