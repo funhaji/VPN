@@ -19,7 +19,7 @@ export function AdminLogin() {
         body: JSON.stringify({ pass }),
       });
       if (!response.ok) {
-        setMessage("Wrong password. Try again.");
+        setMessage(response.status === 401 || response.status === 403 ? "Wrong password. Try again." : response.status === 429 ? "Too many attempts. Please wait and try again." : "Unable to sign in right now. Please try again.");
         return;
       }
       window.location.reload();
@@ -107,9 +107,15 @@ export function AdminLogin() {
             <div className="mt-7 space-y-4">
               {/* Password field */}
               <div>
-                <label className="mb-1.5 block text-xs font-medium text-zinc-400">Password</label>
+                <label htmlFor="admin-password" className="mb-1.5 block text-xs font-medium text-zinc-400">Password</label>
                 <div className="relative">
                   <input
+                    id="admin-password"
+                    name="password"
+                    autoComplete="current-password"
+                    required
+                    aria-invalid={Boolean(message)}
+                    aria-describedby={message ? "login-error" : undefined}
                     value={pass}
                     onChange={(event) => setPass(event.target.value)}
                     type={showPass ? "text" : "password"}
@@ -121,7 +127,8 @@ export function AdminLogin() {
                     type="button"
                     onClick={() => setShowPass(!showPass)}
                     className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-zinc-500 transition hover:text-zinc-300"
-                    tabIndex={-1}
+                    aria-label={showPass ? "Hide password" : "Show password"}
+                    aria-pressed={showPass}
                   >
                     {showPass ? (
                       <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -139,7 +146,7 @@ export function AdminLogin() {
 
               {/* Error banner */}
               {message && (
-                <div className="flex items-center gap-2.5 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
+                <div id="login-error" role="alert" className="flex items-center gap-2.5 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
                   <svg className="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
                   </svg>

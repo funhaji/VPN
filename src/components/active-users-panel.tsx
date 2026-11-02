@@ -32,6 +32,7 @@ export type ClientAnalyticsReport = {
 function formatRelativeTime(dateString: string): string {
   try {
     const then = new Date(dateString).getTime();
+    if (!Number.isFinite(then)) return "Unknown";
     const now = Date.now();
     const diffSec = Math.max(0, Math.floor((now - then) / 1000));
 
@@ -59,6 +60,7 @@ export function ActiveUsersPanel({
   setBusy: (b: boolean) => void;
   setMsg: (msg: { ok: boolean; text: string } | null) => void;
 }) {
+  const [loadFailed, setLoadFailed] = useState(false);
   const [report, setReport] = useState<ClientAnalyticsReport | null>(null);
   const [platformFilter, setPlatformFilter] = useState<"all" | "windows" | "android">("all");
   const [searchQuery, setSearchQuery] = useState("");
@@ -66,10 +68,12 @@ export function ActiveUsersPanel({
 
   const loadData = useCallback(async () => {
     setBusy(true);
+    setLoadFailed(false);
     try {
       const data = await api<ClientAnalyticsReport>("/api/admin/users");
       setReport(data);
     } catch {
+      setLoadFailed(true);
       setMsg({ ok: false, text: "Failed to load user analytics" });
     } finally {
       setBusy(false);
@@ -80,11 +84,12 @@ export function ActiveUsersPanel({
     void loadData();
   }, [loadData]);
 
-  const copyDeviceId = (id: string) => {
-    navigator.clipboard.writeText(id).then(() => {
+  const copyDeviceId = async (id: string) => {
+    try {
+      await navigator.clipboard.writeText(id);
       setCopiedId(id);
       setTimeout(() => setCopiedId(null), 2000);
-    });
+    } catch { setMsg({ ok: false, text: "Could not copy device ID" }); }
   };
 
   const winStats = report?.platforms?.windows ?? {
@@ -154,6 +159,11 @@ export function ActiveUsersPanel({
         </div>
       </div>
 
+      {!report ? (
+        <div role="status" className="rounded-2xl border border-white/10 bg-zinc-950/70 p-8 text-center text-sm text-zinc-400">
+          {loadFailed ? "Analytics are unavailable. Use Refresh to try again." : "Loading analytics…"}
+        </div>
+      ) : <>
       {/* 4 Overview KPI Cards */}
       <div className="grid gap-3 grid-cols-2 lg:grid-cols-4">
         <div className="rounded-2xl border border-white/6 bg-zinc-950/70 p-4">
@@ -323,6 +333,7 @@ export function ActiveUsersPanel({
             <button
               type="button"
               onClick={() => setPlatformFilter("all")}
+              aria-pressed={platformFilter === "all"}
               className={`rounded-xl px-3 py-1.5 text-xs font-semibold transition ${
                 platformFilter === "all"
                   ? "bg-cyan-400 text-cyan-950"
@@ -334,6 +345,7 @@ export function ActiveUsersPanel({
             <button
               type="button"
               onClick={() => setPlatformFilter("windows")}
+              aria-pressed={platformFilter === "windows"}
               className={`rounded-xl px-3 py-1.5 text-xs font-semibold transition ${
                 platformFilter === "windows"
                   ? "bg-blue-500 text-white"
@@ -345,6 +357,7 @@ export function ActiveUsersPanel({
             <button
               type="button"
               onClick={() => setPlatformFilter("android")}
+              aria-pressed={platformFilter === "android"}
               className={`rounded-xl px-3 py-1.5 text-xs font-semibold transition ${
                 platformFilter === "android"
                   ? "bg-emerald-500 text-white"
@@ -360,6 +373,7 @@ export function ActiveUsersPanel({
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
+              aria-label="Search devices"
               placeholder="Search by ID, model, OS..."
               className="w-full rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-xs text-zinc-200 placeholder-zinc-500 focus:border-cyan-500 focus:outline-none"
             />
@@ -442,6 +456,7 @@ export function ActiveUsersPanel({
           )}
         </div>
       </div>
+      </>}
     </div>
   );
 }

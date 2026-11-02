@@ -1,4 +1,4 @@
-﻿@import "tailwindcss";
+@import "tailwindcss";
 
 :root {
   --void: #050507;
@@ -38,4 +38,10 @@ body {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* Consistent keyboard affordances across the control panel. */
+:where(a, button, input, select, textarea, [role="button"]):focus-visible {
+  outline: 2px solid #67e8f9;
+  outline-offset: 3px;
 }

@@ -2403,13 +2403,14 @@ export function AdminDashboard() {
       {/* Sidebar */}
       <aside className="flex flex-col md:w-56 flex-shrink-0 border-b md:border-b-0 md:border-r border-white/5 bg-black/20">
         {/* Protocol nav */}
-        <nav className="flex md:flex-col overflow-x-auto md:overflow-y-auto space-x-1 md:space-x-0 md:space-y-0.5 px-2 py-2 md:py-3 scrollbar-none">
+        <nav aria-label="Control panel sections" className="flex md:flex-col overflow-x-auto md:overflow-y-auto space-x-1 md:space-x-0 md:space-y-0.5 px-2 py-2 md:py-3 scrollbar-none">
           {PROTOCOLS.map((item) => {
             const isActive = tab === item.id;
             return (
               <button
                 key={item.id}
                 type="button"
+                aria-current={isActive ? "page" : undefined}
                 onClick={() => { setTab(item.id); setMsg(null); }}
                 className={`group whitespace-nowrap md:w-full rounded-lg px-3 py-1.5 md:py-2 text-left transition-all ${
                   isActive ? "bg-white/8 ring-1 ring-white/10" : "hover:bg-white/4"
@@ -2453,6 +2454,10 @@ export function AdminDashboard() {
           {/* Platform user counts */}
           <div
             onClick={() => { setTab("users"); setMsg(null); }}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setTab("users"); setMsg(null); } }}
+            aria-label="View active user telemetry"
             className="cursor-pointer rounded-xl border border-white/6 bg-white/3 p-3 space-y-2.5 transition hover:border-cyan-500/30 hover:bg-white/5"
             title="Click to view full Active Users telemetry"
           >
@@ -2464,26 +2469,26 @@ export function AdminDashboard() {
                   Windows Users
                 </span>
                 <span className="text-xs font-mono font-medium text-cyan-300">
-                  {userAnalytics?.platforms?.windows?.total ?? 0} total
+                  {userAnalytics?.platforms?.windows?.total ?? "—"} total
                 </span>
               </div>
               <div className="grid grid-cols-3 gap-1 pt-0.5 text-center">
                 <div className="rounded-lg bg-black/30 p-1 border border-white/4">
                   <p className="text-[8px] uppercase tracking-[0.1em] text-zinc-500">24h</p>
                   <p className="text-xs font-mono font-semibold text-zinc-200">
-                    {userAnalytics?.platforms?.windows?.active24h ?? 0}
+                    {userAnalytics?.platforms?.windows?.active24h ?? "—"}
                   </p>
                 </div>
                 <div className="rounded-lg bg-black/30 p-1 border border-white/4">
                   <p className="text-[8px] uppercase tracking-[0.1em] text-zinc-500">7d</p>
                   <p className="text-xs font-mono font-semibold text-zinc-200">
-                    {userAnalytics?.platforms?.windows?.active7d ?? 0}
+                    {userAnalytics?.platforms?.windows?.active7d ?? "—"}
                   </p>
                 </div>
                 <div className="rounded-lg bg-black/30 p-1 border border-white/4">
                   <p className="text-[8px] uppercase tracking-[0.1em] text-zinc-500">30d</p>
                   <p className="text-xs font-mono font-semibold text-zinc-200">
-                    {userAnalytics?.platforms?.windows?.active30d ?? 0}
+                    {userAnalytics?.platforms?.windows?.active30d ?? "—"}
                   </p>
                 </div>
               </div>
@@ -2497,26 +2502,26 @@ export function AdminDashboard() {
                   Android Users
                 </span>
                 <span className="text-xs font-mono font-medium text-emerald-400">
-                  {userAnalytics?.platforms?.android?.total ?? 0} total
+                  {userAnalytics?.platforms?.android?.total ?? "—"} total
                 </span>
               </div>
               <div className="grid grid-cols-3 gap-1 pt-0.5 text-center">
                 <div className="rounded-lg bg-black/30 p-1 border border-white/4">
                   <p className="text-[8px] uppercase tracking-[0.1em] text-zinc-500">24h</p>
                   <p className="text-xs font-mono font-semibold text-zinc-200">
-                    {userAnalytics?.platforms?.android?.active24h ?? 0}
+                    {userAnalytics?.platforms?.android?.active24h ?? "—"}
                   </p>
                 </div>
                 <div className="rounded-lg bg-black/30 p-1 border border-white/4">
                   <p className="text-[8px] uppercase tracking-[0.1em] text-zinc-500">7d</p>
                   <p className="text-xs font-mono font-semibold text-zinc-200">
-                    {userAnalytics?.platforms?.android?.active7d ?? 0}
+                    {userAnalytics?.platforms?.android?.active7d ?? "—"}
                   </p>
                 </div>
                 <div className="rounded-lg bg-black/30 p-1 border border-white/4">
                   <p className="text-[8px] uppercase tracking-[0.1em] text-zinc-500">30d</p>
                   <p className="text-xs font-mono font-semibold text-zinc-200">
-                    {userAnalytics?.platforms?.android?.active30d ?? 0}
+                    {userAnalytics?.platforms?.android?.active30d ?? "—"}
                   </p>
                 </div>
               </div>
@@ -2602,7 +2607,10 @@ export function AdminDashboard() {
             <h3 className="text-base font-semibold text-zinc-100">
               {PROTOCOLS.find((item) => item.id === tab)?.label}
             </h3>
-            <span className="rounded-full border border-white/8 px-3 py-1 font-mono text-xs text-zinc-400">{protocol}</span>
+            <div className="flex items-center gap-2">
+              <span className="rounded-full border border-white/8 px-3 py-1 font-mono text-xs text-zinc-400">{protocol}</span>
+              <button type="button" onClick={logout} className="md:hidden rounded-lg border border-rose-900/40 px-3 py-2 text-xs text-rose-300">Lock session</button>
+            </div>
           </div>
         </div>
 
@@ -3618,7 +3626,7 @@ or
                   </span>
                   <span className="text-zinc-600">•</span>
                   <span className="text-xs text-emerald-400 font-medium">
-                    {userAnalytics?.platforms?.android?.total ?? 0} Android users ({userAnalytics?.platforms?.android?.active24h ?? 0} active today)
+                    {userAnalytics?.platforms?.android?.total ?? "—"} Android users ({userAnalytics?.platforms?.android?.active24h ?? "—"} active today)
                   </span>
                 </h4>
                 <div className="flex flex-wrap items-center gap-2">

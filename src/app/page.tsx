@@ -22,11 +22,11 @@ type CountryInfo = {
 };
 
 type NetworkStats = {
-  locations: number;
-  servers: number;
+  locations: number | null;
+  servers: number | null;
   countries: CountryInfo[];
-  androidVersion: string;
-  windowsVersion: string;
+  androidVersion: string | null;
+  windowsVersion: string | null;
 };
 
 const COPY: Record<
@@ -265,7 +265,7 @@ function TunnelField() {
         });
       }
 
-      raf = requestAnimationFrame(draw);
+      if (!prefersReduced) raf = requestAnimationFrame(draw);
     };
     raf = requestAnimationFrame(draw);
 
@@ -278,41 +278,10 @@ function TunnelField() {
   return <canvas ref={canvasRef} className="tunnel-canvas" aria-hidden="true" />;
 }
 
-function StatusTicker({ lines: messages }: { lines: string[] }) {
-  const [lines, setLines] = useState<string[]>([]);
-
-  useEffect(() => {
-    setLines([]);
-    let i = 0;
-    const id = setInterval(() => {
-      setLines((prev) => {
-        const next = [...prev, messages[i % messages.length]];
-        i++;
-        return next.slice(-3);
-      });
-    }, 1800);
-    return () => clearInterval(id);
-  }, [messages]);
-
-  return (
-    <div className="ticker" aria-hidden="true">
-      {lines.map((line, idx) => (
-        <div
-          key={idx}
-          className="ticker-line"
-          style={{ opacity: 0.35 + (idx / Math.max(1, lines.length)) * 0.65 }}
-        >
-          <span className="ticker-dot" />
-          <span>{line}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 function detectLang(): Lang {
   if (typeof window === "undefined") return "en";
-  const stored = window.localStorage.getItem("astro-lang");
+  let stored: string | null = null;
+  try { stored = window.localStorage.getItem("astro-lang"); } catch { /* Storage can be unavailable in private contexts. */ }
   if (stored === "en" || stored === "fa") return stored;
   const nav = window.navigator.language || "";
   return nav.toLowerCase().startsWith("fa") ? "fa" : "en";
@@ -324,11 +293,11 @@ export default function DownloadPage() {
   const [showLocationsModal, setShowLocationsModal] = useState(false);
   const [locationSearch, setLocationSearch] = useState("");
   const [stats, setStats] = useState<NetworkStats>({
-    locations: 62,
-    servers: 96,
+    locations: null,
+    servers: null,
     countries: [],
-    androidVersion: "1.2.1",
-    windowsVersion: "1.2.2.0",
+    androidVersion: null,
+    windowsVersion: null,
   });
 
   useEffect(() => {
@@ -344,8 +313,8 @@ export default function DownloadPage() {
           if (data && typeof data.locations === "number") {
             setStats((prev) => ({
               ...prev,
-              locations: data.locations || prev.locations,
-              servers: data.servers || prev.servers,
+              locations: data.locations,
+              servers: typeof data.servers === "number" ? data.servers : prev.servers,
               countries: Array.isArray(data.countries) ? data.countries : prev.countries,
             }));
           }
@@ -381,8 +350,8 @@ export default function DownloadPage() {
               ...prev,
               androidVersion: vData.android || prev.androidVersion,
               windowsVersion: vData.windows || prev.windowsVersion,
-              locations: vData.locations || prev.locations,
-              servers: vData.servers || prev.servers,
+              locations: prev.locations ?? (typeof vData.locations === "number" ? vData.locations : null),
+              servers: prev.servers ?? (typeof vData.servers === "number" ? vData.servers : null),
             }));
           }
         }
@@ -395,20 +364,33 @@ export default function DownloadPage() {
   const toggleLang = useCallback(() => {
     setLang((prev) => {
       const next = prev === "en" ? "fa" : "en";
-      window.localStorage.setItem("astro-lang", next);
+      try { window.localStorage.setItem("astro-lang", next); } catch { /* Keep the current session usable. */ }
       return next;
     });
   }, []);
 
-  // Handle escape key to close modal
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const dialogOpener = useRef<HTMLElement | null>(null);
+  const openLocations = () => {
+    dialogOpener.current = document.activeElement as HTMLElement | null;
+    setLocationSearch("");
+    setShowLocationsModal(true);
+  };
   useEffect(() => {
+    if (!showLocationsModal) return;
+    const oldOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && showLocationsModal) {
-        setShowLocationsModal(false);
-      }
+      if (e.key === "Escape") { setShowLocationsModal(false); return; }
+      if (e.key !== "Tab") return;
+      const controls = dialogRef.current?.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), a[href]');
+      if (!controls?.length) return;
+      const first = controls[0], last = controls[controls.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
     };
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    return () => { window.removeEventListener("keydown", handleKeyDown); document.body.style.overflow = oldOverflow; dialogOpener.current?.focus(); };
   }, [showLocationsModal]);
 
   const c = COPY[lang];
@@ -447,12 +429,12 @@ export default function DownloadPage() {
         <div className="top-bar-right">
           <button
             type="button"
-            onClick={() => setShowLocationsModal(true)}
+            onClick={openLocations}
             className="locations-header-pill"
             aria-label={isRtl ? "مشاهده لوکیشن‌های سرور" : "View active server locations"}
           >
             <span className="globe-icon" aria-hidden="true">🌐</span>
-            <span className="font-semibold text-cyan-300">{stats.locations}</span>
+            <span className="font-semibold text-cyan-300">{stats.locations ?? "—"}</span>
             <span className="hidden sm:inline text-zinc-400">{c.locationsWorldwide}</span>
           </button>
 
@@ -487,19 +469,19 @@ export default function DownloadPage() {
         <div className="locations-hero-card">
           <div className="locations-meta">
             <div className="locations-stat-box">
-              <span className="locations-number">{stats.locations}</span>
+              <span className="locations-number">{stats.locations ?? "—"}</span>
               <span className="locations-label">{c.locationsWorldwide}</span>
             </div>
             <div className="locations-divider" />
             <div className="locations-stat-box">
-              <span className="locations-number">{stats.servers}</span>
+              <span className="locations-number">{stats.servers ?? "—"}</span>
               <span className="locations-label">{isRtl ? "سرور فعال" : "Active Nodes"}</span>
             </div>
           </div>
 
           <button
             type="button"
-            onClick={() => setShowLocationsModal(true)}
+            onClick={openLocations}
             className="locations-cta-btn"
           >
             <span>{c.viewLocations}</span>
@@ -507,8 +489,7 @@ export default function DownloadPage() {
           </button>
         </div>
 
-        {/* Real-time Status Ticker */}
-        <StatusTicker lines={c.ticker} />
+
 
         {/* Platform Downloads Grid */}
         <section className="downloads-section" aria-label="Downloads">
@@ -517,7 +498,7 @@ export default function DownloadPage() {
             <div className="card-top">
               <div className="flex items-center gap-2">
                 <OsIconWindows />
-                <span className="version-pill">v{stats.windowsVersion}</span>
+                {stats.windowsVersion && <span className="version-pill">v{stats.windowsVersion}</span>}
               </div>
               <span className="platform-tag">64-bit</span>
             </div>
@@ -541,7 +522,7 @@ export default function DownloadPage() {
             <div className="card-top">
               <div className="flex items-center gap-2">
                 <OsIconAndroid />
-                <span className="version-pill">v{stats.androidVersion}</span>
+                {stats.androidVersion && <span className="version-pill">v{stats.androidVersion}</span>}
               </div>
               <span className="platform-tag">APK</span>
             </div>
@@ -682,16 +663,17 @@ export default function DownloadPage() {
         >
           <div
             className="modal-dialog"
+            ref={dialogRef}
             onClick={(e) => e.stopPropagation()}
             dir={isRtl ? "rtl" : "ltr"}
           >
             <div className="modal-header">
               <div>
                 <h3 className="modal-title">
-                  {stats.locations} {c.locationsWorldwide}
+                  {stats.locations ?? "—"} {c.locationsWorldwide}
                 </h3>
                 <p className="modal-subtitle">
-                  {stats.servers} {isRtl ? "سرور فعال آماده اتصال" : "active servers ready for instant connection"}
+                  {stats.servers ?? "—"} {isRtl ? "سرور فعال آماده اتصال" : "active servers ready for instant connection"}
                 </p>
               </div>
               <button
@@ -711,6 +693,7 @@ export default function DownloadPage() {
                 value={locationSearch}
                 onChange={(e) => setLocationSearch(e.target.value)}
                 placeholder={c.searchLocationsPlaceholder}
+                aria-label={c.searchLocationsPlaceholder}
                 className="modal-search-input"
                 autoFocus
               />
@@ -735,7 +718,7 @@ export default function DownloadPage() {
                 ))
               ) : (
                 <div className="modal-empty-state">
-                  <p>{c.noLocationsFound}</p>
+                  <p>{stats.countries.length === 0 && stats.locations !== 0 && !locationSearch.trim() ? (isRtl ? "فهرست کشورها در حال حاضر در دسترس نیست." : "Location details are currently unavailable.") : c.noLocationsFound}</p>
                 </div>
               )}
             </div>
@@ -754,6 +737,10 @@ export default function DownloadPage() {
       )}
 
       <style>{`
+        .page :is(a, button, input):focus-visible {
+          outline: 2px solid #67e8f9;
+          outline-offset: 3px;
+        }
         .page {
           position: relative;
           min-height: 100vh;
