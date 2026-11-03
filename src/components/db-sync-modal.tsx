@@ -23,6 +23,7 @@ export function DbSyncModal({ isOpen, onClose, dbStatus, onSuccess, api }: DbSyn
   const [syncServers, setSyncServers] = useState(true);
   const [serversDirection, setServersDirection] = useState<"supabase-to-neon" | "neon-to-supabase" | "two-way">("supabase-to-neon");
   const [serversStrategy, setServersStrategy] = useState<"overwrite" | "keep-target">("overwrite");
+  const [cleanTargetServers, setCleanTargetServers] = useState(true);
 
   const [syncUsers, setSyncUsers] = useState(true);
   const [usersStrategy, setUsersStrategy] = useState<"two-way-merge" | "supabase-to-neon" | "neon-to-supabase">("two-way-merge");
@@ -50,6 +51,7 @@ export function DbSyncModal({ isOpen, onClose, dbStatus, onSuccess, api }: DbSyn
       setSyncServers(true);
       setServersDirection("supabase-to-neon");
       setServersStrategy("overwrite");
+      setCleanTargetServers(true);
       setSyncUsers(true);
       setUsersStrategy("two-way-merge");
       setSyncRules(true);
@@ -57,6 +59,7 @@ export function DbSyncModal({ isOpen, onClose, dbStatus, onSuccess, api }: DbSyn
       setSyncSettings(true);
       setSettingsDirection("supabase-to-neon");
     } else if (p === "two-way-all") {
+      setCleanTargetServers(false);
       setSyncServers(true);
       setServersDirection("two-way");
       setServersStrategy("overwrite");
@@ -67,6 +70,7 @@ export function DbSyncModal({ isOpen, onClose, dbStatus, onSuccess, api }: DbSyn
       setSyncSettings(true);
       setSettingsDirection("supabase-to-neon");
     } else if (p === "supabase-to-neon") {
+      setCleanTargetServers(true);
       setSyncServers(true);
       setServersDirection("supabase-to-neon");
       setServersStrategy("overwrite");
@@ -77,6 +81,7 @@ export function DbSyncModal({ isOpen, onClose, dbStatus, onSuccess, api }: DbSyn
       setSyncSettings(true);
       setSettingsDirection("supabase-to-neon");
     } else if (p === "neon-to-supabase") {
+      setCleanTargetServers(false);
       setSyncServers(true);
       setServersDirection("neon-to-supabase");
       setServersStrategy("overwrite");
@@ -98,6 +103,7 @@ export function DbSyncModal({ isOpen, onClose, dbStatus, onSuccess, api }: DbSyn
         enabled: syncServers,
         direction: serversDirection,
         strategy: serversStrategy,
+        cleanTarget: cleanTargetServers,
       },
       users: {
         enabled: syncUsers,
@@ -232,7 +238,7 @@ export function DbSyncModal({ isOpen, onClose, dbStatus, onSuccess, api }: DbSyn
                 <span className="text-[9px] uppercase px-1.5 py-0.2 rounded bg-violet-500/20 text-violet-300 font-mono">Recommended</span>
               </div>
               <div className="text-[11px] text-zinc-400 mt-1">
-                Keep Supabase servers (push to Neon) & two-way merge all active user analytics.
+                Wipes Neon servers, clones all Supabase servers to Neon, and merges active users.
               </div>
             </button>
 
@@ -301,24 +307,43 @@ export function DbSyncModal({ isOpen, onClose, dbStatus, onSuccess, api }: DbSyn
               <span className="font-medium text-zinc-200">Servers & Configs</span>
             </label>
             {syncServers && (
-              <div className="flex items-center gap-2">
-                <select
-                  value={serversDirection}
-                  onChange={(e) => { setServersDirection(e.target.value as any); setPreset("custom"); }}
-                  className="rounded-lg border border-white/10 bg-zinc-900 px-2.5 py-1 text-xs text-zinc-200 focus:outline-none focus:border-violet-500"
-                >
-                  <option value="supabase-to-neon">Supabase ➔ Neon</option>
-                  <option value="neon-to-supabase">Neon ➔ Supabase</option>
-                  <option value="two-way">Two-way Merge</option>
-                </select>
-                <select
-                  value={serversStrategy}
-                  onChange={(e) => { setServersStrategy(e.target.value as any); setPreset("custom"); }}
-                  className="rounded-lg border border-white/10 bg-zinc-900 px-2.5 py-1 text-xs text-zinc-200 focus:outline-none focus:border-violet-500"
-                >
-                  <option value="overwrite">Overwrite target</option>
-                  <option value="keep-target">Keep target on conflict</option>
-                </select>
+              <div className="flex flex-col sm:items-end gap-1.5">
+                <div className="flex items-center gap-2">
+                  <select
+                    value={serversDirection}
+                    onChange={(e) => {
+                      const nextDir = e.target.value as any;
+                      setServersDirection(nextDir);
+                      if (nextDir === "supabase-to-neon") setCleanTargetServers(true);
+                      else setCleanTargetServers(false);
+                      setPreset("custom");
+                    }}
+                    className="rounded-lg border border-white/10 bg-zinc-900 px-2.5 py-1 text-xs text-zinc-200 focus:outline-none focus:border-violet-500"
+                  >
+                    <option value="supabase-to-neon">Supabase ➔ Neon</option>
+                    <option value="neon-to-supabase">Neon ➔ Supabase</option>
+                    <option value="two-way">Two-way Merge</option>
+                  </select>
+                  <select
+                    value={serversStrategy}
+                    onChange={(e) => { setServersStrategy(e.target.value as any); setPreset("custom"); }}
+                    className="rounded-lg border border-white/10 bg-zinc-900 px-2.5 py-1 text-xs text-zinc-200 focus:outline-none focus:border-violet-500"
+                  >
+                    <option value="overwrite">Overwrite target</option>
+                    <option value="keep-target">Keep target on conflict</option>
+                  </select>
+                </div>
+                {serversDirection !== "two-way" && (
+                  <label className="flex items-center gap-1.5 text-[11px] text-zinc-400 hover:text-zinc-300 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={cleanTargetServers}
+                      onChange={(e) => { setCleanTargetServers(e.target.checked); setPreset("custom"); }}
+                      className="rounded border-zinc-700 bg-zinc-900 text-violet-500 focus:ring-0"
+                    />
+                    <span>Wipe target servers first (exact clone)</span>
+                  </label>
+                )}
               </div>
             )}
           </div>

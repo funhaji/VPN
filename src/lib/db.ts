@@ -15,6 +15,14 @@ const cooldownUntil: Record<DbProvider, number> = {
   supabase: 0,
 };
 
+const quotaCooldownUntil: Record<DbProvider, number> = {
+  neon: 0,
+  supabase: 0,
+};
+
+export const isProviderQuotaLimited = (provider: DbProvider): boolean =>
+  Date.now() < quotaCooldownUntil[provider];
+
 const schemaReady: Record<DbProvider, boolean> = {
   neon: false,
   supabase: false,
@@ -24,6 +32,7 @@ let legacyMigrationChecked = false;
 let readCounter = 0;
 let catalogCacheVersion = 0;
 let autoSyncRunning = false;
+let reconcileTimer: NodeJS.Timeout | null = null;
 
 const heartbeatDebounce = new Map<string, { timestamp: number; appVersion: string }>();
 
@@ -72,7 +81,10 @@ const isProviderHealthy = (provider: DbProvider): boolean =>
 const markProviderError = (provider: DbProvider, error: unknown): void => {
   const msg = error instanceof Error ? error.message : String(error);
   const isQuota = msg.includes("402") || msg.includes("quota") || msg.includes("exceeded");
-  const duration = isQuota ? 24 * 3600_000 : 60_000;
+  if (isQuota) {
+    quotaCooldownUntil[provider] = Date.now() + 24 * 3600_000;
+  }
+  const duration = isQuota ? 24 * 3600_000 : 15_000;
   cooldownUntil[provider] = Date.now() + duration;
   console.warn(`[DB Provider] Marked ${provider} unhealthy for ${duration / 1000}s (${msg.slice(0, 120)})`);
 };
@@ -125,14 +137,63 @@ const DDL_SCRIPT = `
   CREATE INDEX IF NOT EXISTS idx_client_devices_last_seen ON client_devices(last_seen);
 `;
 
+const DDL_STATEMENTS = [
+  `CREATE TABLE IF NOT EXISTS vpn_servers (
+    id UUID PRIMARY KEY,
+    name VARCHAR(70) NOT NULL,
+    protocol VARCHAR(40) NOT NULL,
+    host VARCHAR(255) NOT NULL,
+    port INT NOT NULL,
+    country VARCHAR(80) NOT NULL,
+    is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    options_json TEXT NOT NULL,
+    config_cipher TEXT NOT NULL,
+    config_salt TEXT,
+    config_iv TEXT NOT NULL,
+    config_tag TEXT NOT NULL,
+    config_version INT NOT NULL DEFAULT 1,
+    sort_order INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`,
+  `ALTER TABLE vpn_servers ADD COLUMN IF NOT EXISTS config_salt TEXT`,
+  `ALTER TABLE vpn_servers ADD COLUMN IF NOT EXISTS config_version INT NOT NULL DEFAULT 1`,
+  `ALTER TABLE vpn_servers ADD COLUMN IF NOT EXISTS sort_order INT NOT NULL DEFAULT 0`,
+  `CREATE INDEX IF NOT EXISTS idx_vpn_servers_enabled ON vpn_servers(is_enabled)`,
+  `CREATE TABLE IF NOT EXISTS routing_rules (
+    id UUID PRIMARY KEY,
+    type VARCHAR(20) NOT NULL,
+    value TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_routing_rules_type_value ON routing_rules(type, value)`,
+  `CREATE TABLE IF NOT EXISTS app_settings (
+    key VARCHAR(64) PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`,
+  `CREATE TABLE IF NOT EXISTS client_devices (
+    device_id VARCHAR(128) PRIMARY KEY,
+    platform VARCHAR(32) NOT NULL,
+    app_version VARCHAR(32) NOT NULL,
+    os_version VARCHAR(64) NOT NULL DEFAULT '',
+    model VARCHAR(64) NOT NULL DEFAULT '',
+    first_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_client_devices_platform ON client_devices(platform)`,
+  `CREATE INDEX IF NOT EXISTS idx_client_devices_last_seen ON client_devices(last_seen)`
+];
+
 export const ensureSchemaForProvider = async (provider: DbProvider): Promise<void> => {
   if (schemaReady[provider]) return;
 
   if (provider === "neon") {
     const client = getNeonClient();
     if (!client) throw new Error("Neon DB is not configured");
-    const wrapped = Object.assign([DDL_SCRIPT], { raw: [DDL_SCRIPT] }) as unknown as TemplateStringsArray;
-    await client(wrapped);
+    for (const stmt of DDL_STATEMENTS) {
+      await runWithTimeout(client.query(stmt, []), 7000);
+    }
   } else {
     const client = getSupabaseClient();
     if (!client) throw new Error("Supabase DB is not configured");
@@ -224,6 +285,12 @@ const executeOnProvider = async <T = unknown>(
   }
 };
 
+export const executeSql = <T = unknown>(provider: DbProvider) => {
+  return (strings: TemplateStringsArray, ...values: unknown[]): Promise<T[]> => {
+    return executeOnProvider<T>(provider, strings, values);
+  };
+};
+
 let lastUsedProvider: DbProvider | null = null;
 export const getLastUsedProvider = (): DbProvider | null => lastUsedProvider;
 
@@ -263,6 +330,21 @@ export const queryRead = async <T = unknown>(
   }
 };
 
+export const scheduleServerReconciliation = (): void => {
+  if (reconcileTimer) return;
+  reconcileTimer = setTimeout(() => {
+    reconcileTimer = null;
+    if (!autoSyncRunning && isProviderHealthy("neon") && !isProviderQuotaLimited("neon")) {
+      autoSyncRunning = true;
+      reconcileServersToNeon()
+        .catch((e) => console.warn("[Background Sync] Server reconciliation failed:", e))
+        .finally(() => {
+          autoSyncRunning = false;
+        });
+    }
+  }, 4000);
+};
+
 export const queryWrite = async <T = unknown>(
   strings: TemplateStringsArray,
   ...values: unknown[]
@@ -272,8 +354,9 @@ export const queryWrite = async <T = unknown>(
     throw new Error("No database configured (neither Neon nor Supabase URL provided)");
   }
 
-  const healthy = configured.filter(isProviderHealthy);
-  const targets = healthy.length > 0 ? healthy : configured;
+  // Always attempt writes to all configured providers unless quota-limited
+  const nonQuotaTargets = configured.filter((p) => !isProviderQuotaLimited(p));
+  const targets = nonQuotaTargets.length > 0 ? nonQuotaTargets : configured;
 
   if (targets.length === 1) {
     const single = targets[0];
@@ -293,6 +376,7 @@ export const queryWrite = async <T = unknown>(
 
   let successResult: T[] | null = null;
   const errors: string[] = [];
+  let neonFailed = false;
 
   results.forEach((res, idx) => {
     const provider = targets[idx];
@@ -300,12 +384,19 @@ export const queryWrite = async <T = unknown>(
       if (!successResult) successResult = res.value;
     } else {
       markProviderError(provider, res.reason);
+      if (provider === "neon") {
+        neonFailed = true;
+      }
       errors.push(`${provider}: ${res.reason instanceof Error ? res.reason.message : String(res.reason)}`);
     }
   });
 
   if (successResult !== null) {
     invalidateServerCatalogCache();
+    // If Supabase succeeded but Neon failed, schedule automatic reconciliation so Neon catches up
+    if (neonFailed && targets.includes("supabase")) {
+      scheduleServerReconciliation();
+    }
     return successResult;
   }
 
@@ -1175,11 +1266,55 @@ export const deleteClientDevice = async (deviceId: string): Promise<void> => {
   await queryWrite`DELETE FROM client_devices WHERE device_id = ${cleanId}`;
 };
 
+export const reconcileServersToNeon = async (): Promise<{ serversCloned: number }> => {
+  await ensureSchemaForProvider("supabase");
+  await ensureSchemaForProvider("neon");
+
+  // 1. Wipe all existing servers on Neon to guarantee clean clone without stale/orphan servers
+  await executeSql("neon")`DELETE FROM vpn_servers;`;
+
+  // 2. Fetch all servers from Supabase
+  const supaServers = await executeSql<DatabaseServer>("supabase")`
+    SELECT * FROM vpn_servers ORDER BY sort_order ASC, created_at DESC;
+  `;
+
+  // 3. Clone all Supabase servers to Neon
+  for (const s of supaServers) {
+    await executeSql("neon")`
+      INSERT INTO vpn_servers (
+        id, name, protocol, host, port, country, is_enabled, options_json,
+        config_cipher, config_salt, config_iv, config_tag, config_version, sort_order, created_at, updated_at
+      ) VALUES (
+        ${s.id}, ${s.name}, ${s.protocol}, ${s.host}, ${s.port}, ${s.country}, ${s.is_enabled}, ${s.options_json},
+        ${s.config_cipher}, ${s.config_salt}, ${s.config_iv}, ${s.config_tag}, ${s.config_version}, ${s.sort_order}, ${s.created_at}, ${s.updated_at}
+      ) ON CONFLICT (id) DO UPDATE SET
+        name = EXCLUDED.name,
+        protocol = EXCLUDED.protocol,
+        host = EXCLUDED.host,
+        port = EXCLUDED.port,
+        country = EXCLUDED.country,
+        is_enabled = EXCLUDED.is_enabled,
+        options_json = EXCLUDED.options_json,
+        config_cipher = EXCLUDED.config_cipher,
+        config_salt = EXCLUDED.config_salt,
+        config_iv = EXCLUDED.config_iv,
+        config_tag = EXCLUDED.config_tag,
+        config_version = EXCLUDED.config_version,
+        sort_order = EXCLUDED.sort_order,
+        updated_at = EXCLUDED.updated_at;
+    `;
+  }
+
+  invalidateServerCatalogCache();
+  return { serversCloned: supaServers.length };
+};
+
 export type DatabaseProviderStatus = {
   provider: DbProvider;
   configured: boolean;
   healthy: boolean;
   serverCount: number | null;
+  maxUpdated?: string | null;
   routingRulesCount: number | null;
   error: string | null;
 };
@@ -1191,6 +1326,7 @@ export const getDatabaseStatus = async (): Promise<Record<DbProvider, DatabasePr
       configured: Boolean(getNeonUrl()),
       healthy: isProviderHealthy("neon"),
       serverCount: null,
+      maxUpdated: null,
       routingRulesCount: null,
       error: null,
     },
@@ -1199,6 +1335,7 @@ export const getDatabaseStatus = async (): Promise<Record<DbProvider, DatabasePr
       configured: Boolean(getSupabaseUrl()),
       healthy: isProviderHealthy("supabase"),
       serverCount: null,
+      maxUpdated: null,
       routingRulesCount: null,
       error: null,
     },
@@ -1212,23 +1349,16 @@ export const getDatabaseStatus = async (): Promise<Record<DbProvider, DatabasePr
       return;
     }
     try {
-      const serverRes = (await executeOnProvider<{ count: number }>(
-        provider,
-        Object.assign([`SELECT COUNT(*)::int as count FROM vpn_servers`], {
-          raw: [`SELECT COUNT(*)::int as count FROM vpn_servers`],
-        }) as unknown as TemplateStringsArray,
-        [],
-      )) as Array<{ count: number }>;
+      const serverRes = (await executeSql<{ count: number; max_updated: string | null }>(provider)`
+        SELECT COUNT(*)::int as count, MAX(updated_at)::text as max_updated FROM vpn_servers;
+      `) as Array<{ count: number; max_updated: string | null }>;
 
-      const ruleRes = (await executeOnProvider<{ count: number }>(
-        provider,
-        Object.assign([`SELECT COUNT(*)::int as count FROM routing_rules`], {
-          raw: [`SELECT COUNT(*)::int as count FROM routing_rules`],
-        }) as unknown as TemplateStringsArray,
-        [],
-      )) as Array<{ count: number }>;
+      const ruleRes = (await executeSql<{ count: number }>(provider)`
+        SELECT COUNT(*)::int as count FROM routing_rules;
+      `) as Array<{ count: number }>;
 
       status[provider].serverCount = serverRes[0]?.count ?? 0;
+      status[provider].maxUpdated = serverRes[0]?.max_updated ?? null;
       status[provider].routingRulesCount = ruleRes[0]?.count ?? 0;
       status[provider].healthy = true;
     } catch (err) {
@@ -1239,27 +1369,33 @@ export const getDatabaseStatus = async (): Promise<Record<DbProvider, DatabasePr
 
   await Promise.allSettled([checkProvider("neon"), checkProvider("supabase")]);
 
+  // Automatic Server Sync / Drift Reconciliation:
+  // Supabase is the primary canonical database.
+  // If both databases are configured and healthy, and Neon's server count or maxUpdated differs from Supabase:
+  // Automatically clone Supabase servers to Neon (wipe Neon, insert all Supabase servers).
   if (
-    status.neon.healthy &&
+    !autoSyncRunning &&
+    status.supabase.configured &&
+    status.neon.configured &&
     status.supabase.healthy &&
+    status.neon.healthy &&
+    status.supabase.serverCount !== null &&
     status.neon.serverCount !== null &&
-    status.supabase.serverCount !== null
+    (status.neon.serverCount !== status.supabase.serverCount ||
+      status.neon.maxUpdated !== status.supabase.maxUpdated)
   ) {
-    if (status.neon.serverCount > status.supabase.serverCount && !autoSyncRunning) {
-      autoSyncRunning = true;
-      syncDatabases("neon", "supabase")
-        .catch(() => {})
-        .finally(() => {
-          autoSyncRunning = false;
-        });
-    } else if (status.supabase.serverCount > status.neon.serverCount && !autoSyncRunning) {
-      autoSyncRunning = true;
-      syncDatabases("supabase", "neon")
-        .catch(() => {})
-        .finally(() => {
-          autoSyncRunning = false;
-        });
-    }
+    autoSyncRunning = true;
+    reconcileServersToNeon()
+      .then((res) => {
+        status.neon.serverCount = res.serversCloned;
+        status.neon.maxUpdated = status.supabase.maxUpdated;
+      })
+      .catch((err) => {
+        console.warn("[Auto-Sync] Server reconciliation failed:", err);
+      })
+      .finally(() => {
+        autoSyncRunning = false;
+      });
   }
 
   return status;
@@ -1270,6 +1406,7 @@ export type SyncEntityOptions = {
     enabled: boolean;
     direction?: "supabase-to-neon" | "neon-to-supabase" | "two-way";
     strategy?: "overwrite" | "keep-target";
+    cleanTarget?: boolean;
   };
   users?: {
     enabled: boolean;
@@ -1316,15 +1453,24 @@ export const syncDatabases = async (
     enabled: true,
     direction: source === "supabase" ? "supabase-to-neon" : "neon-to-supabase",
     strategy: "overwrite" as const,
+    cleanTarget: source === "supabase" && target === "neon",
   };
 
   if (syncServersConfig.enabled) {
     const direction = syncServersConfig.direction ?? (source === "supabase" ? "supabase-to-neon" : "neon-to-supabase");
     const strategy = syncServersConfig.strategy ?? "overwrite";
+    const cleanTarget = syncServersConfig.cleanTarget ?? (direction === "supabase-to-neon" && strategy === "overwrite");
 
     const upsertServerToTarget = async (tgt: DbProvider, s: DatabaseServer, strat: "overwrite" | "keep-target") => {
-      const conflictClause = strat === "overwrite"
-        ? `ON CONFLICT (id) DO UPDATE SET
+      if (strat === "overwrite") {
+        await executeSql(tgt)`
+          INSERT INTO vpn_servers (
+            id, name, protocol, host, port, country, is_enabled, options_json,
+            config_cipher, config_salt, config_iv, config_tag, config_version, sort_order, created_at, updated_at
+          ) VALUES (
+            ${s.id}, ${s.name}, ${s.protocol}, ${s.host}, ${s.port}, ${s.country}, ${s.is_enabled}, ${s.options_json},
+            ${s.config_cipher}, ${s.config_salt}, ${s.config_iv}, ${s.config_tag}, ${s.config_version}, ${s.sort_order}, ${s.created_at}, ${s.updated_at}
+          ) ON CONFLICT (id) DO UPDATE SET
             name = EXCLUDED.name,
             protocol = EXCLUDED.protocol,
             host = EXCLUDED.host,
@@ -1338,49 +1484,28 @@ export const syncDatabases = async (
             config_tag = EXCLUDED.config_tag,
             config_version = EXCLUDED.config_version,
             sort_order = EXCLUDED.sort_order,
-            updated_at = EXCLUDED.updated_at;`
-        : `ON CONFLICT (id) DO NOTHING;`;
-
-      const ddl = `INSERT INTO vpn_servers (
-        id, name, protocol, host, port, country, is_enabled, options_json,
-        config_cipher, config_salt, config_iv, config_tag, config_version, sort_order, created_at, updated_at
-      ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8,
-        $9, $10, $11, $12, $13, $14, $15, $16
-      ) ${conflictClause}`;
-
-      const wrapped = Object.assign([ddl], { raw: [ddl] }) as unknown as TemplateStringsArray;
-      await executeOnProvider(tgt, wrapped, [
-        s.id,
-        s.name,
-        s.protocol,
-        s.host,
-        s.port,
-        s.country,
-        s.is_enabled,
-        s.options_json,
-        s.config_cipher,
-        s.config_salt,
-        s.config_iv,
-        s.config_tag,
-        s.config_version,
-        s.sort_order,
-        s.created_at,
-        s.updated_at,
-      ]);
+            updated_at = EXCLUDED.updated_at;
+        `;
+      } else {
+        await executeSql(tgt)`
+          INSERT INTO vpn_servers (
+            id, name, protocol, host, port, country, is_enabled, options_json,
+            config_cipher, config_salt, config_iv, config_tag, config_version, sort_order, created_at, updated_at
+          ) VALUES (
+            ${s.id}, ${s.name}, ${s.protocol}, ${s.host}, ${s.port}, ${s.country}, ${s.is_enabled}, ${s.options_json},
+            ${s.config_cipher}, ${s.config_salt}, ${s.config_iv}, ${s.config_tag}, ${s.config_version}, ${s.sort_order}, ${s.created_at}, ${s.updated_at}
+          ) ON CONFLICT (id) DO NOTHING;
+        `;
+      }
     };
 
     if (direction === "two-way") {
-      const srcServers = await executeOnProvider<DatabaseServer>(
-        "supabase",
-        Object.assign([`SELECT * FROM vpn_servers ORDER BY sort_order ASC, created_at DESC`], { raw: [`SELECT * FROM vpn_servers ORDER BY sort_order ASC, created_at DESC`] }) as unknown as TemplateStringsArray,
-        [],
-      );
-      const dstServers = await executeOnProvider<DatabaseServer>(
-        "neon",
-        Object.assign([`SELECT * FROM vpn_servers ORDER BY sort_order ASC, created_at DESC`], { raw: [`SELECT * FROM vpn_servers ORDER BY sort_order ASC, created_at DESC`] }) as unknown as TemplateStringsArray,
-        [],
-      );
+      const srcServers = await executeSql<DatabaseServer>("supabase")`
+        SELECT * FROM vpn_servers ORDER BY sort_order ASC, created_at DESC;
+      `;
+      const dstServers = await executeSql<DatabaseServer>("neon")`
+        SELECT * FROM vpn_servers ORDER BY sort_order ASC, created_at DESC;
+      `;
 
       for (const s of srcServers) {
         await upsertServerToTarget("neon", s, strategy);
@@ -1394,17 +1519,20 @@ export const syncDatabases = async (
       const srcProvider: DbProvider = direction === "supabase-to-neon" ? "supabase" : "neon";
       const dstProvider: DbProvider = direction === "supabase-to-neon" ? "neon" : "supabase";
 
-      const servers = await executeOnProvider<DatabaseServer>(
-        srcProvider,
-        Object.assign([`SELECT * FROM vpn_servers ORDER BY sort_order ASC, created_at DESC`], { raw: [`SELECT * FROM vpn_servers ORDER BY sort_order ASC, created_at DESC`] }) as unknown as TemplateStringsArray,
-        [],
-      );
+      if (cleanTarget) {
+        await executeSql(dstProvider)`DELETE FROM vpn_servers;`;
+        details.push(`Wiped all existing servers on ${dstProvider} before cloning from ${srcProvider}.`);
+      }
+
+      const servers = await executeSql<DatabaseServer>(srcProvider)`
+        SELECT * FROM vpn_servers ORDER BY sort_order ASC, created_at DESC;
+      `;
 
       for (const s of servers) {
         await upsertServerToTarget(dstProvider, s, strategy);
       }
       totalServers = servers.length;
-      details.push(`Synced ${servers.length} server(s) from ${srcProvider} to ${dstProvider} (strategy: ${strategy}).`);
+      details.push(`Synced ${servers.length} server(s) from ${srcProvider} to ${dstProvider} (strategy: ${strategy}${cleanTarget ? ", wiped destination first" : ""}).`);
     }
   }
 
@@ -1428,7 +1556,8 @@ export const syncDatabases = async (
     };
 
     const upsertDeviceChunk = async (tgt: DbProvider, chunk: RawDeviceRow[]) => {
-      const ddl = `INSERT INTO client_devices (device_id, platform, app_version, os_version, model, first_seen, last_seen)
+      await executeSql(tgt)`
+        INSERT INTO client_devices (device_id, platform, app_version, os_version, model, first_seen, last_seen)
         SELECT
           device_id,
           platform,
@@ -1437,7 +1566,7 @@ export const syncDatabases = async (
           model,
           first_seen::timestamptz,
           last_seen::timestamptz
-        FROM jsonb_to_recordset($1::jsonb) AS x(
+        FROM jsonb_to_recordset(${JSON.stringify(chunk)}::jsonb) AS x(
           device_id text,
           platform text,
           app_version text,
@@ -1452,22 +1581,17 @@ export const syncDatabases = async (
           os_version = CASE WHEN EXCLUDED.os_version <> '' THEN EXCLUDED.os_version ELSE client_devices.os_version END,
           model = CASE WHEN EXCLUDED.model <> '' THEN EXCLUDED.model ELSE client_devices.model END,
           first_seen = LEAST(client_devices.first_seen, EXCLUDED.first_seen),
-          last_seen = GREATEST(client_devices.last_seen, EXCLUDED.last_seen);`;
-      const wrapped = Object.assign([ddl], { raw: [ddl] }) as unknown as TemplateStringsArray;
-      await executeOnProvider(tgt, wrapped, [JSON.stringify(chunk)]);
+          last_seen = GREATEST(client_devices.last_seen, EXCLUDED.last_seen);
+      `;
     };
 
     if (strategy === "two-way-merge") {
-      const supaDevices = await executeOnProvider<RawDeviceRow>(
-        "supabase",
-        Object.assign([`SELECT device_id, platform, app_version, os_version, model, first_seen, last_seen FROM client_devices`], { raw: [`SELECT device_id, platform, app_version, os_version, model, first_seen, last_seen FROM client_devices`] }) as unknown as TemplateStringsArray,
-        [],
-      );
-      const neonDevices = await executeOnProvider<RawDeviceRow>(
-        "neon",
-        Object.assign([`SELECT device_id, platform, app_version, os_version, model, first_seen, last_seen FROM client_devices`], { raw: [`SELECT device_id, platform, app_version, os_version, model, first_seen, last_seen FROM client_devices`] }) as unknown as TemplateStringsArray,
-        [],
-      );
+      const supaDevices = await executeSql<RawDeviceRow>("supabase")`
+        SELECT device_id, platform, app_version, os_version, model, first_seen, last_seen FROM client_devices;
+      `;
+      const neonDevices = await executeSql<RawDeviceRow>("neon")`
+        SELECT device_id, platform, app_version, os_version, model, first_seen, last_seen FROM client_devices;
+      `;
 
       const mergedMap = new Map<string, RawDeviceRow>();
       for (const d of [...supaDevices, ...neonDevices]) {
@@ -1504,11 +1628,9 @@ export const syncDatabases = async (
       const srcProvider: DbProvider = strategy === "supabase-to-neon" ? "supabase" : "neon";
       const dstProvider: DbProvider = strategy === "supabase-to-neon" ? "neon" : "supabase";
 
-      const devices = await executeOnProvider<RawDeviceRow>(
-        srcProvider,
-        Object.assign([`SELECT device_id, platform, app_version, os_version, model, first_seen, last_seen FROM client_devices`], { raw: [`SELECT device_id, platform, app_version, os_version, model, first_seen, last_seen FROM client_devices`] }) as unknown as TemplateStringsArray,
-        [],
-      );
+      const devices = await executeSql<RawDeviceRow>(srcProvider)`
+        SELECT device_id, platform, app_version, os_version, model, first_seen, last_seen FROM client_devices;
+      `;
 
       const CHUNK = 500;
       for (let i = 0; i < devices.length; i += CHUNK) {
@@ -1529,23 +1651,20 @@ export const syncDatabases = async (
     const strategy = syncRulesConfig.strategy ?? "two-way-merge";
 
     const insertRule = async (tgt: DbProvider, r: RoutingRuleRecord) => {
-      const ddl = `INSERT INTO routing_rules (id, type, value, created_at)
-        VALUES ($1, $2, $3, $4) ON CONFLICT (type, value) DO NOTHING;`;
-      const wrapped = Object.assign([ddl], { raw: [ddl] }) as unknown as TemplateStringsArray;
-      await executeOnProvider(tgt, wrapped, [r.id, r.type, r.value, r.created_at]);
+      await executeSql(tgt)`
+        INSERT INTO routing_rules (id, type, value, created_at)
+        VALUES (${r.id}, ${r.type}, ${r.value}, ${r.created_at})
+        ON CONFLICT (type, value) DO NOTHING;
+      `;
     };
 
     if (strategy === "two-way-merge") {
-      const supaRules = await executeOnProvider<RoutingRuleRecord>(
-        "supabase",
-        Object.assign([`SELECT id, type, value, created_at FROM routing_rules`], { raw: [`SELECT id, type, value, created_at FROM routing_rules`] }) as unknown as TemplateStringsArray,
-        [],
-      );
-      const neonRules = await executeOnProvider<RoutingRuleRecord>(
-        "neon",
-        Object.assign([`SELECT id, type, value, created_at FROM routing_rules`], { raw: [`SELECT id, type, value, created_at FROM routing_rules`] }) as unknown as TemplateStringsArray,
-        [],
-      );
+      const supaRules = await executeSql<RoutingRuleRecord>("supabase")`
+        SELECT id, type, value, created_at FROM routing_rules;
+      `;
+      const neonRules = await executeSql<RoutingRuleRecord>("neon")`
+        SELECT id, type, value, created_at FROM routing_rules;
+      `;
 
       for (const r of supaRules) await insertRule("neon", r);
       for (const r of neonRules) await insertRule("supabase", r);
@@ -1555,11 +1674,9 @@ export const syncDatabases = async (
       const srcProvider: DbProvider = strategy === "supabase-to-neon" ? "supabase" : "neon";
       const dstProvider: DbProvider = strategy === "supabase-to-neon" ? "neon" : "supabase";
 
-      const rules = await executeOnProvider<RoutingRuleRecord>(
-        srcProvider,
-        Object.assign([`SELECT id, type, value, created_at FROM routing_rules`], { raw: [`SELECT id, type, value, created_at FROM routing_rules`] }) as unknown as TemplateStringsArray,
-        [],
-      );
+      const rules = await executeSql<RoutingRuleRecord>(srcProvider)`
+        SELECT id, type, value, created_at FROM routing_rules;
+      `;
       for (const r of rules) await insertRule(dstProvider, r);
       totalRules = rules.length;
       details.push(`Synced ${rules.length} routing rules from ${srcProvider} to ${dstProvider}.`);
@@ -1576,18 +1693,16 @@ export const syncDatabases = async (
     const srcProvider: DbProvider = syncSettingsConfig.direction === "supabase-to-neon" ? "supabase" : "neon";
     const dstProvider: DbProvider = syncSettingsConfig.direction === "supabase-to-neon" ? "neon" : "supabase";
 
-    const settings = await executeOnProvider<{ key: string; value: string }>(
-      srcProvider,
-      Object.assign([`SELECT key, value FROM app_settings`], { raw: [`SELECT key, value FROM app_settings`] }) as unknown as TemplateStringsArray,
-      [],
-    );
+    const settings = await executeSql<{ key: string; value: string }>(srcProvider)`
+      SELECT key, value FROM app_settings;
+    `;
 
     for (const st of settings) {
-      const ddl = `INSERT INTO app_settings (key, value, updated_at)
-        VALUES ($1, $2, NOW())
-        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW();`;
-      const wrapped = Object.assign([ddl], { raw: [ddl] }) as unknown as TemplateStringsArray;
-      await executeOnProvider(dstProvider, wrapped, [st.key, st.value]);
+      await executeSql(dstProvider)`
+        INSERT INTO app_settings (key, value, updated_at)
+        VALUES (${st.key}, ${st.value}, NOW())
+        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW();
+      `;
     }
     totalSettings = settings.length;
     details.push(`Synced ${settings.length} app settings from ${srcProvider} to ${dstProvider}.`);
