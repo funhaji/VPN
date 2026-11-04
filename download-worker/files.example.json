@@ -1,0 +1,9 @@
+{
+  "windows":   { "filename": "Astro VPN_setup.exe",        "source": { "type": "github-file",    "repo": "OWNER/REPO", "ref": "main", "path": "Astro VPN_setup.exe" } },
+  "arm64":     { "filename": "AstroVPN-arm64-v8a.apk",     "source": { "type": "github-release", "repo": "OWNER/REPO", "tag": "Android", "asset": "AstroVPN-arm64-v8a.apk" } },
+  "armv7":     { "filename": "AstroVPN-armeabi-v7a.apk",   "source": { "type": "github-release", "repo": "OWNER/REPO", "tag": "Android", "asset": "AstroVPN-armeabi-v7a.apk" } },
+  "universal": { "filename": "app-universal-release.apk",  "source": { "type": "github-release", "repo": "OWNER/REPO", "tag": "Android", "asset": "app-universal-release.apk" } },
+  "deb":       { "filename": "AstroVPN.deb",               "source": { "type": "github-file",    "repo": "OWNER/REPO", "ref": "main", "path": "linux/AstroVPN.deb" } },
+  "rpm":       { "filename": "AstroVPN.rpm",               "source": { "type": "github-file",    "repo": "OWNER/REPO", "ref": "main", "path": "linux/AstroVPN.rpm" } },
+  "appimage":  { "filename": "AstroVPN.AppImage",          "source": { "type": "github-release", "repo": "OWNER/REPO", "tag": "Main", "asset": "AstroVPN.AppImage" } }
+}

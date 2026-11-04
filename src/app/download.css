@@ -205,7 +205,8 @@
   font-size: clamp(5.5rem, 26vw, 11rem);
   line-height: 0.85;
   letter-spacing: -0.07em;
-  margin: 0.75rem 0 0.5rem -0.05em;
+  margin-block: 0.75rem 0.5rem;
+  margin-inline-start: -0.05em;
   font-variant-numeric: tabular-nums;
 }
 .dl[data-lang="fa"] .dl-stat-num { font-family: var(--font-fa), sans-serif; letter-spacing: 0; line-height: 1; font-weight: 700; }
@@ -248,7 +249,11 @@
 .dl[data-lang="fa"] .dl-ticker li { font-family: var(--sans); }
 .dl-ticker b { color: var(--hot); font-weight: 500; font-family: var(--mono); }
 .dl-ticker em { font-style: normal; color: var(--ink-3); }
-.dl-ticker[dir], .dl[dir="rtl"] .dl-ticker-track { direction: ltr; }
+/* The marquee always scrolls left-to-right physically; in RTL the container
+   itself must be LTR, otherwise the track overflows to the left and the loop
+   starts half-way off-screen. Each item stays RTL so Persian reads correctly. */
+.dl[dir="rtl"] .dl-ticker { direction: ltr; }
+.dl[dir="rtl"] .dl-ticker li { direction: rtl; }
 @keyframes dl-scroll { to { transform: translate3d(-50%, 0, 0); } }
 
 /* ---------------------------------------------------------------- sections */
@@ -381,6 +386,8 @@
   padding-top: 0.2rem;
 }
 .dl[data-lang="fa"] .dl-step-n { font-family: var(--sans); font-size: 1rem; padding-top: 0; }
+.dl[data-lang="fa"] .dl-idx { font-family: var(--sans); font-size: 0.8125rem; }
+.dl[data-lang="fa"] .dl-row-hint, .dl[data-lang="fa"] .dl-steps p, .dl[data-lang="fa"] .dl-specs dd { line-height: 1.85; }
 .dl-steps h3 { font-size: 1.125rem; font-weight: 600; letter-spacing: -0.015em; }
 .dl[data-lang="fa"] .dl-steps h3 { letter-spacing: 0; font-weight: 700; }
 .dl-steps p { color: var(--ink-2); font-size: 0.9375rem; }
@@ -509,3 +516,8 @@
   .dl-ticker-track { animation: none; }
   .dl-sheet[open] { animation: none; }
 }
+
+/* ---------------------------------------------------------------- boot */
+/* Persian visitors: hide the server-rendered English until React switches
+   the page to Persian (see the inline script in layout.tsx). */
+html[data-boot-lang="fa"] .dl[data-lang="en"] { visibility: hidden; }

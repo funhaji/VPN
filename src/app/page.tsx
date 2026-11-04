@@ -4,17 +4,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "./download.css";
 
 /* ------------------------------------------------------------------ */
-/* Release endpoints                                                   */
+/* Download endpoints                                                  */
 /* ------------------------------------------------------------------ */
 
+// Same-site endpoints. Each one 302s to a short-lived signed link on the
+// download CDN, so the real file location is never shipped to the browser.
 const FILES = {
-  windows: "https://raw.githubusercontent.com/funhaji/AstroVPN/main/Astro%20VPN_setup.exe",
-  arm64: "https://github.com/funhaji/AstroVPN/releases/download/Android/AstroVPN-arm64-v8a.apk",
-  armv7: "https://github.com/funhaji/AstroVPN/releases/download/Android/AstroVPN-armeabi-v7a.apk",
-  universal: "https://github.com/funhaji/AstroVPN/releases/download/Android/app-universal-release.apk",
-  deb: "https://raw.githubusercontent.com/funhaji/AstroVPN/main/linux/AstroVPN.deb",
-  rpm: "https://raw.githubusercontent.com/funhaji/AstroVPN/main/linux/AstroVPN.rpm",
-  appimage: "https://github.com/funhaji/AstroVPN/releases/download/Main/AstroVPN.AppImage",
+  windows: "/api/download/windows",
+  arm64: "/api/download/arm64",
+  armv7: "/api/download/armv7",
+  universal: "/api/download/universal",
+  deb: "/api/download/deb",
+  rpm: "/api/download/rpm",
+  appimage: "/api/download/appimage",
 } as const;
 
 type Lang = "en" | "fa";
@@ -50,7 +52,7 @@ const COPY = {
     servers: "servers",
     viewAll: "View all locations",
     allDownloads: "All downloads",
-    allDownloadsNote: "Every build comes from the same open-source code and downloads straight from GitHub.",
+    allDownloadsNote: "Every build comes from the same code and downloads over a fast, encrypted connection.",
     yourDevice: "Your device",
     androidReq: "Android 8.0 and newer",
     windowsReq: "Windows 10 & 11, 64-bit",
@@ -94,35 +96,35 @@ const COPY = {
     otherDevices: "دستگاه‌های دیگر",
     noApple: "فعلاً نسخه آیفون و مک نداریم. نسخه اندروید، ویندوز و لینوکس را از پایین صفحه دریافت کن.",
     seeAll: "همه نسخه‌ها",
-    online: "همین الان فعال",
+    online: "آنلاین",
     countries: "کشور",
     servers: "سرور",
     viewAll: "مشاهده همه لوکیشن‌ها",
     allDownloads: "همه نسخه‌ها",
-    allDownloadsNote: "همه نسخه‌ها از یک سورس ساخته می‌شوند و مستقیم از گیت‌هاب دانلود می‌شوند.",
-    yourDevice: "دستگاه شما",
+    allDownloadsNote: "همه نسخه‌ها از یک کد ساخته می‌شوند و از طریق یک اتصال سریع و امن دانلود می‌شوند.",
+    yourDevice: "دستگاه تو",
     androidReq: "اندروید ۸ و بالاتر",
-    windowsReq: "ویندوز ۱۰ و ۱۱، ۶۴ بیتی",
+    windowsReq: "ویندوز ۱۰ و ۱۱ (۶۴ بیتی)",
     linuxReq: "دبیان، اوبونتو، فدورا، آرچ",
     recommended: "پیشنهادی",
     arm64Label: "ARM64",
     v7aLabel: "ARMv7",
     v7aSub: "۳۲ بیتی",
     universalLabel: "Universal",
-    apkHint: "مطمئن نیستی کدام؟ ARM64 را بگیر؛ تقریباً روی همه گوشی‌های بعد از ۲۰۱۷ کار می‌کند. برای گوشی‌های ۳۲ بیتی قدیمی‌تر ARMv7، یا برای هر دستگاهی Universal را نصب کن.",
+    apkHint: "مطمئن نیستی کدام؟ ARM64 را بگیر؛ تقریباً روی همه گوشی‌های بعد از ۲۰۱۷ کار می‌کند. برای گوشی‌های قدیمی ۳۲ بیتی ARMv7\u200f، و اگر باز هم مطمئن نیستی Universal را نصب کن که روی همه دستگاه‌ها کار می‌کند.",
     installer: "فایل نصب",
     howTitle: "نصب روی اندروید",
     how: [
-      ["فایل APK را دانلود کن", "دکمه ARM64 را بزن. فایل در پوشه Downloads ذخیره می‌شود."],
-      ["اجازه نصب بده", "اندروید می‌پرسد که اجازه نصب از مرورگر را می‌دهی یا نه. یک بار اجازه بده و برگرد."],
+      ["فایل APK را دانلود کن", "دکمه ARM64 را بزن. فایل در پوشه دانلودها (Downloads) ذخیره می‌شود."],
+      ["اجازه نصب بده", "اندروید می‌پرسد اجازه نصب برنامه از مرورگر را می‌دهی یا نه. یک بار اجازه بده و برگرد."],
       ["باز کن و وصل شو", "اَسترو را باز کن، یک لوکیشن انتخاب کن یا بگذار سریع‌ترین را خودش پیدا کند."],
     ],
-    specsTitle: "زیر کاپوت",
+    specsTitle: "مشخصات فنی",
     specs: [
-      ["پروتکل‌ها", "وایرگارد، Xray (VLESS Reality، VMess، Trojan) و L2TP/IPsec در یک برنامه."],
-      ["انتقال", "xHTTP، gRPC و وب‌سوکت، تنظیم‌شده برای عبور از فیلترینگ DPI."],
-      ["کلیدها", "اطلاعات رمزنگاری روی سخت‌افزار خودت ساخته می‌شود و هیچ‌وقت از آن خارج نمی‌شود."],
-      ["مسیریابی جدا", "بانک‌ها و سایت‌های داخلی می‌توانند بیرون از تونل بمانند تا بدون مشکل کار کنند."],
+      ["پروتکل‌ها", "وایرگارد، Xray (VLESS Reality،\u200f VMess،\u200f Trojan) و L2TP/IPsec، همه در یک برنامه."],
+      ["روش‌های انتقال", "xHTTP،\u200f gRPC و وب‌سوکت، بهینه‌شده برای عبور از فیلترینگ و DPI."],
+      ["کلیدها", "کلیدهای رمزنگاری روی دستگاه خودت ساخته می‌شوند و هیچ‌وقت از آن خارج نمی‌شوند."],
+      ["تونل‌گذاری جداگانه (Split)", "بانک‌ها و سایت‌های داخلی می‌توانند بیرون از تونل بمانند تا بدون مشکل کار کنند."],
     ],
     source: "سورس در گیت‌هاب",
     panel: "پنل مدیریت",
@@ -141,6 +143,27 @@ const COPY = {
 
 const faNum = new Intl.NumberFormat("fa-IR");
 const fmt = (n: number | null, lang: Lang) => (n == null ? "—" : lang === "fa" ? faNum.format(n) : String(n));
+const FA_DIGITS = "۰۱۲۳۴۵۶۷۸۹";
+const toFaDigits = (s: string) => s.replace(/\d/g, (d) => FA_DIGITS[Number(d)]);
+const idx = (n: number, lang: Lang) => {
+  const s = String(n).padStart(2, "0");
+  return lang === "fa" ? toFaDigits(s) : s;
+};
+
+/** Normalise text for search: Arabic ي/ك → Persian ی/ک, Persian/Arabic digits → Latin, drop ZWNJ/diacritics. */
+function normalizeSearch(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[يىئ]/g, "ی")
+    .replace(/ك/g, "ک")
+    .replace(/[ةۀ]/g, "ه")
+    .replace(/[أإآ]/g, "ا")
+    .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0))
+    .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+    .replace(/[\u200c\u200f\u064b-\u065f\u0670]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
 function detectPlatform(): Platform {
   const ua = navigator.userAgent;
@@ -175,6 +198,7 @@ async function getJSON<T>(url: string): Promise<T | null> {
 
 export default function DownloadPage() {
   const [lang, setLang] = useState<Lang>("en");
+  const [ready, setReady] = useState(false);
   const [platform, setPlatform] = useState<Platform>("unknown");
   const [stats, setStats] = useState<Stats>({ locations: null, servers: null, countries: [], android: null, windows: null });
   const [query, setQuery] = useState("");
@@ -183,6 +207,7 @@ export default function DownloadPage() {
   useEffect(() => {
     setLang(detectLang());
     setPlatform(detectPlatform());
+    setReady(true);
 
     type V = { android?: string; windows?: string; locations?: number; servers?: number };
     type S = { locations?: number; servers?: number; countries?: Country[] };
@@ -199,9 +224,13 @@ export default function DownloadPage() {
   }, []);
 
   useEffect(() => {
-    document.documentElement.lang = lang;
-    document.documentElement.dir = lang === "fa" ? "rtl" : "ltr";
-  }, [lang]);
+    if (!ready) return;
+    const html = document.documentElement;
+    html.lang = lang;
+    html.dir = lang === "fa" ? "rtl" : "ltr";
+    // Set by the pre-hydration script in layout.tsx to avoid an English flash.
+    html.removeAttribute("data-boot-lang");
+  }, [lang, ready]);
 
   const switchLang = useCallback((next: Lang) => {
     setLang(next);
@@ -220,10 +249,10 @@ export default function DownloadPage() {
   const fa = lang === "fa";
 
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
+    const q = normalizeSearch(query);
     if (!q) return stats.countries;
-    return stats.countries.filter(
-      (c) => c.name.toLowerCase().includes(q) || c.nameFa.includes(q) || c.code.toLowerCase().includes(q)
+    return stats.countries.filter((c) =>
+      [c.name, c.nameFa, c.code].some((v) => typeof v === "string" && normalizeSearch(v).includes(q))
     );
   }, [query, stats.countries]);
 
@@ -344,7 +373,7 @@ export default function DownloadPage() {
           <ol className="dl-rows">
             <li className="dl-row" data-mine={platform === "android" || undefined}>
               <div className="dl-row-id">
-                <span className="dl-idx">01</span>
+                <span className="dl-idx">{idx(1, lang)}</span>
                 <AndroidIcon />
               </div>
               <div className="dl-row-info">
@@ -382,7 +411,7 @@ export default function DownloadPage() {
 
             <li className="dl-row" data-mine={platform === "windows" || undefined}>
               <div className="dl-row-id">
-                <span className="dl-idx">02</span>
+                <span className="dl-idx">{idx(2, lang)}</span>
                 <WindowsIcon />
               </div>
               <div className="dl-row-info">
@@ -408,7 +437,7 @@ export default function DownloadPage() {
 
             <li className="dl-row" data-mine={platform === "linux" || undefined}>
               <div className="dl-row-id">
-                <span className="dl-idx">03</span>
+                <span className="dl-idx">{idx(3, lang)}</span>
                 <LinuxIcon />
               </div>
               <div className="dl-row-info">
@@ -487,7 +516,7 @@ export default function DownloadPage() {
             <div>
               <h2 id="dl-sheet-title">{t.sheetTitle}</h2>
               <p>
-                {fmt(stats.locations, lang)} {t.countries} · {fmt(stats.servers, lang)} {t.servers}
+                <bdi>{fmt(stats.locations, lang)} {t.countries}</bdi> · <bdi>{fmt(stats.servers, lang)} {t.servers}</bdi>
               </p>
             </div>
             <button type="button" className="dl-x" onClick={closeSheet} aria-label={t.close}>

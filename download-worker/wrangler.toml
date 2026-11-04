@@ -1,0 +1,21 @@
+name = "astro-download"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+
+# Recommended: serve from your own domain (required for edge caching, and
+# *.workers.dev is often filtered in Iran). Uncomment and edit:
+# routes = [{ pattern = "dl.example.com", custom_domain = true }]
+
+[vars]
+CACHE_SECONDS = "3600"
+# SITE_URL = "https://your-site.vercel.app/"
+
+# Optional: serve files from R2 instead of GitHub (10 GB free, zero egress).
+# [[r2_buckets]]
+# binding = "BUCKET"
+# bucket_name = "astro-downloads"
+
+# Secrets (NOT stored here — run these once):
+#   npx wrangler secret put SIGNING_SECRET
+#   npx wrangler secret put FILES < files.json
+#   npx wrangler secret put GITHUB_TOKEN     # only if the app repo is private
