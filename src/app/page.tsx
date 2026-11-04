@@ -10,6 +10,7 @@ import "./download.css";
 const FILES = {
   windows: "https://raw.githubusercontent.com/funhaji/AstroVPN/main/Astro%20VPN_setup.exe",
   arm64: "https://github.com/funhaji/AstroVPN/releases/download/Android/AstroVPN-arm64-v8a.apk",
+  armv7: "https://github.com/funhaji/AstroVPN/releases/download/Android/AstroVPN-armeabi-v7a.apk",
   universal: "https://github.com/funhaji/AstroVPN/releases/download/Android/app-universal-release.apk",
   deb: "https://raw.githubusercontent.com/funhaji/AstroVPN/main/linux/AstroVPN.deb",
   rpm: "https://raw.githubusercontent.com/funhaji/AstroVPN/main/linux/AstroVPN.rpm",
@@ -56,8 +57,10 @@ const COPY = {
     linuxReq: "Debian, Ubuntu, Fedora, Arch",
     recommended: "Recommended",
     arm64Label: "ARM64",
+    v7aLabel: "ARMv7",
+    v7aSub: "32-bit",
     universalLabel: "Universal",
-    apkHint: "Not sure which one? Pick ARM64 — it fits nearly every phone made since 2017. Universal runs on anything but is a bigger download.",
+    apkHint: "Not sure which one? Pick ARM64 — it fits nearly every phone made since 2017. Pick ARMv7 for older 32-bit devices, or Universal for any device.",
     installer: "Installer",
     howTitle: "Installing on Android",
     how: [
@@ -103,8 +106,10 @@ const COPY = {
     linuxReq: "دبیان، اوبونتو، فدورا، آرچ",
     recommended: "پیشنهادی",
     arm64Label: "ARM64",
+    v7aLabel: "ARMv7",
+    v7aSub: "۳۲ بیتی",
     universalLabel: "Universal",
-    apkHint: "مطمئن نیستی کدام؟ ARM64 را بگیر؛ تقریباً روی همه گوشی‌های بعد از ۲۰۱۷ کار می‌کند. Universal روی همه دستگاه‌ها اجرا می‌شود ولی حجمش بیشتر است.",
+    apkHint: "مطمئن نیستی کدام؟ ARM64 را بگیر؛ تقریباً روی همه گوشی‌های بعد از ۲۰۱۷ کار می‌کند. برای گوشی‌های ۳۲ بیتی قدیمی‌تر ARMv7، یا برای هر دستگاهی Universal را نصب کن.",
     installer: "فایل نصب",
     howTitle: "نصب روی اندروید",
     how: [
@@ -352,11 +357,18 @@ export default function DownloadPage() {
                   {stats.android && <span className="dl-ver" dir="ltr">v{stats.android}</span>}
                 </p>
               </div>
-              <div className="dl-row-files">
+              <div className="dl-row-files dl-row-files-3">
                 <a className="dl-file dl-file-main" href={FILES.arm64} rel="nofollow">
                   <span>
                     {t.arm64Label}
                     <small>{t.recommended}</small>
+                  </span>
+                  <DownloadIcon />
+                </a>
+                <a className="dl-file" href={FILES.armv7} rel="nofollow">
+                  <span>
+                    {t.v7aLabel}
+                    <small>{t.v7aSub}</small>
                   </span>
                   <DownloadIcon />
                 </a>
@@ -406,7 +418,7 @@ export default function DownloadPage() {
                 </h3>
                 <p>{t.linuxReq}</p>
               </div>
-              <div className="dl-row-files dl-row-files-3" dir="ltr">
+              <div className="dl-row-files dl-row-files-3 dl-row-files-mono" dir="ltr">
                 <a className="dl-file" href={FILES.deb} rel="nofollow">
                   <span>.deb</span>
                   <DownloadIcon />
