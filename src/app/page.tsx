@@ -16,8 +16,6 @@ const FILES = {
   appimage: "https://github.com/funhaji/AstroVPN/releases/download/Main/AstroVPN.AppImage",
 } as const;
 
-const SOURCE_URL = "https://github.com/funhaji/AstroVPN";
-
 type Lang = "en" | "fa";
 type Platform = "android" | "windows" | "linux" | "ios" | "mac" | "unknown";
 
@@ -463,10 +461,6 @@ export default function DownloadPage() {
           <Mark />
           {t.foot}
         </span>
-        <nav aria-label="Footer">
-          <a href={SOURCE_URL} target="_blank" rel="noopener noreferrer">{t.source}</a>
-          <a href="/admin">{t.panel}</a>
-        </nav>
       </footer>
 
       {/* ---------------------------------------------------------- Locations sheet */}
