@@ -158,8 +158,22 @@ export default {
         "access-control-allow-headers": "Content-Type",
       };
       if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
-      const xff = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-      const ip = request.headers.get("x-real-ip") || xff || request.headers.get("cf-connecting-ip") || "unknown";
+      // Cloudflare overwrites x-real-ip / cf-connecting-ip with the *connecting*
+      // IP — which is Vercel's proxy (AWS), not the user. The user's IP is the
+      // first entry of x-forwarded-for, which Vercel sets and Cloudflare appends to.
+      const h = request.headers;
+      const first = (v) => v?.split(",")[0]?.trim() || null;
+      const ip =
+        first(h.get("x-vercel-forwarded-for")) ||
+        first(h.get("x-forwarded-for")) ||
+        h.get("cf-connecting-ip") ||
+        "unknown";
+      if (url.searchParams.has("debug")) {
+        const pick = ["x-vercel-forwarded-for", "x-forwarded-for", "x-real-ip", "cf-connecting-ip", "true-client-ip"];
+        return new Response(JSON.stringify({ ip, headers: Object.fromEntries(pick.map((k) => [k, h.get(k)])) }, null, 2), {
+          headers: { ...cors, "content-type": "application/json", "cache-control": "no-store" },
+        });
+      }
       return new Response(JSON.stringify({ ip }), {
         headers: { ...cors, "content-type": "application/json", "cache-control": "no-store, no-cache, must-revalidate, proxy-revalidate" },
       });
