@@ -43,14 +43,19 @@ async function readVersion(url: string | undefined, fallback: string): Promise<s
 
 export const getCachedAppVersions = unstable_cache(
   async () => {
+    const defaultAndroidUrl =
+      "https://raw.githubusercontent.com/funhaji/AstroVPN/main/android/version.txt";
+    const defaultWindowsUrl =
+      "https://raw.githubusercontent.com/funhaji/AstroVPN/main/version.txt";
+
     const [android, windows] = await Promise.all([
-      readVersion(process.env.ANDROID_VERSION_URL, "1.2.1"),
-      readVersion(process.env.WINDOWS_VERSION_URL, "1.2.0.0"),
+      readVersion(process.env.ANDROID_VERSION_URL?.trim() || defaultAndroidUrl, "1.2.7"),
+      readVersion(process.env.WINDOWS_VERSION_URL?.trim() || defaultWindowsUrl, "1.2.2.1"),
     ]);
     return { android, windows };
   },
-  ["app-versions-v1"],
-  { revalidate: 600 },
+  ["app-versions-v2"],
+  { revalidate: 300, tags: [PUBLIC_DATA_TAG] },
 );
 
 /** Long CDN caching: Vercel's CDN answers repeat requests without running a function. */
