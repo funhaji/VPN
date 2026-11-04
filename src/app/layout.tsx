@@ -1,4 +1,4 @@
-﻿import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono, Vazirmatn } from "next/font/google";
 import "./globals.css";
 
@@ -18,8 +18,13 @@ const vazirmatn = Vazirmatn({
 });
 
 export const metadata: Metadata = {
-  title: "Astro VPN Control",
-  description: "Secure Astro VPN server management",
+  title: "Astro VPN — Download for Android, Windows & Linux",
+  description: "Fast, private VPN built for restricted networks. Download Astro VPN for Android, Windows and Linux.",
+};
+
+export const viewport: Viewport = {
+  themeColor: "#0c0c0b",
+  colorScheme: "dark",
 };
 
 export default function RootLayout({
@@ -31,6 +36,7 @@ export default function RootLayout({
     <html
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} ${vazirmatn.variable} h-full antialiased`}
+      suppressHydrationWarning
     >
       <body className="min-h-full flex flex-col bg-zinc-950 text-zinc-100">{children}</body>
     </html>
