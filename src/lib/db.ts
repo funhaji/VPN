@@ -3,6 +3,7 @@ import postgres, { type Sql } from "postgres";
 import { decryptConfig, encryptConfig } from "@/lib/crypto";
 import type { ProtocolOptions, ServerRecord } from "@/types/server";
 import { getNeonUrl, getSupabaseUrl } from "@/lib/env";
+import { revalidateTag } from "next/cache";
 import { getCountryMeta, getCountryNameFa, normalizeLocationCode } from "@/lib/countries";
 
 export type DbProvider = "neon" | "supabase";
@@ -38,8 +39,16 @@ const heartbeatDebounce = new Map<string, { timestamp: number; appVersion: strin
 
 export const getCatalogCacheVersion = (): number => catalogCacheVersion;
 
+export const PUBLIC_DATA_TAG = "public-data";
+
 export const invalidateServerCatalogCache = (): void => {
   catalogCacheVersion += 1;
+  // Also expire the shared (cross-instance) Data Cache used by public routes.
+  try {
+    revalidateTag(PUBLIC_DATA_TAG, { expire: 0 });
+  } catch {
+    // Called outside a request (e.g. background timer) — in-memory bump is enough.
+  }
 };
 
 const getNeonClient = (): NeonQueryFunction<false, false> | null => {
@@ -345,9 +354,21 @@ export const scheduleServerReconciliation = (): void => {
   }, 4000);
 };
 
-export const queryWrite = async <T = unknown>(
+export const queryWrite = <T = unknown>(
   strings: TemplateStringsArray,
   ...values: unknown[]
+): Promise<T[]> => writeToProviders<T>(true, strings, values);
+
+/** Write that does NOT invalidate the public server catalog (e.g. heartbeats). */
+export const queryWriteNoInvalidate = <T = unknown>(
+  strings: TemplateStringsArray,
+  ...values: unknown[]
+): Promise<T[]> => writeToProviders<T>(false, strings, values);
+
+const writeToProviders = async <T = unknown>(
+  invalidate: boolean,
+  strings: TemplateStringsArray,
+  values: unknown[],
 ): Promise<T[]> => {
   const configured = getConfiguredProviders();
   if (configured.length === 0) {
@@ -362,7 +383,7 @@ export const queryWrite = async <T = unknown>(
     const single = targets[0];
     try {
       const res = await executeOnProvider<T>(single, strings, values);
-      invalidateServerCatalogCache();
+      if (invalidate) invalidateServerCatalogCache();
       return res;
     } catch (err) {
       markProviderError(single, err);
@@ -392,7 +413,7 @@ export const queryWrite = async <T = unknown>(
   });
 
   if (successResult !== null) {
-    invalidateServerCatalogCache();
+    if (invalidate) invalidateServerCatalogCache();
     // If Supabase succeeded but Neon failed, schedule automatic reconciliation so Neon catches up
     if (neonFailed && targets.includes("supabase")) {
       scheduleServerReconciliation();
@@ -1108,7 +1129,7 @@ export const recordClientHeartbeat = async (payload: HeartbeatPayload): Promise<
   }
 
   try {
-    await queryWrite`
+    await queryWriteNoInvalidate`
       INSERT INTO client_devices (device_id, platform, app_version, os_version, model, first_seen, last_seen)
       VALUES (${deviceId}, ${platform}, ${appVersion}, ${osVersion}, ${model}, NOW(), NOW())
       ON CONFLICT (device_id) DO UPDATE SET

@@ -147,11 +147,28 @@ function clientHeaders(originRes, file) {
 
 export default {
   async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+
+    // IP echo for the app (/api/client/ip on the site is proxied here so it
+    // costs no Vercel CPU). Vercel's proxy sends the visitor IP as x-real-ip.
+    if (url.pathname === "/ip") {
+      const cors = {
+        "access-control-allow-origin": "*",
+        "access-control-allow-methods": "GET, OPTIONS",
+        "access-control-allow-headers": "Content-Type",
+      };
+      if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
+      const xff = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+      const ip = request.headers.get("x-real-ip") || xff || request.headers.get("cf-connecting-ip") || "unknown";
+      return new Response(JSON.stringify({ ip }), {
+        headers: { ...cors, "content-type": "application/json", "cache-control": "no-store, no-cache, must-revalidate, proxy-revalidate" },
+      });
+    }
+
     if (request.method !== "GET" && request.method !== "HEAD") {
       return text(405, "Method not allowed", { allow: "GET, HEAD" });
     }
 
-    const url = new URL(request.url);
     const [token] = url.pathname.split("/").filter(Boolean);
     if (!token || url.pathname === "/robots.txt") {
       return url.pathname === "/robots.txt" ? text(200, "User-agent: *\nDisallow: /\n") : goHome(env);

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { decryptConfig } from "@/lib/crypto";
-import { getCatalogCacheVersion, getLastUsedProvider, listServers } from "@/lib/db";
+import { unstable_cache } from "next/cache";
+import { getCatalogCacheVersion, getLastUsedProvider, listServers, PUBLIC_DATA_TAG } from "@/lib/db";
 import { parseWireGuardConf } from "@/lib/profile-import";
 import type { ProtocolOptions, ServerRecord } from "@/types/server";
 
@@ -1156,129 +1157,128 @@ const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): JsonObjec
   };
 };
 
-// In-memory catalog cache with 30s TTL to prevent heavy DB decrypt loops on Vercel
-let catalogCache: {
-  key: string;
-  version: number;
-  payload: unknown;
-  provider: string;
-  expiresAt: number;
-} | null = null;
+type CatalogEntry = {
+  id: string;
+  name: string;
+  protocol: string;
+  host: null;
+  port: null;
+  country: string;
+  options: ServerRecord["options"];
+  rawConfig: string;
+  runtimeProfile: JsonObject;
+  notice?: string;
+  updatedAt: string;
+};
+
+/** The expensive part: decrypt every config and build runtime profiles. */
+async function buildCatalog(): Promise<{ servers: CatalogEntry[]; provider: string }> {
+  const servers = await listServers(true);
+  const catalogServers: CatalogEntry[] = [];
+
+  for (const server of servers) {
+    try {
+      const rawConfig = decryptConfig(server.encryptedConfig);
+      let runtimeProfile: JsonObject;
+      try {
+        runtimeProfile = buildRuntimeProfile(server, rawConfig);
+      } catch (profileErr) {
+        console.error(`Failed to build runtime profile for server ${server.id} (${server.name}):`, profileErr);
+        runtimeProfile = { engine: "unsupported", supported: false, reason: "Error building profile" };
+      }
+      catalogServers.push({
+        id: server.id,
+        name: server.name,
+        protocol: server.protocol,
+        host: null,
+        port: null,
+        country: server.country,
+        options: server.options,
+        rawConfig: "",
+        runtimeProfile,
+        notice: server.notice || undefined,
+        updatedAt: String(server.updatedAt),
+      });
+    } catch (decryptErr) {
+      console.error(`Failed to decrypt server "${server.name}" (id: ${server.id}):`, decryptErr);
+      // Skip individual broken records instead of failing the whole catalog.
+    }
+  }
+
+  return { servers: catalogServers, provider: getLastUsedProvider() || "supabase" };
+}
+
+// Shared across ALL function instances (Vercel Data Cache), so the decrypt
+// loop runs about once per 5 minutes globally instead of on every request.
+// Any admin write expires it immediately (PUBLIC_DATA_TAG).
+const getSharedCatalog = unstable_cache(buildCatalog, ["server-catalog-v1"], {
+  revalidate: 300,
+  tags: [PUBLIC_DATA_TAG],
+});
+
+const filterByProtocol = (catalog: CatalogEntry[], requestedProtocol: string): CatalogEntry[] => {
+  if (!requestedProtocol || requestedProtocol === "all") return catalog;
+  return catalog.filter((s) => {
+    const p = s.protocol.toLowerCase();
+    if (requestedProtocol === "l2tp") return p.startsWith("l2tp");
+    if (requestedProtocol === "v2ray") {
+      return (
+        p.startsWith("v2ray") ||
+        p.startsWith("vless") ||
+        p.startsWith("vmess") ||
+        p.startsWith("trojan") ||
+        p.startsWith("ss:") ||
+        p.startsWith("hysteria") ||
+        p.startsWith("shadowsocks")
+      );
+    }
+    if (requestedProtocol === "openvpn") return p.startsWith("openvpn");
+    if (requestedProtocol === "wireguard" || requestedProtocol === "wg") {
+      return p.startsWith("wireguard") || p === "wg";
+    }
+    if (requestedProtocol === "warp") return p === "warp";
+    if (requestedProtocol === "ssh") return p.startsWith("ssh");
+    if (requestedProtocol === "http") return p === "http";
+    return p === requestedProtocol;
+  });
+};
+
+// Per-instance cache of the final encrypted response (per protocol filter).
+const encryptedCache = new Map<string, { version: number; payload: unknown; provider: string; expiresAt: number }>();
+
+const CACHE_HEADERS = {
+  "Cache-Control": "public, max-age=15, s-maxage=60, stale-while-revalidate=300",
+  "Access-Control-Expose-Headers": "x-database-provider",
+};
 
 export async function GET(request: NextRequest) {
-  try {
-    const url = new URL(request.url);
-    const requestedProtocol = url.searchParams.get("protocol")?.trim().toLowerCase() || "all";
-    const cacheKey = requestedProtocol;
+  const requestedProtocol = request.nextUrl.searchParams.get("protocol")?.trim().toLowerCase() || "all";
+  const now = Date.now();
+  const version = getCatalogCacheVersion();
 
-    const isManualRefresh =
-      url.searchParams.has("t") ||
-      url.searchParams.has("refresh") ||
-      request.headers.get("cache-control")?.includes("no-cache") ||
-      request.headers.get("pragma")?.includes("no-cache");
-
-    const now = Date.now();
-    const currentVersion = getCatalogCacheVersion();
-    if (!isManualRefresh && catalogCache && catalogCache.key === cacheKey && catalogCache.version === currentVersion && catalogCache.expiresAt > now) {
-      return NextResponse.json(catalogCache.payload, {
-        headers: {
-          "Cache-Control": "public, max-age=15, s-maxage=30, stale-while-revalidate=120",
-          "x-database-provider": catalogCache.provider,
-          "Access-Control-Expose-Headers": "x-database-provider",
-        },
-      });
-    }
-
-    const servers = await listServers(true);
-    const catalogServers = [];
-
-    for (const server of servers) {
-      try {
-        const rawConfig = decryptConfig(server.encryptedConfig);
-        let runtimeProfile: JsonObject;
-        try {
-          runtimeProfile = buildRuntimeProfile(server, rawConfig);
-        } catch (profileErr) {
-          console.error(`Failed to build runtime profile for server ${server.id} (${server.name}):`, profileErr);
-          runtimeProfile = { engine: "unsupported", supported: false, reason: "Error building profile" };
-        }
-        catalogServers.push({
-          id: server.id,
-          name: server.name,
-          protocol: server.protocol,
-          host: null,
-          port: null,
-          country: server.country,
-          options: server.options,
-          rawConfig: "",
-          runtimeProfile,
-          notice: server.notice || undefined,
-          updatedAt: server.updatedAt,
-        });
-      } catch (decryptErr) {
-        console.error(`Failed to decrypt server "${server.name}" (id: ${server.id}):`, decryptErr);
-        // Skip individual broken records instead of failing the whole catalog.
-      }
-    }
-
-    let filteredCatalog = catalogServers;
-    if (requestedProtocol && requestedProtocol !== "all") {
-      filteredCatalog = catalogServers.filter((s) => {
-        const p = s.protocol.toLowerCase();
-        if (requestedProtocol === "l2tp") return p.startsWith("l2tp");
-        if (requestedProtocol === "v2ray") {
-          return (
-            p.startsWith("v2ray") ||
-            p.startsWith("vless") ||
-            p.startsWith("vmess") ||
-            p.startsWith("trojan") ||
-            p.startsWith("ss:") ||
-            p.startsWith("hysteria") ||
-            p.startsWith("shadowsocks")
-          );
-        }
-        if (requestedProtocol === "openvpn") return p.startsWith("openvpn");
-        if (requestedProtocol === "wireguard" || requestedProtocol === "wg") {
-          return p.startsWith("wireguard") || p === "wg";
-        }
-        if (requestedProtocol === "warp") return p === "warp";
-        if (requestedProtocol === "ssh") return p.startsWith("ssh");
-        if (requestedProtocol === "http") return p === "http";
-        return p === requestedProtocol;
-      });
-    }
-
-    const { encryptCatalogPayload } = await import("@/lib/client-catalog");
-    const encrypted = encryptCatalogPayload({ servers: filteredCatalog });
-
-    const activeDb = getLastUsedProvider() || "supabase";
-    catalogCache = {
-      key: cacheKey,
-      version: currentVersion,
-      payload: encrypted,
-      provider: activeDb,
-      expiresAt: now + 30 * 1000,
-    };
-
-    return NextResponse.json(encrypted, {
-      headers: {
-        "Cache-Control": isManualRefresh
-          ? "no-cache, no-store, must-revalidate"
-          : "public, max-age=15, s-maxage=30, stale-while-revalidate=120",
-        "x-database-provider": activeDb,
-        "Access-Control-Expose-Headers": "x-database-provider",
-      },
+  // NOTE: "?t=" / no-cache from the app used to force a full rebuild on every
+  // request. That was the main CPU drain. Admin edits already expire the cache,
+  // so cache-busters are now ignored.
+  const hit = encryptedCache.get(requestedProtocol);
+  if (hit && hit.version === version && hit.expiresAt > now) {
+    return NextResponse.json(hit.payload, {
+      headers: { ...CACHE_HEADERS, "x-database-provider": hit.provider },
     });
+  }
+
+  try {
+    const { servers, provider } = await getSharedCatalog();
+    const { encryptCatalogPayload } = await import("@/lib/client-catalog");
+    const payload = encryptCatalogPayload({ servers: filterByProtocol(servers, requestedProtocol) });
+
+    encryptedCache.set(requestedProtocol, { version, payload, provider, expiresAt: now + 30_000 });
+    return NextResponse.json(payload, { headers: { ...CACHE_HEADERS, "x-database-provider": provider } });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to build server catalog";
-    if (catalogCache && catalogCache.payload) {
+    if (hit) {
       console.warn("[API/servers] Serving cached catalog due to DB error:", message);
-      return NextResponse.json(catalogCache.payload, {
-        headers: {
-          "Cache-Control": "public, max-age=15, s-maxage=30, stale-while-revalidate=120",
-          "x-database-provider": catalogCache.provider || "cache",
-          "Access-Control-Expose-Headers": "x-database-provider",
-        },
+      return NextResponse.json(hit.payload, {
+        headers: { ...CACHE_HEADERS, "x-database-provider": hit.provider || "cache" },
       });
     }
     console.error("[API/servers] Fatal catalog error with no cache:", message);
