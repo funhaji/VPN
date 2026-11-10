@@ -10,6 +10,7 @@ import { ActiveUsersPanel } from "@/components/active-users-panel";
 import { DbSyncModal } from "@/components/db-sync-modal";
 import { BulkReplaceModal } from "@/components/bulk-replace-modal";
 import { COUNTRIES, flagFromCountryCode, getCountryMeta, normalizeLocationCode } from "@/lib/countries";
+import { createAutoNamer, planLocationRename, type RenamePlan } from "@/lib/server-naming";
 
 type TabId = "v2ray" | "ssh" | "openvpn" | "wireguard" | "warp" | "custom" | "bulk" | "routing" | "http" | "l2tp" | "users";
 type SshMode = "direct" | "dnstt";
@@ -376,6 +377,22 @@ const buildL2tpProfile = (form: FormState): string => {
   );
 };
 
+/** " — 🇩🇪 Germany 3 … Germany 5" style suffix for success messages. */
+const describeCreatedNames = (names: string[] | undefined) => {
+  if (!names || names.length === 0) return "";
+  if (names.length === 1) return ` as ${names[0]}`;
+  return ` — ${names[0]} … ${stripLeadingCountryFlag(names[names.length - 1]).trim()}`;
+};
+
+/** First value that resolves to a known location code, or "GLOBAL". */
+const firstKnownLocation = (...values: (string | null | undefined)[]) => {
+  for (const value of values) {
+    const code = normalizeLocationCode(value);
+    if (code !== "GLOBAL") return code;
+  }
+  return "GLOBAL";
+};
+
 const buildImportedPayload = (
   rawConfig: string,
   fallbackProtocol: string,
@@ -461,6 +478,172 @@ function Field(props: {
         className={`w-full rounded-2xl border border-zinc-800 bg-zinc-950/80 px-3 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none transition focus:border-cyan-500 ${mono ? "font-mono" : ""}`}
       />
     </label>
+  );
+}
+
+function ServerNameField(props: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  autoName: boolean;
+  onAutoNameChange: (value: boolean) => void;
+  /** False while editing an existing server — auto naming only applies to new servers. */
+  autoNameAvailable: boolean;
+  /** Names that will be generated, in order. Empty when the location is unknown. */
+  previewNames: string[];
+  /** Shown instead of the preview when no names could be generated. */
+  previewHint: string;
+  /** Extra info under the preview, e.g. items whose location couldn't be detected. */
+  previewNote?: string;
+}) {
+  const { label, value, onChange, placeholder, autoName, onAutoNameChange, autoNameAvailable, previewNames, previewHint, previewNote } = props;
+  const active = autoName && autoNameAvailable;
+  const shown = previewNames.length > 3
+    ? `${previewNames[0]} … ${stripLeadingCountryFlag(previewNames[previewNames.length - 1])}`
+    : previewNames.join(", ");
+
+  return (
+    <div className="block">
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <span className="text-xs text-zinc-500">{label}</span>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={active}
+          disabled={!autoNameAvailable}
+          onClick={() => onAutoNameChange(!autoName)}
+          title={
+            autoNameAvailable
+              ? "Name new servers after their location, numbered after the existing servers in that country"
+              : "Auto naming applies to new servers only. Use “Auto-name” in the server list to rename existing ones."
+          }
+          className="flex items-center gap-1.5 text-[11px] font-medium text-zinc-400 transition hover:text-zinc-200 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <span
+            className={`relative inline-flex h-3.5 w-6 items-center rounded-full transition ${active ? "bg-cyan-500" : "bg-zinc-700"}`}
+          >
+            <span
+              className={`absolute h-2.5 w-2.5 rounded-full bg-white transition-all ${active ? "left-3" : "left-0.5"}`}
+            />
+          </span>
+          Auto-name
+        </button>
+      </div>
+      {active ? (
+        <div
+          className="flex min-h-[46px] w-full items-center gap-2 rounded-2xl border border-cyan-500/30 bg-cyan-500/5 px-3 py-2 text-sm"
+          title={previewNames.join("\n")}
+        >
+          {previewNames.length > 0 ? (
+            <>
+              <span className="truncate text-zinc-100">{shown}</span>
+              {previewNames.length > 1 ? (
+                <span className="ml-auto flex-shrink-0 rounded-full border border-cyan-500/30 px-2 py-0.5 text-[10px] font-semibold text-cyan-300">
+                  {previewNames.length} servers
+                </span>
+              ) : null}
+            </>
+          ) : (
+            <span className="text-xs text-zinc-500">{previewHint}</span>
+          )}
+        </div>
+      ) : (
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          className="w-full rounded-2xl border border-zinc-800 bg-zinc-950/80 px-3 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none transition focus:border-cyan-500"
+        />
+      )}
+      {active && previewNote ? <p className="mt-1 text-[11px] text-amber-400/80">{previewNote}</p> : null}
+    </div>
+  );
+}
+
+function AutoNameModal(props: {
+  plan: RenamePlan;
+  scope: string;
+  busy: boolean;
+  onClose: () => void;
+  onConfirm: () => void | Promise<void>;
+}) {
+  const { plan, scope, busy, onClose, onConfirm } = props;
+  const { changes, unchanged, skipped } = plan;
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" onClick={onClose}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="auto-name-title"
+        onClick={(event) => event.stopPropagation()}
+        className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-[28px] border border-zinc-800 bg-zinc-950 shadow-2xl"
+      >
+        <div className="border-b border-zinc-900 px-6 py-5">
+          <h3 id="auto-name-title" className="text-lg font-semibold text-zinc-100">Auto-name servers</h3>
+          <p className="mt-1 text-xs leading-5 text-zinc-500">
+            Renames {scope} to their location. Countries with several servers get a number at the end.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
+            <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-0.5 font-semibold text-amber-300">{changes.length} to rename</span>
+            {unchanged > 0 ? <span className="rounded-full border border-zinc-800 px-2.5 py-0.5 text-zinc-400">{unchanged} already named</span> : null}
+            {skipped.length > 0 ? (
+              <span className="rounded-full border border-rose-500/30 bg-rose-500/10 px-2.5 py-0.5 text-rose-300" title={skipped.map((item) => item.name).join("\n")}>
+                {skipped.length} skipped — unknown location
+              </span>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+          {changes.length === 0 ? (
+            <p className="py-8 text-center text-sm text-zinc-500">Nothing to rename — these servers already follow the location naming.</p>
+          ) : (
+            <ul className="space-y-1.5">
+              {changes.map((item) => (
+                <li key={item.id} className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 rounded-xl border border-zinc-900 bg-zinc-900/40 px-3 py-2 text-sm">
+                  <span className="truncate text-zinc-500 line-through decoration-zinc-700" title={item.oldName}>{item.oldName}</span>
+                  <span className="text-zinc-600">→</span>
+                  <span className="truncate font-medium text-zinc-100" title={item.newName}>{item.newName}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {skipped.length > 0 ? (
+            <p className="mt-4 text-[11px] leading-5 text-zinc-500">
+              Skipped servers have no country set and none could be detected from their name. Set a country on them to include them.
+            </p>
+          ) : null}
+        </div>
+
+        <div className="flex justify-end gap-3 border-t border-zinc-900 px-6 py-4">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            className="rounded-2xl border border-zinc-800 px-5 py-2.5 text-sm text-zinc-300 transition hover:bg-zinc-900 disabled:opacity-40"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => void onConfirm()}
+            disabled={busy || changes.length === 0}
+            className="rounded-2xl bg-amber-400 px-5 py-2.5 text-sm font-semibold text-amber-950 transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {busy ? "Renaming..." : `Rename ${changes.length} server${changes.length === 1 ? "" : "s"}`}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -684,6 +867,9 @@ export function AdminDashboard() {
   const [syncingDb, setSyncingDb] = useState(false);
   const [syncModalOpen, setSyncModalOpen] = useState(false);
   const [bulkReplaceOpen, setBulkReplaceOpen] = useState(false);
+  const [autoName, setAutoNameState] = useState(false);
+  const [renamePlan, setRenamePlan] = useState<{ ids: string[] | null; plan: RenamePlan } | null>(null);
+  const [renameBusy, setRenameBusy] = useState(false);
   const [dnsttDefaults, setDnsttDefaults] = useState<{ dns: string; querySize: string; mtu: string }>({
     dns: "8.8.8.8:53",
     querySize: "1232",
@@ -709,6 +895,18 @@ export function AdminDashboard() {
   useEffect(() => {
     localStorage.setItem("astro_admin_dnstt_defaults_v1", JSON.stringify(dnsttDefaults));
   }, [dnsttDefaults]);
+
+  useEffect(() => {
+    if (localStorage.getItem("astro_admin_auto_name_v1") === "1") setAutoNameState(true);
+  }, []);
+
+  const setAutoName = useCallback((value: boolean) => {
+    setAutoNameState(value);
+    localStorage.setItem("astro_admin_auto_name_v1", value ? "1" : "0");
+  }, []);
+
+  // Auto naming only applies to new servers, never while editing one.
+  const autoNameActive = autoName && !editingServerId;
 
   const api = useCallback(async <T,>(path: string, init?: RequestInit): Promise<T> => {
     const res = await fetch(path, {
@@ -1388,13 +1586,65 @@ export function AdminDashboard() {
     return "This profile is stored cleanly in admin, but the current desktop runtime path is not enabled yet.";
   }, [sshMode, tab]);
 
+  /**
+   * Preview of the names auto naming will produce, one entry per server that
+   * will be created. Countries are resolved the same way `submit` does; the
+   * API recomputes the numbers against the live list, so this is a preview only.
+   */
+  const autoNamePreview = useMemo(() => {
+    const empty = { items: [] as { country: string; name: string | null }[], names: [] as string[], hint: "", note: undefined as string | undefined };
+    if (!autoNameActive || tab === "bulk") return empty;
+
+    const formCode = form.country.trim() && form.country !== "XX" ? normalizeLocationCode(form.country) : "GLOBAL";
+    const fixed = formCode !== "GLOBAL" ? formCode : null;
+
+    let countries: string[] = [];
+    let hint = "Pick a country to generate the name";
+    if (tab === "wireguard" && wgInputMode === "file") {
+      countries = wgFiles.filter((file) => file.selected).map((file) => fixed ?? firstKnownLocation(file.name));
+      hint = "Add .conf files to preview the names";
+    } else if (tab === "openvpn" && openVpnInputMode === "file") {
+      countries = ovpnFiles.filter((file) => file.selected).map((file) => fixed ?? firstKnownLocation(file.name));
+      hint = "Add .ovpn files to preview the names";
+    } else if (tab === "v2ray" || tab === "custom") {
+      if (parsedImportProfiles.length > 1) {
+        countries = parsedImportProfiles.map((entry, index) => buildImportedPayload(entry, protocol, form, index).country);
+      } else if (effectiveRawConfig.trim()) {
+        const detected = detectProfileMetadata(effectiveRawConfig.trim(), protocol);
+        countries = [fixed ?? firstKnownLocation(detected.name, detected.country)];
+        hint = "Location not detected — pick a country to auto-name";
+      } else {
+        if (fixed) countries = [fixed];
+        hint = "Paste a config or pick a country — the location is detected automatically";
+      }
+    } else if (fixed) {
+      countries = [fixed];
+    }
+
+    const namer = createAutoNamer(servers);
+    const items = countries.map((country) => ({ country, name: namer.next(country) }));
+    const names = items.flatMap((item) => (item.name ? [item.name] : []));
+    const unresolved = items.length - names.length;
+    const note = unresolved > 0 && names.length > 0
+      ? `${unresolved} item${unresolved !== 1 ? "s have" : " has"} no detectable location and will keep ${unresolved !== 1 ? "their" : "its"} original name — pick a country to name them all`
+      : unresolved > 1
+        ? "No location detected — pick a country to auto-name these servers"
+        : undefined;
+    return { items, names, hint, note };
+  }, [autoNameActive, effectiveRawConfig, form, openVpnInputMode, ovpnFiles, parsedImportProfiles, protocol, servers, tab, wgFiles, wgInputMode]);
+
   const canSubmit = useMemo(() => {
     if (tab === "bulk") return bulk.trim().length > 0;
     if (tab === "v2ray" || tab === "custom") return effectiveRawConfig.trim().length > 0;
     if (tab === "openvpn" && openVpnInputMode === "file") {
       return ovpnFiles.some((file) => file.selected);
     }
-    if (!form.name.trim() || !form.country.trim()) return false;
+    if (autoNameActive) {
+      // The name is generated from the location, so a known country is required.
+      if (!autoNamePreview.names[0]) return false;
+    } else if (!form.name.trim() || !form.country.trim()) {
+      return false;
+    }
     if (tab === "ssh" && sshMode === "direct") {
       return Boolean(form.host.trim() && form.port.trim() && form.sshUser.trim() && (form.sshPassword.trim() || form.sshPrivateKey.trim()));
     }
@@ -1412,7 +1662,7 @@ export function AdminDashboard() {
     }
     if (tab === "openvpn") {
       const detectedRemote = parseOvpnRemote(form.rawConfig);
-      return Boolean(form.name.trim() && form.rawConfig.trim() && (form.host.trim() || detectedRemote));
+      return Boolean((autoNameActive || form.name.trim()) && form.rawConfig.trim() && (form.host.trim() || detectedRemote));
     }
     if (tab === "http") {
       return Boolean(form.host.trim() && form.port.trim());
@@ -1421,7 +1671,7 @@ export function AdminDashboard() {
       return Boolean(form.host.trim() && form.l2tpUsername.trim() && form.l2tpPassword.trim() && form.l2tpPsk.trim());
     }
     return effectiveRawConfig.trim().length > 0;
-  }, [bulk, effectiveRawConfig, form, openVpnInputMode, ovpnFiles, sshMode, tab, wgFiles, wgInputMode]);
+  }, [autoNameActive, autoNamePreview, bulk, effectiveRawConfig, form, openVpnInputMode, ovpnFiles, sshMode, tab, wgFiles, wgInputMode]);
 
   const submit = useCallback(async () => {
     setBusy(true);
@@ -1441,7 +1691,7 @@ export function AdminDashboard() {
             throw new Error(`Could not parse WireGuard configuration in ${file.name}`);
           }
           const rawConfig = JSON.stringify(parsed, null, 2);
-          let chosenName = (selectedFiles.length === 1 && form.name.trim())
+          let chosenName = (selectedFiles.length === 1 && form.name.trim() && !autoNameActive)
             ? form.name.trim()
             : (file.name.trim() || `WireGuard ${parsed.endpoint.host}`);
 
@@ -1470,11 +1720,11 @@ export function AdminDashboard() {
             port: parsed.endpoint.port,
           };
         });
-        await api("/api/admin/servers", {
+        const result = await api<{ names?: string[] }>("/api/admin/servers", {
           method: "POST",
-          body: JSON.stringify({ servers: payloads }),
+          body: JSON.stringify({ servers: payloads, ...(autoNameActive ? { autoName: true } : {}) }),
         });
-        setMsg({ ok: true, text: `Imported ${payloads.length} WireGuard profile${payloads.length !== 1 ? "s" : ""}` });
+        setMsg({ ok: true, text: `Imported ${payloads.length} WireGuard profile${payloads.length !== 1 ? "s" : ""}${autoNameActive ? describeCreatedNames(result.names) : ""}` });
         setWgFiles([]);
         await load();
         return;
@@ -1504,7 +1754,7 @@ export function AdminDashboard() {
             credentials: { username, password },
             profile: file.content,
           });
-          let chosenName = (selectedFiles.length === 1 && form.name.trim())
+          let chosenName = (selectedFiles.length === 1 && form.name.trim() && !autoNameActive)
             ? form.name.trim()
             : (file.name.trim() || `OpenVPN ${detected?.host ?? "Config"}`);
 
@@ -1533,11 +1783,11 @@ export function AdminDashboard() {
             port: detected?.port ?? 1194,
           };
         });
-        await api("/api/admin/servers", {
+        const result = await api<{ names?: string[] }>("/api/admin/servers", {
           method: "POST",
-          body: JSON.stringify({ servers: payloads }),
+          body: JSON.stringify({ servers: payloads, ...(autoNameActive ? { autoName: true } : {}) }),
         });
-        setMsg({ ok: true, text: `Imported ${payloads.length} OpenVPN profile${payloads.length !== 1 ? "s" : ""}` });
+        setMsg({ ok: true, text: `Imported ${payloads.length} OpenVPN profile${payloads.length !== 1 ? "s" : ""}${autoNameActive ? describeCreatedNames(result.names) : ""}` });
         setOvpnFiles([]);
         await load();
         return;
@@ -1551,11 +1801,11 @@ export function AdminDashboard() {
         const payloads = importableProfiles.map((entry, index) =>
           buildImportedPayload(entry, protocol, form, index),
         );
-        await api("/api/admin/servers", {
+        const result = await api<{ names?: string[] }>("/api/admin/servers", {
           method: "POST",
-          body: JSON.stringify({ servers: payloads }),
+          body: JSON.stringify({ servers: payloads, ...(autoNameActive ? { autoName: true } : {}) }),
         });
-        setMsg({ ok: true, text: `Imported ${payloads.length} profiles` });
+        setMsg({ ok: true, text: `Imported ${payloads.length} profiles${autoNameActive ? describeCreatedNames(result.names) : ""}` });
         reset(false);
         await load();
         return;
@@ -1563,10 +1813,13 @@ export function AdminDashboard() {
 
       const detected = detectProfileMetadata(effectiveRawConfig.trim(), protocol);
       const selectedCountry = COUNTRIES.find((c) => c.code === form.country);
-      let finalName = form.name.trim() || detected.name;
+      // When auto naming, the preview already resolved the location; the API
+      // assigns the final number against the live list.
+      const autoItem = autoNameActive ? autoNamePreview.items[0] : undefined;
+      let finalName = autoItem?.name || (autoNameActive ? "" : form.name.trim()) || detected.name || form.name.trim();
 
       const rawDetectedCountry = normalizeLocationCode(form.country);
-      const countryCode = (selectedCountry?.code && selectedCountry.code !== "XX" && selectedCountry.code !== "GLOBAL")
+      const countryCode = autoItem?.name ? autoItem.country : (selectedCountry?.code && selectedCountry.code !== "XX" && selectedCountry.code !== "GLOBAL")
         ? selectedCountry.code
         : (rawDetectedCountry && rawDetectedCountry !== "XX" && rawDetectedCountry !== "GLOBAL")
           ? rawDetectedCountry
@@ -1606,14 +1859,15 @@ export function AdminDashboard() {
 
       if (payloadHost || detected.host) payload.host = payloadHost || detected.host;
       if (payloadPort || detected.port) payload.port = payloadPort ?? detected.port;
+      if (autoItem?.name) payload.autoName = true;
 
       if (editingServerId) {
         await api(`/api/admin/servers/${editingServerId}`, { method: "PATCH", body: JSON.stringify(payload) });
         setMsg({ ok: true, text: `Server updated successfully` });
         reset(false);
       } else {
-        await api("/api/admin/servers", { method: "POST", body: JSON.stringify(payload) });
-        setMsg({ ok: true, text: `${String(payload.name)} saved successfully` });
+        const result = await api<{ name?: string }>("/api/admin/servers", { method: "POST", body: JSON.stringify(payload) });
+        setMsg({ ok: true, text: `${result.name ?? String(payload.name)} saved successfully` });
         reset(true);
       }
       await load();
@@ -1622,7 +1876,7 @@ export function AdminDashboard() {
     } finally {
       setBusy(false);
     }
-  }, [api, editingServerId, effectiveRawConfig, form, load, openVpnInputMode, openVpnMode, ovpnBulkPassword, ovpnBulkUsername, ovpnFiles, payloadHost, payloadPort, protocol, tab, reset]);
+  }, [api, autoNameActive, autoNamePreview, editingServerId, effectiveRawConfig, form, load, openVpnInputMode, openVpnMode, ovpnBulkPassword, ovpnBulkUsername, ovpnFiles, payloadHost, payloadPort, protocol, tab, reset]);
 
   const submitBulk = useCallback(async () => {
     setBusy(true);
@@ -1699,8 +1953,11 @@ export function AdminDashboard() {
         );
       }
 
-      await api("/api/admin/servers", { method: "POST", body: JSON.stringify({ servers: mapped }) });
-      setMsg({ ok: true, text: `Imported ${mapped.length} servers` });
+      const result = await api<{ names?: string[] }>("/api/admin/servers", {
+        method: "POST",
+        body: JSON.stringify({ servers: mapped, ...(autoName ? { autoName: true } : {}) }),
+      });
+      setMsg({ ok: true, text: `Imported ${mapped.length} servers${autoName ? describeCreatedNames(result.names) : ""}` });
       setBulk("");
       await load();
     } catch (error) {
@@ -1708,7 +1965,7 @@ export function AdminDashboard() {
     } finally {
       setBusy(false);
     }
-  }, [api, bulk, form, load]);
+  }, [api, autoName, bulk, form, load]);
 
   const toggle = useCallback(async (id: string, isEnabled: boolean) => {
     setPendingServerId(id);
@@ -2623,7 +2880,7 @@ export function AdminDashboard() {
             ) : tab !== "bulk" ? (
               <div className="rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-6">
                 <div className="grid gap-4 md:grid-cols-2">
-                  <Field label="Server name" value={form.name} onChange={(value) => set("name", value)} placeholder="Germany Premium #1" />
+                  <ServerNameField label="Server name" value={form.name} onChange={(value) => set("name", value)} placeholder="Germany Premium #1" autoName={autoName} onAutoNameChange={setAutoName} autoNameAvailable={!editingServerId} previewNames={autoNamePreview.names} previewHint={autoNamePreview.hint} previewNote={autoNamePreview.note} />
                   <CountrySelector country={form.country} name={form.name} set={set} />
                 </div>
                 <div className="mt-4">
@@ -3191,7 +3448,7 @@ export function AdminDashboard() {
                       /* Paste mode */
                       <div className="space-y-4">
                         <div className="grid gap-4 md:grid-cols-2">
-                          <Field label="Config name" value={form.name} onChange={(value) => set("name", value)} placeholder="My OpenVPN Server" />
+                          <ServerNameField label="Config name" value={form.name} onChange={(value) => set("name", value)} placeholder="My OpenVPN Server" autoName={autoName} onAutoNameChange={setAutoName} autoNameAvailable={!editingServerId} previewNames={autoNamePreview.names} previewHint={autoNamePreview.hint} previewNote={autoNamePreview.note} />
                           <CountrySelector country={form.country} name={form.name} set={set} />
                           <Field label="Username (optional)" value={form.openVpnUsername} onChange={(value) => set("openVpnUsername", value)} placeholder="VPN username" />
                           <Field label="Password (optional)" value={form.openVpnPassword} onChange={(value) => set("openVpnPassword", value)} placeholder="VPN password" />
@@ -3595,7 +3852,7 @@ or
                 <p className="mt-3 text-xs leading-6 text-zinc-500">
                   Paste a JSON array or paste one share link per line. Names, protocol, host, and port are auto-detected when possible.
                 </p>
-                <div className="mt-4 flex gap-3">
+                <div className="mt-4 flex flex-wrap items-center gap-3">
                   <button
                     type="button"
                     onClick={() => void submitBulk()}
@@ -3604,6 +3861,15 @@ or
                   >
                     {busy ? "Importing..." : "Import profiles"}
                   </button>
+                  <label className="flex cursor-pointer items-center gap-2 text-xs text-zinc-400" title="Name each imported server after its detected location, numbered after the existing servers in that country. Entries without a detectable location keep their own name.">
+                    <input
+                      type="checkbox"
+                      checked={autoName}
+                      onChange={(e) => setAutoName(e.target.checked)}
+                      className="h-3.5 w-3.5 accent-cyan-400"
+                    />
+                    Auto-name by location
+                  </label>
                 </div>
               </div>
             )}
@@ -3762,6 +4028,27 @@ or
                         className="flex-shrink-0 rounded-xl border border-indigo-500/30 bg-indigo-500/10 px-3 py-1.5 text-xs font-semibold text-indigo-300 transition hover:bg-indigo-500/20 disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         Bulk Replace ({selectedFilteredCount})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const ids = filteredServers.filter((server) => selectedServerIds.has(server.id)).map((server) => server.id);
+                          setRenamePlan({ ids, plan: planLocationRename(servers, ids) });
+                        }}
+                        disabled={busy || selectedFilteredCount === 0}
+                        title="Rename the selected servers to their location (numbered when a country has several)"
+                        className="flex-shrink-0 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-300 transition hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        Auto-name ({selectedFilteredCount})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setRenamePlan({ ids: null, plan: planLocationRename(servers) })}
+                        disabled={busy || servers.length === 0}
+                        title="Rename every server to its location (numbered when a country has several)"
+                        className="flex-shrink-0 rounded-xl border border-amber-500/20 px-3 py-1.5 text-xs font-semibold text-amber-300/80 transition hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        Auto-name all
                       </button>
                       {selectedFilteredCredentialCount > 0 && (
                         <button
@@ -4168,6 +4455,37 @@ or
         onSuccess={load}
         api={api}
       />
+      {renamePlan ? (
+        <AutoNameModal
+          plan={renamePlan.plan}
+          scope={renamePlan.ids ? `${renamePlan.ids.length} selected server${renamePlan.ids.length === 1 ? "" : "s"}` : `all ${servers.length} servers`}
+          busy={renameBusy}
+          onClose={() => { if (!renameBusy) setRenamePlan(null); }}
+          onConfirm={async () => {
+            setRenameBusy(true);
+            try {
+              const result = await api<{ renamed?: number; unchanged?: number; skipped?: number }>("/api/admin/servers", {
+                method: "PATCH",
+                body: JSON.stringify({ action: "auto-name", ...(renamePlan.ids ? { ids: renamePlan.ids } : {}) }),
+              });
+              const renamed = result.renamed ?? 0;
+              const skipped = result.skipped ?? 0;
+              setMsg({
+                ok: true,
+                text: renamed > 0
+                  ? `Renamed ${renamed} server${renamed === 1 ? "" : "s"} to their location${skipped > 0 ? ` · ${skipped} skipped (unknown location)` : ""}`
+                  : "All servers already follow the location naming",
+              });
+              setRenamePlan(null);
+              await load();
+            } catch (error) {
+              setMsg({ ok: false, text: error instanceof Error ? error.message : "Auto naming failed" });
+            } finally {
+              setRenameBusy(false);
+            }
+          }}
+        />
+      ) : null}
       <BulkReplaceModal
         isOpen={bulkReplaceOpen}
         onClose={() => setBulkReplaceOpen(false)}

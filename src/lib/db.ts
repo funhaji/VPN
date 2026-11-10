@@ -997,6 +997,21 @@ export const updateServer = async (
   `;
 };
 
+export const renameServers = async (renames: { id: string; name: string }[]): Promise<number> => {
+  if (renames.length === 0) return 0;
+  await queryWrite`
+    WITH incoming AS (
+      SELECT id::uuid, name
+      FROM jsonb_to_recordset(${JSON.stringify(renames)}::jsonb) AS x(id text, name text)
+    )
+    UPDATE vpn_servers AS server
+    SET name = incoming.name, updated_at = NOW()
+    FROM incoming
+    WHERE server.id = incoming.id;
+  `;
+  return renames.length;
+};
+
 export const updateServerOrders = async (orders: { id: string; sort_order: number }[]): Promise<void> => {
   if (orders.length === 0) return;
   await queryWrite`

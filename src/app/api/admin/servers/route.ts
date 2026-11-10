@@ -1,13 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
-import { createServer, createServers, deleteAllServers, deleteServersByIds, getServer, listServers, setAllServersEnabled, setServersEnabledByIds, updateServer } from "@/lib/db";
+import { createServer, createServers, deleteAllServers, deleteServersByIds, getServer, listServers, renameServers, setAllServersEnabled, setServersEnabledByIds, updateServer } from "@/lib/db";
 import { encryptConfig, decryptConfig } from "@/lib/crypto";
 import { isAuthorized, limitRequest } from "@/lib/auth";
 import { applyStoredCredentials } from "@/lib/credentials";
 import { detectProfileMetadata } from "@/lib/profile-import";
 import { serverInputSchema } from "@/lib/validation";
 import { normalizeLocationCode } from "@/lib/countries";
+import { createAutoNamer, planLocationRename } from "@/lib/server-naming";
 
 export const dynamic = "force-dynamic";
 
@@ -84,36 +85,41 @@ export async function POST(request: NextRequest) {
       if (incoming.length === 0) {
         return NextResponse.json({ error: "Empty server list" }, { status: 400 });
       }
+      const batchAutoName = (payload as { autoName?: unknown }).autoName === true;
       const validServers = [];
       for (const item of incoming) {
         const parsedItem = serverInputSchema.safeParse(item);
         if (!parsedItem.success) {
           return NextResponse.json({ error: "Invalid payload in bulk list" }, { status: 400 });
         }
-        validServers.push(parsedItem.data);
+        const itemAutoName = batchAutoName || (typeof item === "object" && item !== null && (item as { autoName?: unknown }).autoName === true);
+        validServers.push({ data: parsedItem.data, autoName: itemAutoName });
       }
-      await createServers(
-        validServers.map((data) => {
-          const endpoint = normalizeEndpoint(data);
-          const rawCountry = (data.country && data.country !== "XX" && data.country !== "GLOBAL")
-            ? data.country
-            : data.name;
-          const safeCountry = normalizeLocationCode(rawCountry);
-          return {
-            id: randomUUID(),
-            name: data.name,
-            protocol: data.protocol,
-            host: endpoint.host,
-            port: endpoint.port,
-            country: safeCountry,
-            isEnabled: data.isEnabled,
-            options: data.options,
-            encryptedConfig: encryptConfig(data.rawConfig),
-          };
-        }),
-      );
+      // Auto-naming is computed here against the live server list so numbering
+      // is always based on what is actually stored, not on a stale client view.
+      const namer = validServers.some((entry) => entry.autoName) ? createAutoNamer(await listServers(false)) : null;
+      const records = validServers.map(({ data, autoName }) => {
+        const endpoint = normalizeEndpoint(data);
+        const rawCountry = (data.country && data.country !== "XX" && data.country !== "GLOBAL")
+          ? data.country
+          : data.name;
+        const safeCountry = normalizeLocationCode(rawCountry);
+        const name = (autoName && namer?.next(safeCountry)) || data.name;
+        return {
+          id: randomUUID(),
+          name,
+          protocol: data.protocol,
+          host: endpoint.host,
+          port: endpoint.port,
+          country: safeCountry,
+          isEnabled: data.isEnabled,
+          options: data.options,
+          encryptedConfig: encryptConfig(data.rawConfig),
+        };
+      });
+      await createServers(records);
       revalidateServerCatalog();
-      return NextResponse.json({ ok: true, count: validServers.length });
+      return NextResponse.json({ ok: true, count: records.length, names: records.map((record) => record.name) });
     }
 
     const parsed = serverInputSchema.safeParse(payload);
@@ -126,10 +132,12 @@ export async function POST(request: NextRequest) {
       ? parsed.data.country
       : parsed.data.name;
     const safeCountry = normalizeLocationCode(rawCountry);
+    const autoName = (payload as { autoName?: unknown }).autoName === true;
+    const name = (autoName && createAutoNamer(await listServers(false)).next(safeCountry)) || parsed.data.name;
 
     await createServer({
       id: randomUUID(),
-      name: parsed.data.name,
+      name,
       protocol: parsed.data.protocol,
       host: endpoint.host,
       port: endpoint.port,
@@ -140,7 +148,7 @@ export async function POST(request: NextRequest) {
     });
 
     revalidateServerCatalog();
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true, name });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Request failed" },
@@ -409,6 +417,30 @@ export async function PATCH(request: NextRequest) {
       const changed = await setServersEnabledByIds(validIds, action === "enable-selected");
       revalidateServerCatalog();
       return NextResponse.json({ ok: true, changed });
+    }
+
+    if (action === "auto-name") {
+      // Rename servers to their location ("🇩🇪 Germany", "🇩🇪 Germany 2", ...).
+      // `ids` limits the rename to specific servers; omit it to rename everything.
+      let targetIds: string[] | undefined;
+      if (payload.ids !== undefined) {
+        if (!Array.isArray(payload.ids) || payload.ids.length === 0) {
+          return NextResponse.json({ error: "Select at least one server" }, { status: 400 });
+        }
+        targetIds = payload.ids.filter((id): id is string => typeof id === "string" && /^[0-9a-f-]{36}$/i.test(id));
+        if (targetIds.length === 0) {
+          return NextResponse.json({ error: "No valid server IDs provided" }, { status: 400 });
+        }
+      }
+      const plan = planLocationRename(await listServers(false), targetIds);
+      await renameServers(plan.changes.map((change) => ({ id: change.id, name: change.newName })));
+      if (plan.changes.length > 0) revalidateServerCatalog();
+      return NextResponse.json({
+        ok: true,
+        renamed: plan.changes.length,
+        unchanged: plan.unchanged,
+        skipped: plan.skipped.length,
+      });
     }
 
     if (action !== "enable-all" && action !== "disable-all") {
