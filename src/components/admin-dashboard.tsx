@@ -158,6 +158,20 @@ const PROTOCOLS: Array<{
   { id: "users", label: "Active Users", badge: "Telemetry & Devices", support: "Live activity" },
 ];
 
+const NAV_META: Record<TabId, { short: string; tone: string; group: "protocols" | "manage" }> = {
+  v2ray: { short: "V2", tone: "from-violet-500/30 to-violet-500/10 text-violet-200 ring-violet-400/30", group: "protocols" },
+  ssh: { short: "SSH", tone: "from-amber-500/30 to-amber-500/10 text-amber-200 ring-amber-400/30", group: "protocols" },
+  warp: { short: "WP", tone: "from-orange-500/30 to-orange-500/10 text-orange-200 ring-orange-400/30", group: "protocols" },
+  http: { short: "HT", tone: "from-sky-500/30 to-sky-500/10 text-sky-200 ring-sky-400/30", group: "protocols" },
+  wireguard: { short: "WG", tone: "from-rose-500/30 to-rose-500/10 text-rose-200 ring-rose-400/30", group: "protocols" },
+  openvpn: { short: "OV", tone: "from-emerald-500/30 to-emerald-500/10 text-emerald-200 ring-emerald-400/30", group: "protocols" },
+  l2tp: { short: "L2", tone: "from-cyan-500/30 to-cyan-500/10 text-cyan-200 ring-cyan-400/30", group: "protocols" },
+  custom: { short: "{ }", tone: "from-zinc-500/30 to-zinc-500/10 text-zinc-200 ring-zinc-400/30", group: "protocols" },
+  bulk: { short: "⇪", tone: "from-indigo-500/30 to-indigo-500/10 text-indigo-200 ring-indigo-400/30", group: "manage" },
+  routing: { short: "⇄", tone: "from-teal-500/30 to-teal-500/10 text-teal-200 ring-teal-400/30", group: "manage" },
+  users: { short: "◉", tone: "from-fuchsia-500/30 to-fuchsia-500/10 text-fuchsia-200 ring-fuchsia-400/30", group: "manage" },
+};
+
 const stripLeadingCountryFlag = (value: string): string =>
   value
     .replace(/^(?:[\u{1F1E6}-\u{1F1FF}]{2}|[\p{Emoji_Presentation}\p{Extended_Pictographic}])\s*/u, "")
@@ -1106,6 +1120,7 @@ export function AdminDashboard() {
   }, [customProto, openVpnMode, sshMode, tab, variant]);
 
   const [protocolFilter, setProtocolFilter] = useState<string>("all");
+  const [serverSearch, setServerSearch] = useState("");
   const [showBulkPasteAuth, setShowBulkPasteAuth] = useState(false);
   const [bulkPasteText, setBulkPasteText] = useState("");
 
@@ -1222,8 +1237,15 @@ export function AdminDashboard() {
   }, [servers]);
 
   const filteredServers = useMemo(() => {
-    if (protocolFilter === "all") return servers;
-    return servers.filter((s) => {
+    const query = serverSearch.trim().toLowerCase();
+    const searched = query
+      ? servers.filter((s) =>
+          [s.name, s.country, s.host, s.protocol, s.notice]
+            .some((value) => typeof value === "string" && value.toLowerCase().includes(query)),
+        )
+      : servers;
+    if (protocolFilter === "all") return searched;
+    return searched.filter((s) => {
       const p = s.protocol.toLowerCase();
       if (protocolFilter === "l2tp") return p.startsWith("l2tp");
       if (protocolFilter === "v2ray") {
@@ -1244,7 +1266,7 @@ export function AdminDashboard() {
       if (protocolFilter === "http") return p === "http";
       return true;
     });
-  }, [servers, protocolFilter]);
+  }, [servers, protocolFilter, serverSearch]);
 
   const PAGE_SIZE = 15;
   const totalFilteredPages = Math.max(1, Math.ceil(filteredServers.length / PAGE_SIZE));
@@ -2655,29 +2677,50 @@ export function AdminDashboard() {
     setForm((current) => ({ ...current, [key]: value }));
 
   return (
-    <div className="flex flex-col md:flex-row min-h-[calc(100vh-3.5rem)] overflow-hidden rounded-[24px] border border-white/6 bg-zinc-950/80 text-zinc-100 shadow-2xl backdrop-blur-xl">
+    <div className="flex flex-col md:flex-row min-h-[calc(100vh-6.5rem)] overflow-clip rounded-2xl border border-white/6 bg-zinc-950/80 text-zinc-100 shadow-2xl backdrop-blur-xl">
       {/* Sidebar */}
-      <aside className="flex flex-col md:w-56 flex-shrink-0 border-b md:border-b-0 md:border-r border-white/5 bg-black/20">
+      <aside className="flex flex-col md:w-64 flex-shrink-0 border-b md:border-b-0 md:border-r border-white/5 bg-black/20">
         {/* Protocol nav */}
-        <nav aria-label="Control panel sections" className="flex md:flex-col overflow-x-auto md:overflow-y-auto space-x-1 md:space-x-0 md:space-y-0.5 px-2 py-2 md:py-3 scrollbar-none">
-          {PROTOCOLS.map((item) => {
-            const isActive = tab === item.id;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                aria-current={isActive ? "page" : undefined}
-                onClick={() => { setTab(item.id); setMsg(null); }}
-                className={`group whitespace-nowrap md:w-full rounded-lg px-3 py-1.5 md:py-2 text-left transition-all ${
-                  isActive ? "bg-white/8 ring-1 ring-white/10" : "hover:bg-white/4"
-                }`}
-              >
-                <span className={`text-sm font-medium transition ${isActive ? "text-zinc-50" : "text-zinc-400 group-hover:text-zinc-200"}`}>
-                  {item.label}
-                </span>
-              </button>
-            );
-          })}
+        <nav aria-label="Control panel sections" className="flex md:flex-col overflow-x-auto md:overflow-y-auto gap-1 md:gap-0 px-2 py-2 md:py-3 scrollbar-none">
+          {(["protocols", "manage"] as const).map((group) => (
+            <div key={group} className="flex md:flex-col gap-1 md:gap-0.5 md:mb-3">
+              <p className="hidden md:block px-3 pb-1.5 pt-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-zinc-600">
+                {group === "protocols" ? "Add server" : "Manage"}
+              </p>
+              {PROTOCOLS.filter((item) => NAV_META[item.id].group === group).map((item) => {
+                const isActive = tab === item.id;
+                const meta = NAV_META[item.id];
+                const count =
+                  item.id === "users"
+                    ? userAnalytics?.totalAll
+                    : protocolFilterTabs.find((f) => f.id === item.id)?.count;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    aria-current={isActive ? "page" : undefined}
+                    onClick={() => { setTab(item.id); setMsg(null); }}
+                    className={`group relative flex items-center gap-2.5 whitespace-nowrap md:w-full rounded-xl px-2 py-1.5 text-left transition-all ${
+                      isActive ? "bg-gradient-to-r from-white/10 to-white/[0.03] ring-1 ring-white/10 shadow-lg shadow-black/20" : "hover:bg-white/5"
+                    }`}
+                  >
+                    {isActive ? <span className="absolute -left-2 top-1/2 hidden h-5 w-1 -translate-y-1/2 rounded-r-full bg-cyan-400 md:block" /> : null}
+                    <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br ring-1 text-[10px] font-bold ${meta.tone} ${isActive ? "" : "opacity-70 group-hover:opacity-100"}`}>
+                      {meta.short}
+                    </span>
+                    <span className={`flex-1 text-sm font-medium transition ${isActive ? "text-zinc-50" : "text-zinc-400 group-hover:text-zinc-200"}`}>
+                      {item.label}
+                    </span>
+                    {typeof count === "number" && count > 0 ? (
+                      <span className={`hidden md:inline rounded-md px-1.5 py-0.5 font-mono text-[10px] ${isActive ? "bg-cyan-400/15 text-cyan-300" : "bg-white/5 text-zinc-500"}`}>
+                        {count}
+                      </span>
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
         </nav>
 
         {/* Stats + actions */}
@@ -2827,25 +2870,6 @@ export function AdminDashboard() {
             </div>
           </div>
 
-          {/* Action buttons */}
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              onClick={() => void autoSort()}
-              disabled={busy}
-              className="rounded-xl border border-white/8 bg-white/3 px-3 py-2 text-xs text-zinc-400 transition hover:bg-white/6 hover:text-zinc-200 disabled:opacity-40"
-            >
-              Auto sort
-            </button>
-            <button
-              type="button"
-              onClick={() => void load()}
-              disabled={busy}
-              className="rounded-xl border border-white/8 bg-white/3 px-3 py-2 text-xs text-zinc-400 transition hover:bg-white/6 hover:text-zinc-200 disabled:opacity-40"
-            >
-              Refresh
-            </button>
-          </div>
           <button
             type="button"
             onClick={logout}
@@ -2857,17 +2881,77 @@ export function AdminDashboard() {
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 overflow-y-auto min-w-0 max-w-full">
-        <div className="border-b border-white/5 px-6 py-4">
-          <div className="flex items-center justify-between gap-4">
-            <h3 className="text-base font-semibold text-zinc-100">
-              {PROTOCOLS.find((item) => item.id === tab)?.label}
-            </h3>
-            <div className="flex items-center gap-2">
-              <span className="rounded-full border border-white/8 px-3 py-1 font-mono text-xs text-zinc-400">{protocol}</span>
-              <button type="button" onClick={logout} className="md:hidden rounded-lg border border-rose-900/40 px-3 py-2 text-xs text-rose-300">Lock session</button>
-            </div>
-          </div>
+      <main className="flex-1 min-w-0 max-w-full">
+        <div className="sticky top-14 z-20 border-b border-white/5 bg-zinc-950/90 px-4 py-4 backdrop-blur-xl sm:px-6">
+          {(() => {
+            const current = PROTOCOLS.find((item) => item.id === tab);
+            const meta = NAV_META[tab];
+            const livePct = stats.total > 0 ? Math.round((stats.enabled / stats.total) * 100) : 0;
+            return (
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div className="flex min-w-0 items-center gap-3">
+                  <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br ring-1 text-xs font-bold ${meta.tone}`}>
+                    {meta.short}
+                  </span>
+                  <div className="min-w-0">
+                    <h3 className="truncate text-lg font-semibold tracking-tight text-zinc-50">{current?.label}</h3>
+                    <p className="truncate text-xs text-zinc-500">
+                      <span className="font-mono text-zinc-400">{current?.badge}</span>
+                      <span className="mx-1.5 text-zinc-700">•</span>
+                      {current?.support}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="hidden items-center gap-2 lg:flex">
+                    <span className="flex items-center gap-1.5 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1.5 text-xs text-emerald-300">
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shadow shadow-emerald-400/60" />
+                      <span className="font-mono font-semibold">{stats.enabled}</span>/<span className="font-mono">{stats.total}</span> live
+                      <span className="text-emerald-500/70">({livePct}%)</span>
+                    </span>
+                    <span className="flex items-center gap-1.5 rounded-lg border border-cyan-500/20 bg-cyan-500/10 px-2.5 py-1.5 text-xs text-cyan-300">
+                      <span className="font-mono font-semibold">{stats.locations}</span> locations
+                    </span>
+                    {typeof userAnalytics?.active24hAll === "number" ? (
+                      <span className="flex items-center gap-1.5 rounded-lg border border-fuchsia-500/20 bg-fuchsia-500/10 px-2.5 py-1.5 text-xs text-fuchsia-300">
+                        <span className="font-mono font-semibold">{userAnalytics.active24hAll}</span> users 24h
+                      </span>
+                    ) : null}
+                  </div>
+                  <span className="mx-1 hidden h-6 w-px bg-white/10 lg:block" />
+                  <button
+                    type="button"
+                    onClick={() => void load()}
+                    disabled={busy}
+                    className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-zinc-300 transition hover:bg-white/10 hover:text-white disabled:opacity-40"
+                    title="Reload servers and stats"
+                  >
+                    <svg className={`h-3.5 w-3.5 ${busy ? "animate-spin" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992V4.356M2.985 19.644v-4.992h4.992m0 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182" /></svg>
+                    Refresh
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void autoSort()}
+                    disabled={busy}
+                    className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-zinc-300 transition hover:bg-white/10 hover:text-white disabled:opacity-40"
+                    title="Sort servers by country and protocol"
+                  >
+                    <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7.5L7.5 3m0 0L12 7.5M7.5 3v13.5m13.5 0L16.5 21m0 0L12 16.5m4.5 4.5V7.5" /></svg>
+                    Auto sort
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSyncModalOpen(true)}
+                    disabled={busy}
+                    className="hidden items-center gap-1.5 rounded-lg border border-violet-500/30 bg-violet-500/15 px-3 py-1.5 text-xs font-medium text-violet-200 transition hover:bg-violet-500/25 disabled:opacity-40 sm:flex"
+                  >
+                    Sync DBs
+                  </button>
+                  <button type="button" onClick={logout} className="md:hidden rounded-lg border border-rose-900/40 px-3 py-1.5 text-xs text-rose-300">Lock</button>
+                </div>
+              </div>
+            );
+          })()}
         </div>
 
         <div className={`grid gap-4 p-3 sm:p-5 lg:p-5 min-w-0 ${tab === "users" || tab === "routing" ? "" : "xl:grid-cols-[minmax(0,1.5fr)_360px]"}`}>
@@ -3881,19 +3965,18 @@ or
 
             <div className="min-w-0 max-w-full overflow-hidden rounded-2xl border border-zinc-900 bg-zinc-950/70 p-3.5 sm:p-5 lg:p-5">
               <div className="mb-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                <h4 className="text-sm font-semibold text-zinc-100 flex flex-wrap items-center gap-2">
-                  <span>Stored servers</span>
-                  <span className="text-xs font-mono text-zinc-500">({stats.total})</span>
-                  <span className="text-zinc-600">•</span>
-                  <span className="text-xs text-cyan-400 font-medium">
-                    {stats.locations} active locations
+                <div>
+                  <h4 className="flex items-center gap-2 text-base font-semibold tracking-tight text-zinc-50">
+                    Stored servers
+                    <span className="rounded-md bg-white/6 px-1.5 py-0.5 font-mono text-xs text-zinc-400">{stats.total}</span>
+                  </h4>
+                  <p className="mt-0.5 text-xs text-zinc-500">
+                    <span className="text-cyan-400">{stats.locations} active locations</span>
                     {protocolFilter !== "all" && filteredLocationsCount !== stats.locations ? ` (${filteredLocationsCount} in filter)` : ""}
-                  </span>
-                  <span className="text-zinc-600">•</span>
-                  <span className="text-xs text-emerald-400 font-medium">
-                    {userAnalytics?.platforms?.android?.total ?? "—"} Android users ({userAnalytics?.platforms?.android?.active24h ?? "—"} active today)
-                  </span>
-                </h4>
+                    <span className="mx-1.5 text-zinc-700">•</span>
+                    <span className="text-emerald-400">{userAnalytics?.platforms?.android?.total ?? "—"} Android users</span> ({userAnalytics?.platforms?.android?.active24h ?? "—"} today)
+                  </p>
+                </div>
                 <div className="flex flex-wrap items-center gap-2">
                   {hasPendingReorder && (
                     <button
@@ -3909,7 +3992,7 @@ or
                     type="button"
                     onClick={() => void bulkServerAction("enable-all")}
                     disabled={busy || stats.total === 0}
-                    className="rounded-xl border border-emerald-700/50 px-3 py-2 text-xs font-semibold text-emerald-300 transition hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+                    className="rounded-lg border border-emerald-700/50 px-3 py-1.5 text-xs font-semibold text-emerald-300 transition hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     Enable all
                   </button>
@@ -3917,7 +4000,7 @@ or
                     type="button"
                     onClick={() => void bulkServerAction("disable-all")}
                     disabled={busy || stats.total === 0}
-                    className="rounded-xl border border-zinc-800 px-3 py-2 text-xs font-semibold text-zinc-400 transition hover:bg-zinc-900 hover:text-zinc-200 disabled:cursor-not-allowed disabled:opacity-40"
+                    className="rounded-lg border border-zinc-800 px-3 py-1.5 text-xs font-semibold text-zinc-400 transition hover:bg-zinc-900 hover:text-zinc-200 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     Disable all
                   </button>
@@ -3925,15 +4008,32 @@ or
                     type="button"
                     onClick={() => void bulkServerAction("delete-all")}
                     disabled={busy || stats.total === 0}
-                    className="rounded-xl border border-rose-700/50 px-3 py-2 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+                    className="rounded-lg border border-rose-700/50 px-3 py-1.5 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     Delete all
                   </button>
                 </div>
               </div>
 
+              {/* Search */}
+              <div className="relative mb-3">
+                <svg className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
+                <input
+                  type="search"
+                  value={serverSearch}
+                  onChange={(e) => { setServerSearch(e.target.value); setServersPage(0); }}
+                  placeholder="Search servers by name, country, host or protocol..."
+                  className="w-full rounded-xl border border-white/8 bg-black/30 py-2.5 pl-10 pr-24 text-sm text-zinc-100 placeholder:text-zinc-600 outline-none transition focus:border-cyan-500/50 focus:ring-2 focus:ring-cyan-500/15"
+                />
+                {serverSearch ? (
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-zinc-500">
+                    {filteredServers.length} match{filteredServers.length === 1 ? "" : "es"}
+                  </span>
+                ) : null}
+              </div>
+
               {/* Protocol Filter Tabs */}
-              <div className="flex flex-wrap items-center gap-1.5 rounded-2xl border border-white/6 bg-white/2 p-1.5">
+              <div className="mb-4 flex flex-wrap items-center gap-1.5 rounded-xl border border-white/6 bg-white/2 p-1">
                 {protocolFilterTabs.map((f) => {
                   const isActive = protocolFilter === f.id;
                   return (
@@ -4254,16 +4354,24 @@ or
                     return "bg-zinc-800 text-zinc-400";
                   })();
                   return (
-                  <div key={server.id} className="group min-w-0 max-w-full overflow-hidden rounded-xl border border-white/5 bg-white/3 px-3 py-2 transition hover:border-white/8 hover:bg-white/4">
+                  <div key={server.id} className={`group relative min-w-0 max-w-full overflow-hidden rounded-xl border py-2.5 pl-4 pr-3 transition ${
+                    selectedServerIds.has(server.id)
+                      ? "border-cyan-500/40 bg-cyan-500/[0.06]"
+                      : "border-white/5 bg-white/[0.025] hover:border-white/10 hover:bg-white/[0.045]"
+                  } ${server.isEnabled ? "" : "opacity-60 hover:opacity-100"}`}>
+                    <span className={`absolute inset-y-0 left-0 w-1 ${server.isEnabled ? "bg-gradient-to-b from-emerald-400 to-emerald-600" : "bg-zinc-700"}`} />
                     <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between min-w-0">
-                      <div className="flex min-w-0 items-start gap-2.5">
+                      <div className="flex min-w-0 items-center gap-3">
                         <input
                           type="checkbox"
                           checked={selectedServerIds.has(server.id)}
                           onChange={(e) => toggleServerSelection(server.id, e.target.checked)}
-                          className="mt-0.5 rounded border-zinc-700 bg-zinc-900 accent-cyan-400 cursor-pointer"
+                          className="rounded border-zinc-700 bg-zinc-900 accent-cyan-400 cursor-pointer"
                           aria-label={`Select ${server.name}`}
                         />
+                        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-white/8 bg-black/30 text-xl leading-none">
+                          {getCountryMeta(normalizeLocationCode(server.country || server.name)).flag}
+                        </span>
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-center gap-2">
                             <p className="truncate text-sm font-semibold text-zinc-100">{server.name}</p>
@@ -4289,7 +4397,6 @@ or
                             const meta = getCountryMeta(locCode);
                             return (
                               <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-zinc-400">
-                                <span>{meta.flag}</span>
                                 {meta.code !== "GLOBAL" ? (
                                   <span className="font-medium text-zinc-300">
                                     {meta.name} <span className="font-mono text-zinc-500">({meta.code})</span> ·
@@ -4301,7 +4408,7 @@ or
                           })()}
                         </div>
                       </div>
-                      <div className="flex flex-wrap items-center gap-1 sm:gap-1.5 justify-start md:justify-end shrink-0 min-w-0">
+                      <div className="flex flex-wrap items-center gap-1 sm:gap-1.5 justify-start md:justify-end shrink-0 min-w-0 md:opacity-60 md:transition md:group-hover:opacity-100">
                         <button
                           type="button"
                           onClick={() => void moveServer(server.id, 'up')}
@@ -4365,7 +4472,9 @@ or
                   <div className="rounded-xl border border-dashed border-white/8 px-4 py-10 text-center text-sm text-zinc-600">
                     {servers.length === 0
                       ? "No servers yet. Use one of the builders above to create the first profile."
-                      : `No servers found matching the "${protocolFilter.toUpperCase()}" filter.`}
+                      : serverSearch.trim()
+                        ? `No servers match "${serverSearch.trim()}".`
+                        : `No servers found matching the "${protocolFilter.toUpperCase()}" filter.`}
                   </div>
                 ) : null}
               </div>
@@ -4397,7 +4506,7 @@ or
           </section>
 
           {tab !== "users" && tab !== "routing" && (
-          <aside className="space-y-4 min-w-0">
+          <aside className="space-y-4 min-w-0 xl:sticky xl:top-36 xl:self-start">
             <div className="rounded-2xl border border-white/6 bg-white/3 p-4">
               <div className="flex items-center justify-between">
                 <p className="text-xs font-medium text-zinc-400">Config preview</p>
