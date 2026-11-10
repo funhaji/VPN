@@ -185,7 +185,7 @@ function detectLang(): Lang {
 
 async function getJSON<T>(url: string): Promise<T | null> {
   try {
-    const r = await fetch(url, { cache: "no-store" });
+    const r = await fetch(url);
     return r.ok ? ((await r.json()) as T) : null;
   } catch {
     return null;

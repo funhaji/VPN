@@ -2,7 +2,7 @@
 
 import { useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import type { ServerRecord } from "@/types/server";
+import type { AdminServerRecord as ServerRecord } from "@/types/server";
 import { detectProfileMetadata, splitImportedProfiles, parseWireGuardConf, type ParsedWireGuardProfile } from "@/lib/profile-import";
 import { protocolSupportsCredentials, unwrapOpenVpnProfileContent, readStoredCredentials } from "@/lib/credentials";
 import { RoutingRulesPanel } from "@/components/routing-rules-panel";
@@ -585,7 +585,7 @@ function AutoNameModal(props: {
         aria-modal="true"
         aria-labelledby="auto-name-title"
         onClick={(event) => event.stopPropagation()}
-        className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-[28px] border border-zinc-800 bg-zinc-950 shadow-2xl"
+        className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-2xl border border-zinc-800 bg-zinc-950 shadow-2xl"
       >
         <div className="border-b border-zinc-900 px-6 py-5">
           <h3 id="auto-name-title" className="text-lg font-semibold text-zinc-100">Auto-name servers</h3>
@@ -922,6 +922,15 @@ export function AdminDashboard() {
 
   const load = useCallback(async () => {
     setBusy(true);
+    // Secondary data loads in parallel and never blocks the server list.
+    void api<any>("/api/admin/users?summary=1")
+      .then((uData) => setUserAnalytics(uData))
+      .catch(() => {});
+    void api<any>("/api/admin/db-sync")
+      .then((dbData) => {
+        if (dbData?.status) setDbStatus(dbData.status);
+      })
+      .catch(() => {});
     try {
       const data = await api<{ servers: ServerRecord[] }>("/api/admin/servers");
       setServers(data.servers);
@@ -944,16 +953,6 @@ export function AdminDashboard() {
         totalLocations,
       });
 
-      try {
-        const uData = await api<any>("/api/admin/users");
-        setUserAnalytics(uData);
-      } catch {}
-      try {
-        const dbData = await api<any>("/api/admin/db-sync");
-        if (dbData?.status) setDbStatus(dbData.status);
-      } catch {
-        // user analytics load is non-blocking
-      }
     } catch (error) {
       setMsg({ ok: false, text: error instanceof Error ? error.message : "Load failed" });
     } finally {
@@ -1247,7 +1246,7 @@ export function AdminDashboard() {
     });
   }, [servers, protocolFilter]);
 
-  const PAGE_SIZE = 8;
+  const PAGE_SIZE = 15;
   const totalFilteredPages = Math.max(1, Math.ceil(filteredServers.length / PAGE_SIZE));
   const displayedServers = useMemo(
     () => filteredServers.slice(serversPage * PAGE_SIZE, (serversPage + 1) * PAGE_SIZE),
@@ -2871,14 +2870,14 @@ export function AdminDashboard() {
           </div>
         </div>
 
-        <div className={`grid gap-6 p-3 sm:p-6 lg:p-8 min-w-0 ${tab === "users" || tab === "routing" ? "" : "xl:grid-cols-[minmax(0,1.5fr)_360px]"}`}>
-          <section className="space-y-6 min-w-0 max-w-full">
+        <div className={`grid gap-4 p-3 sm:p-5 lg:p-5 min-w-0 ${tab === "users" || tab === "routing" ? "" : "xl:grid-cols-[minmax(0,1.5fr)_360px]"}`}>
+          <section className="space-y-4 min-w-0 max-w-full">
             {tab === "routing" ? (
               <RoutingRulesPanel api={api} busy={busy} setBusy={setBusy} setMsg={setMsg} />
             ) : tab === "users" ? (
-              <ActiveUsersPanel api={api} busy={busy} setBusy={setBusy} setMsg={setMsg} />
+              <ActiveUsersPanel api={api} setMsg={setMsg} />
             ) : tab !== "bulk" ? (
-              <div className="rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-6">
+              <div className="rounded-2xl border border-zinc-900 bg-zinc-950/70 p-4">
                 <div className="grid gap-4 md:grid-cols-2">
                   <ServerNameField label="Server name" value={form.name} onChange={(value) => set("name", value)} placeholder="Germany Premium #1" autoName={autoName} onAutoNameChange={setAutoName} autoNameAvailable={!editingServerId} previewNames={autoNamePreview.names} previewHint={autoNamePreview.hint} previewNote={autoNamePreview.note} />
                   <CountrySelector country={form.country} name={form.name} set={set} />
@@ -2898,7 +2897,7 @@ export function AdminDashboard() {
                 ) : null}
 
                 {tab === "v2ray" ? (
-                  <div className="mt-6 space-y-4">
+                  <div className="mt-4 space-y-4">
                     <div className="flex flex-wrap gap-2">
                       {["vless", "vmess", "trojan", "shadowsocks", "hysteria2", "socks"].map((item) => (
                         <ToggleChip key={item} label={item} checked={variant === item} onChange={() => setVariant(item)} />
@@ -2924,7 +2923,7 @@ export function AdminDashboard() {
                 ) : null}
 
                 {tab === "ssh" ? (
-                  <div className="mt-6 space-y-4">
+                  <div className="mt-4 space-y-4">
                     <div className="flex flex-wrap gap-2">
                       <ToggleChip label="Direct SSH" checked={sshMode === "direct"} onChange={() => selectSshMode("direct")} />
                       <ToggleChip label="SSH over DNSTT" checked={sshMode === "dnstt"} onChange={() => selectSshMode("dnstt")} />
@@ -3038,7 +3037,7 @@ export function AdminDashboard() {
                 ) : null}
 
                 {tab === "wireguard" ? (
-                  <div className="mt-6 space-y-5">
+                  <div className="mt-4 space-y-3.5">
                     <div className="flex flex-wrap items-center gap-2">
                       <ToggleChip label="Manual form" checked={wgInputMode === "form"} onChange={() => setWgInputMode("form")} />
                       <ToggleChip label="Upload .conf files" checked={wgInputMode === "file"} onChange={() => setWgInputMode("file")} />
@@ -3057,7 +3056,7 @@ export function AdminDashboard() {
                             void handleWgFiles(files);
                           }}
                           onClick={() => wgFileInputRef.current?.click()}
-                          className={`cursor-pointer select-none rounded-2xl border-2 border-dashed px-6 py-12 text-center transition ${
+                          className={`cursor-pointer select-none rounded-2xl border-2 border-dashed px-5 py-8 text-center transition ${
                             wgDragging
                               ? "border-cyan-400/80 bg-cyan-400/10"
                               : "border-zinc-700 hover:border-zinc-600 hover:bg-zinc-900/40"
@@ -3285,7 +3284,7 @@ export function AdminDashboard() {
                 ) : null}
 
                 {tab === "openvpn" ? (
-                  <div className="mt-6 space-y-5">
+                  <div className="mt-4 space-y-3.5">
                     {/* Mode + transport toggles */}
                     <div className="flex flex-wrap items-center gap-2">
                       <ToggleChip label="Upload .ovpn files" checked={openVpnInputMode === "file"} onChange={() => { setOpenVpnInputMode("file"); }} />
@@ -3308,7 +3307,7 @@ export function AdminDashboard() {
                             void handleOvpnFiles(files);
                           }}
                           onClick={() => ovpnFileInputRef.current?.click()}
-                          className={`cursor-pointer select-none rounded-2xl border-2 border-dashed px-6 py-12 text-center transition ${
+                          className={`cursor-pointer select-none rounded-2xl border-2 border-dashed px-5 py-8 text-center transition ${
                             ovpnDragging
                               ? "border-cyan-400/80 bg-cyan-400/10"
                               : "border-zinc-700 hover:border-zinc-600 hover:bg-zinc-900/40"
@@ -3483,7 +3482,7 @@ export function AdminDashboard() {
                 ) : null}
 
                 {tab === "http" ? (
-                  <div className="mt-6 space-y-4">
+                  <div className="mt-4 space-y-4">
                     <div className="grid gap-4 md:grid-cols-2">
                       <Field label="Proxy host / IP" value={form.host} onChange={(value) => set("host", value)} placeholder="192.168.1.1" />
                       <Field label="Proxy port" value={form.port} onChange={(value) => set("port", value)} placeholder="8080" />
@@ -3494,7 +3493,7 @@ export function AdminDashboard() {
                 ) : null}
 
                 {tab === "l2tp" ? (
-                  <div className="mt-6 space-y-4">
+                  <div className="mt-4 space-y-4">
                     {/* Server connection and primary credentials */}
                     <div className="rounded-2xl border border-white/6 bg-white/2 p-4">
                       <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
@@ -3656,7 +3655,7 @@ export function AdminDashboard() {
                 ) : null}
 
                 {tab === "warp" ? (
-                  <div className="mt-6 space-y-4">
+                  <div className="mt-4 space-y-4">
                     <div className="rounded-2xl border border-white/6 bg-white/2 p-4">
                       <div className="flex items-center justify-between">
                         <p className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
@@ -3747,7 +3746,7 @@ export function AdminDashboard() {
                 ) : null}
 
                 {tab === "custom" ? (
-                  <div className="mt-6 space-y-4">
+                  <div className="mt-4 space-y-4">
                     <Field label="Custom protocol id" value={customProto} onChange={setCustomProto} placeholder="custom:tcp or sing-box:manual" mono />
                     <div className="grid gap-4 md:grid-cols-2">
                       <Field label="Optional host" value={form.host} onChange={(value) => set("host", value)} placeholder="Used for list display and ping" />
@@ -3768,7 +3767,7 @@ export function AdminDashboard() {
                   </div>
                 ) : null}
 
-                <div className="mt-6 rounded-3xl border border-zinc-900 bg-zinc-950/80 p-5">
+                <div className="mt-4 rounded-2xl border border-zinc-900 bg-zinc-950/80 p-4">
                   <div className="flex items-center justify-between gap-4">
                     <div>
                       <p className="text-sm font-semibold text-zinc-100">Routing switches</p>
@@ -3795,12 +3794,12 @@ export function AdminDashboard() {
                   </div>
                 </div>
 
-                <div className="mt-6 flex flex-wrap gap-3">
+                <div className="mt-4 flex flex-wrap gap-3">
                   <button
                     type="button"
                     onClick={() => void submit()}
                     disabled={busy || !canSubmit}
-                    className="rounded-2xl bg-cyan-400 px-6 py-3 text-sm font-semibold text-cyan-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-40"
+                    className="rounded-xl bg-cyan-400 px-5 py-2 text-sm font-semibold text-cyan-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     {busy ? "Saving..." : editingServerId ? "Update profile" : "Save profile"}
                   </button>
@@ -3811,7 +3810,7 @@ export function AdminDashboard() {
                         reset(false);
                         setMsg(null);
                       }}
-                      className="rounded-2xl border border-zinc-800 bg-zinc-950 px-6 py-3 text-sm text-zinc-400 transition hover:border-zinc-700 hover:text-zinc-100"
+                      className="rounded-xl border border-zinc-800 bg-zinc-950 px-5 py-2 text-sm text-zinc-400 transition hover:border-zinc-700 hover:text-zinc-100"
                     >
                       Cancel edit
                     </button>
@@ -3820,7 +3819,7 @@ export function AdminDashboard() {
                     <button
                       type="button"
                       onClick={() => reset(false)}
-                      className="rounded-2xl border border-zinc-800 bg-zinc-950 px-6 py-3 text-sm text-zinc-400 transition hover:border-zinc-700 hover:text-zinc-100"
+                      className="rounded-xl border border-zinc-800 bg-zinc-950 px-5 py-2 text-sm text-zinc-400 transition hover:border-zinc-700 hover:text-zinc-100"
                     >
                       Reset form
                     </button>
@@ -3828,7 +3827,7 @@ export function AdminDashboard() {
                 </div>
               </div>
             ) : (
-              <div className="rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-6">
+              <div className="rounded-2xl border border-zinc-900 bg-zinc-950/70 p-4">
                 <TextArea
                   label="Bulk import"
                   value={bulk}
@@ -3857,7 +3856,7 @@ or
                     type="button"
                     onClick={() => void submitBulk()}
                     disabled={busy || !bulk.trim()}
-                    className="rounded-2xl bg-cyan-400 px-6 py-3 text-sm font-semibold text-cyan-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-40"
+                    className="rounded-xl bg-cyan-400 px-5 py-2 text-sm font-semibold text-cyan-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     {busy ? "Importing..." : "Import profiles"}
                   </button>
@@ -3880,7 +3879,7 @@ or
               </div>
             ) : null}
 
-            <div className="min-w-0 max-w-full overflow-hidden rounded-2xl sm:rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-3.5 sm:p-5 lg:p-6">
+            <div className="min-w-0 max-w-full overflow-hidden rounded-2xl border border-zinc-900 bg-zinc-950/70 p-3.5 sm:p-5 lg:p-5">
               <div className="mb-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <h4 className="text-sm font-semibold text-zinc-100 flex flex-wrap items-center gap-2">
                   <span>Stored servers</span>
@@ -4238,7 +4237,7 @@ or
                 </div>
               ) : null}
 
-              <div className="grid gap-2">
+              <div className="grid gap-1.5">
                 {displayedServers.map((server) => {
                   const supportsCredentials = protocolSupportsCredentials(server.protocol);
                   const serverIndexInAll = servers.findIndex((s) => s.id === server.id);
@@ -4255,9 +4254,9 @@ or
                     return "bg-zinc-800 text-zinc-400";
                   })();
                   return (
-                  <div key={server.id} className="group min-w-0 max-w-full overflow-hidden rounded-xl border border-white/5 bg-white/3 px-3 sm:px-4 py-3 transition hover:border-white/8 hover:bg-white/4">
-                    <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between min-w-0">
-                      <div className="flex min-w-0 items-start gap-3">
+                  <div key={server.id} className="group min-w-0 max-w-full overflow-hidden rounded-xl border border-white/5 bg-white/3 px-3 py-2 transition hover:border-white/8 hover:bg-white/4">
+                    <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between min-w-0">
+                      <div className="flex min-w-0 items-start gap-2.5">
                         <input
                           type="checkbox"
                           checked={selectedServerIds.has(server.id)}
@@ -4302,12 +4301,12 @@ or
                           })()}
                         </div>
                       </div>
-                      <div className="flex flex-wrap items-center gap-1 sm:gap-1.5 justify-start lg:justify-end min-w-0">
+                      <div className="flex flex-wrap items-center gap-1 sm:gap-1.5 justify-start md:justify-end shrink-0 min-w-0">
                         <button
                           type="button"
                           onClick={() => void moveServer(server.id, 'up')}
                           disabled={isFirst || busy}
-                          className="rounded-lg border border-white/8 px-2 py-1 text-xs text-zinc-500 transition hover:bg-white/6 hover:text-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed"
+                          className="rounded-lg border border-white/8 px-1.5 py-0.5 text-xs text-zinc-500 transition hover:bg-white/6 hover:text-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed"
                           title="Move up"
                         >
                           ↑
@@ -4316,7 +4315,7 @@ or
                           type="button"
                           onClick={() => void moveServer(server.id, 'down')}
                           disabled={isLast || busy}
-                          className="rounded-lg border border-white/8 px-2 py-1 text-xs text-zinc-500 transition hover:bg-white/6 hover:text-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed"
+                          className="rounded-lg border border-white/8 px-1.5 py-0.5 text-xs text-zinc-500 transition hover:bg-white/6 hover:text-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed"
                           title="Move down"
                         >
                           ↓
@@ -4325,7 +4324,7 @@ or
                           type="button"
                           onClick={() => void editServer(server.id)}
                           disabled={pendingServerId === server.id}
-                          className="rounded-lg border border-white/8 px-2.5 py-1 text-xs text-zinc-400 transition hover:bg-white/6 hover:text-zinc-100"
+                          className="rounded-lg border border-white/8 px-2 py-0.5 text-xs text-zinc-400 transition hover:bg-white/6 hover:text-zinc-100"
                         >
                           Edit
                         </button>
@@ -4333,7 +4332,7 @@ or
                           type="button"
                           onClick={() => void duplicateServer(server.id)}
                           disabled={pendingServerId === server.id}
-                          className="rounded-lg border border-white/8 px-2.5 py-1 text-xs text-zinc-400 transition hover:bg-white/6 hover:text-zinc-100"
+                          className="rounded-lg border border-white/8 px-2 py-0.5 text-xs text-zinc-400 transition hover:bg-white/6 hover:text-zinc-100"
                           title="Duplicate server"
                         >
                           {pendingServerId === server.id ? "..." : "Duplicate"}
@@ -4342,7 +4341,7 @@ or
                           type="button"
                           onClick={() => void toggle(server.id, !server.isEnabled)}
                           disabled={pendingServerId === server.id}
-                          className={`rounded-lg border px-2.5 py-1 text-xs font-medium transition ${
+                          className={`rounded-lg border px-2 py-0.5 text-xs font-medium transition ${
                             server.isEnabled
                               ? "border-emerald-700/40 text-emerald-400 hover:bg-emerald-500/10"
                               : "border-white/8 text-zinc-400 hover:bg-white/6 hover:text-zinc-100"
@@ -4354,7 +4353,7 @@ or
                           type="button"
                           onClick={() => void remove(server.id)}
                           disabled={pendingServerId === server.id}
-                          className="rounded-lg border border-rose-700/30 px-2.5 py-1 text-xs text-rose-400/80 transition hover:bg-rose-500/10 hover:text-rose-300"
+                          className="rounded-lg border border-rose-700/30 px-2 py-0.5 text-xs text-rose-400/80 transition hover:bg-rose-500/10 hover:text-rose-300"
                         >
                           {pendingServerId === server.id ? "..." : "Delete"}
                         </button>
@@ -4372,10 +4371,10 @@ or
               </div>
 
               {filteredServers.length > PAGE_SIZE ? (
-                <div className="mt-4 flex items-center justify-between gap-3">
+                <div className="mt-3 flex items-center justify-between gap-3">
                   <button
                     type="button"
-                    className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-2 text-xs text-zinc-400 transition hover:border-zinc-700 hover:text-zinc-100 disabled:opacity-40 disabled:cursor-not-allowed"
+                    className="rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-1.5 text-xs text-zinc-400 transition hover:border-zinc-700 hover:text-zinc-100 disabled:opacity-40 disabled:cursor-not-allowed"
                     onClick={() => setServersPage((p) => Math.max(0, p - 1))}
                     disabled={serversPage === 0}
                   >

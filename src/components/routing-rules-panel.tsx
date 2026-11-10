@@ -146,8 +146,8 @@ export function RoutingRulesPanel({
   };
 
   return (
-    <div className="space-y-8">
-      <div className="rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-6">
+    <div className="space-y-4">
+      <div className="rounded-2xl border border-zinc-900 bg-zinc-950/70 p-4">
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div>
             <h3 className="text-lg font-semibold text-zinc-50">IP Rules</h3>
@@ -181,7 +181,7 @@ export function RoutingRulesPanel({
         </div>
       </div>
 
-      <div className="rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-6">
+      <div className="rounded-2xl border border-zinc-900 bg-zinc-950/70 p-4">
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div>
             <h3 className="text-lg font-semibold text-zinc-50">Domain Rules</h3>
@@ -215,7 +215,7 @@ export function RoutingRulesPanel({
         </div>
       </div>
 
-      <div className="rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-6">
+      <div className="rounded-2xl border border-zinc-900 bg-zinc-950/70 p-4">
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div>
             <h3 className="text-lg font-semibold text-zinc-50">Process Rules</h3>
@@ -249,7 +249,7 @@ export function RoutingRulesPanel({
         </div>
       </div>
 
-      <div className="rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-6">
+      <div className="rounded-2xl border border-zinc-900 bg-zinc-950/70 p-4">
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div>
             <h3 className="text-lg font-semibold text-zinc-50">Active Rules</h3>

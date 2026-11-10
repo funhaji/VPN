@@ -30,3 +30,6 @@ export type ServerRecord = {
   updatedAt: string;
   accountCount?: number;
 };
+
+/** Server as returned by the admin list endpoint (configs are fetched per server on demand). */
+export type AdminServerRecord = Omit<ServerRecord, "encryptedConfig">;

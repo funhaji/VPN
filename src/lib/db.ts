@@ -1185,31 +1185,91 @@ export type ClientAnalyticsReport = {
   totalAll: number;
   active24hAll: number;
   recentDevices: DeviceSummary[];
+  /** Number of devices matching the device filters (may exceed recentDevices.length). */
+  deviceMatches: number;
   updatedAt: string;
 };
 
-export const getClientAnalytics = async (): Promise<ClientAnalyticsReport> => {
-  const platformRows = (await queryRead`
-    SELECT
-      platform,
-      COUNT(*)::int as total,
-      COUNT(*) FILTER (WHERE last_seen >= NOW() - INTERVAL '24 hours')::int as active_24h,
-      COUNT(*) FILTER (WHERE last_seen >= NOW() - INTERVAL '7 days')::int as active_7d,
-      COUNT(*) FILTER (WHERE last_seen >= NOW() - INTERVAL '30 days')::int as active_30d
-    FROM client_devices
-    GROUP BY platform;
-  `) as Array<{ platform: string; total: number; active_24h: number; active_7d: number; active_30d: number }>;
+export type ClientAnalyticsOptions = {
+  /** Skip the device list entirely (dashboard summary cards only need counts). */
+  summaryOnly?: boolean;
+  /** Max devices returned, newest activity first. */
+  limit?: number;
+  platform?: string | null;
+  search?: string | null;
+};
 
-  const versionRows = (await queryRead`
-    SELECT
-      platform,
-      app_version,
-      COUNT(*)::int as count
-    FROM client_devices
-    WHERE last_seen >= NOW() - INTERVAL '30 days'
-    GROUP BY platform, app_version
-    ORDER BY count DESC;
-  `) as Array<{ platform: string; app_version: string; count: number }>;
+const emptyPlatform = (platform: string): PlatformAnalytics => ({
+  platform,
+  total: 0,
+  active24h: 0,
+  active7d: 0,
+  active30d: 0,
+  versions: {},
+});
+
+export const getClientAnalytics = async (options: ClientAnalyticsOptions = {}): Promise<ClientAnalyticsReport> => {
+  const limit = Math.min(Math.max(Math.trunc(options.limit ?? 200), 1), 1000);
+  const platform = options.platform?.trim().toLowerCase() || null;
+  const search = options.search?.trim().slice(0, 100) || null;
+  const pattern = search ? `%${search.replace(/[\\%_]/g, (c) => `\\${c}`)}%` : null;
+
+  type DeviceRow = {
+    device_id: string;
+    platform: string;
+    app_version: string;
+    os_version: string;
+    model: string;
+    first_seen: Date | string;
+    last_seen: Date | string;
+  };
+
+  // Independent queries run concurrently instead of back to back.
+  const [platformRows, versionRows, deviceRows, matchRows] = await Promise.all([
+    queryRead`
+      SELECT
+        platform,
+        COUNT(*)::int as total,
+        COUNT(*) FILTER (WHERE last_seen >= NOW() - INTERVAL '24 hours')::int as active_24h,
+        COUNT(*) FILTER (WHERE last_seen >= NOW() - INTERVAL '7 days')::int as active_7d,
+        COUNT(*) FILTER (WHERE last_seen >= NOW() - INTERVAL '30 days')::int as active_30d
+      FROM client_devices
+      GROUP BY platform;
+    ` as Promise<Array<{ platform: string; total: number; active_24h: number; active_7d: number; active_30d: number }>>,
+    queryRead`
+      SELECT platform, app_version, COUNT(*)::int as count
+      FROM client_devices
+      WHERE last_seen >= NOW() - INTERVAL '30 days'
+      GROUP BY platform, app_version
+      ORDER BY count DESC;
+    ` as Promise<Array<{ platform: string; app_version: string; count: number }>>,
+    options.summaryOnly
+      ? Promise.resolve([] as DeviceRow[])
+      : (queryRead`
+          SELECT device_id, platform, app_version, os_version, model, first_seen, last_seen
+          FROM client_devices
+          WHERE (${platform}::text IS NULL OR LOWER(platform) = ${platform}::text)
+            AND (${pattern}::text IS NULL
+              OR device_id ILIKE ${pattern}::text
+              OR model ILIKE ${pattern}::text
+              OR os_version ILIKE ${pattern}::text
+              OR app_version ILIKE ${pattern}::text)
+          ORDER BY last_seen DESC
+          LIMIT ${limit};
+        ` as Promise<DeviceRow[]>),
+    options.summaryOnly || (!platform && !pattern)
+      ? Promise.resolve(null)
+      : (queryRead`
+          SELECT COUNT(*)::int as count
+          FROM client_devices
+          WHERE (${platform}::text IS NULL OR LOWER(platform) = ${platform}::text)
+            AND (${pattern}::text IS NULL
+              OR device_id ILIKE ${pattern}::text
+              OR model ILIKE ${pattern}::text
+              OR os_version ILIKE ${pattern}::text
+              OR app_version ILIKE ${pattern}::text);
+        ` as Promise<Array<{ count: number }>>),
+  ]);
 
   const platforms: Record<string, PlatformAnalytics> = {};
   let totalAll = 0;
@@ -1227,17 +1287,8 @@ export const getClientAnalytics = async (): Promise<ClientAnalyticsReport> => {
       versions: {},
     };
   }
-
-  if (!platforms["android"]) {
-    platforms["android"] = {
-      platform: "android",
-      total: 0,
-      active24h: 0,
-      active7d: 0,
-      active30d: 0,
-      versions: {},
-    };
-  }
+  platforms["android"] ??= emptyPlatform("android");
+  platforms["windows"] ??= emptyPlatform("windows");
 
   for (const v of versionRows) {
     if (platforms[v.platform]) {
@@ -1245,39 +1296,7 @@ export const getClientAnalytics = async (): Promise<ClientAnalyticsReport> => {
     }
   }
 
-  if (!platforms["windows"]) {
-    platforms["windows"] = {
-      platform: "windows",
-      total: 0,
-      active24h: 0,
-      active7d: 0,
-      active30d: 0,
-      versions: {},
-    };
-  }
-
-  const recentDeviceRows = (await queryRead`
-    SELECT
-      device_id,
-      platform,
-      app_version,
-      os_version,
-      model,
-      first_seen,
-      last_seen
-    FROM client_devices
-    ORDER BY last_seen DESC;
-  `) as Array<{
-    device_id: string;
-    platform: string;
-    app_version: string;
-    os_version: string;
-    model: string;
-    first_seen: Date | string;
-    last_seen: Date | string;
-  }>;
-
-  const recentDevices: DeviceSummary[] = recentDeviceRows.map((r) => ({
+  const recentDevices: DeviceSummary[] = deviceRows.map((r) => ({
     deviceId: r.device_id,
     platform: r.platform,
     appVersion: r.app_version,
@@ -1292,6 +1311,7 @@ export const getClientAnalytics = async (): Promise<ClientAnalyticsReport> => {
     totalAll,
     active24hAll,
     recentDevices,
+    deviceMatches: matchRows ? (matchRows[0]?.count ?? 0) : totalAll,
     updatedAt: new Date().toISOString(),
   };
 };

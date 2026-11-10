@@ -55,9 +55,13 @@ export async function GET(request: NextRequest) {
           }
         } catch {}
       }
-      return { ...server, accountCount };
+      // Never ship ciphertext to the browser: it bloats the payload and the
+      // UI fetches a single server's config on demand when editing.
+      const { encryptedConfig: _omit, ...summary } = server;
+      void _omit;
+      return { ...summary, accountCount };
     });
-    return NextResponse.json({ servers: enriched });
+    return NextResponse.json({ servers: enriched }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     console.error("Failed to list servers:", error);
     return NextResponse.json(
