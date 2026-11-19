@@ -1,10 +1,19 @@
 import { catalogMetadata, encryptResponse, isBuildBlocked, isClientBlocked, signDocument, validatePolicy, validateSnapshot, verifyInstallationRequest } from "./protocol.mjs";
 
-const headers = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Content-Type": "application/json" };
+const headers = {
+  "Cache-Control": "private, no-store",
+  "X-Content-Type-Options": "nosniff",
+  "Content-Type": "application/json",
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, x-astro-key, x-astro-time, x-astro-nonce, x-astro-signature, x-astro-version, x-astro-build",
+  "Access-Control-Max-Age": "86400",
+};
 const reply = (body, status = 200, extra = {}) => new Response(JSON.stringify(body), { status, headers: { ...headers, ...extra } });
 
 /** Storage/rate adapters differ; auth, policy and response rules never do. */
 export async function gateway(request, adapter) {
+  if (request.method === "OPTIONS") return new Response(null, { status: 204, headers });
   const path = new URL(request.url).pathname;
   if (!["/v2/policy", "/v2/catalog", "/v2/configs"].includes(path)) return reply({ error: "Not found" }, 404);
   if (request.method !== "POST") return reply({ error: "Use POST" }, 405);

@@ -28,6 +28,17 @@ async function ensurePublication() {
   await publishingPromise;
 }
 
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, x-astro-key, x-astro-time, x-astro-nonce, x-astro-signature, x-astro-version, x-astro-build",
+  "Access-Control-Max-Age": "86400",
+};
+
+export async function OPTIONS() {
+  return new Response(null, { status: 204, headers: CORS_HEADERS });
+}
+
 export async function GET(
   _request: Request,
   context: { params: Promise<{ operation: string }> },
@@ -43,7 +54,11 @@ export async function GET(
     },
     {
       status: 200,
-      headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+        ...CORS_HEADERS,
+      },
     },
   );
 }
@@ -51,5 +66,16 @@ export async function GET(
 // Identical canonical /v2 paths and protocol on both hosts.
 export async function POST(request: Request) {
   await ensurePublication();
-  return handleRequest(request, process.env);
+  const res = await handleRequest(request, process.env);
+  const newHeaders = new Headers(res.headers);
+  for (const [k, v] of Object.entries(CORS_HEADERS)) {
+    if (!newHeaders.has(k)) {
+      newHeaders.set(k, v);
+    }
+  }
+  return new Response(res.body, {
+    status: res.status,
+    statusText: res.statusText,
+    headers: newHeaders,
+  });
 }
