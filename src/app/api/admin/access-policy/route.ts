@@ -26,5 +26,17 @@ export async function PUT(request: NextRequest) {
     delete parsed.data.removalGeneration;
   }
   await saveAccessPolicy(parsed.data);
+
+  // Automatically republish V2 with the updated policy so changes take effect immediately
+  try {
+    const { publicationStatus, publishCatalog } = await import("../../../../../server-worker/src/storage.mjs");
+    const { compilePublicationCatalog } = await import("@/lib/server-catalog");
+    const status = await publicationStatus(process.env);
+    const catalog = await compilePublicationCatalog(parsed.data.allServersRemoved === true);
+    await publishCatalog(catalog, parsed.data, status.generation, process.env);
+  } catch (err) {
+    console.warn("[AccessPolicy] Auto-republish failed:", err);
+  }
+
   return NextResponse.json({ ok: true });
 }

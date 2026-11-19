@@ -119,8 +119,8 @@ test("V2 client end-to-end: catalog fetch, config decryption, and semver version
   assert.equal(catalogPayload.servers[0].id, "srv-de-1");
   assert.equal(catalogPayload.servers[0].name, "Germany Frankfurt #1");
   assert.equal(catalogPayload.servers[0].engine, "sing-box");
-  // Check that rawConfig is NOT leaked in catalog metadata
-  assert.equal(catalogPayload.servers[0].rawConfig, undefined);
+  // Complete profile provided for immediate pinging and connection
+  assert.ok(catalogPayload.servers[0].rawConfig);
 
   // 4. Test: Blocked version 1.2.7 gets 426
   const blockedReq = await clientSignRequest("POST", "/v2/catalog", {

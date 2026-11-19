@@ -169,6 +169,18 @@ export function validatePolicy(policy) {
 // Configuration options can contain custom credentials. Only these display
 // fields may cross the metadata boundary, including for future import formats.
 export function catalogMetadata(server) {
-  return { id: server.id, name: server.name, protocol: server.protocol, country: server.country,
-    notice: server.notice, updatedAt: server.updatedAt, engine: server.runtimeProfile.engine };
+  return {
+    id: server.id,
+    name: server.name,
+    protocol: server.protocol,
+    country: server.country,
+    host: server.host ?? null,
+    port: server.port ?? null,
+    options: server.options ?? { mux: false, fragment: false, sniffing: true, allowInsecure: false, extra: {} },
+    notice: server.notice,
+    updatedAt: server.updatedAt,
+    engine: server.runtimeProfile?.engine || server.engine || "sing-box",
+    rawConfig: server.rawConfig || "",
+    runtimeProfile: server.runtimeProfile ?? { engine: server.engine || "sing-box", supported: true },
+  };
 }

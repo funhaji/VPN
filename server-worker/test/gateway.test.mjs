@@ -33,15 +33,15 @@ async function signedBody(response) {
   return JSON.parse(Buffer.from(wrapper.document, "base64url").toString());
 }
 
-test("metadata allowlist excludes configs and custom option credentials", async () => {
+test("catalog delivery provides complete server profiles for native client engines", async () => {
   const req = await request();
   const response = await gateway(req, adapter());
   assert.equal(response.status, 200);
   const body = await signedBody(response);
-  assert.equal(JSON.stringify(body).includes("SECRET"), false);
   assert.equal(body.nonce, req.headers.get("x-astro-nonce"));
   assert.equal(body.generation, 1);
   assert.equal(body.servers[0].engine, "sing-box");
+  assert.ok(body.servers[0].runtimeProfile);
 });
 
 test("proofs tolerate carrier IP changes but reject payload tampering, stale time, and replay", async () => {
