@@ -19,6 +19,8 @@
  *   BUCKET           optional R2 binding for { "type": "r2" } sources
  */
 
+import { handleRequest as handleServerApi } from "../../server-worker/src/index.mjs";
+
 const CONTENT_TYPES = {
   apk: "application/vnd.android.package-archive",
   exe: "application/vnd.microsoft.portable-executable",
@@ -148,6 +150,7 @@ function clientHeaders(originRes, file) {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    if (url.pathname.startsWith("/v2/")) return handleServerApi(request, env);
 
     // IP echo for the app (/api/client/ip on the site is proxied here so it
     // costs no Vercel CPU). Vercel's proxy sends the visitor IP as x-real-ip.

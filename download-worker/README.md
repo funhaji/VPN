@@ -1,5 +1,10 @@
 # Astro VPN download worker
 
+The existing public origin is `https://astro-download.astrovpnofficial.workers.dev`
+(verified from the website download redirect). `/v2/*` routes use the shared
+server API gateway in `../server-worker/src/`; configure its `V2_*` secrets on
+this Worker before deploying the combined source. See `../server-worker/README.md`.
+
 Serves the app binaries **without exposing GitHub** and **without using Vercel bandwidth**.
 
 ```

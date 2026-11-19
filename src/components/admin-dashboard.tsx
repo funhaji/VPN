@@ -2,14 +2,17 @@
 
 import { useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import type { ServerRecord } from "@/types/server";
+import type { AdminServerRecord as ServerRecord } from "@/types/server";
 import { detectProfileMetadata, splitImportedProfiles, parseWireGuardConf, type ParsedWireGuardProfile } from "@/lib/profile-import";
 import { protocolSupportsCredentials, unwrapOpenVpnProfileContent, readStoredCredentials } from "@/lib/credentials";
 import { RoutingRulesPanel } from "@/components/routing-rules-panel";
 import { ActiveUsersPanel } from "@/components/active-users-panel";
 import { DbSyncModal } from "@/components/db-sync-modal";
 import { BulkReplaceModal } from "@/components/bulk-replace-modal";
+import { AccessPolicyPanel } from "@/components/access-policy-panel";
+import { DuplicateReport } from "@/components/duplicate-report";
 import { COUNTRIES, flagFromCountryCode, getCountryMeta, normalizeLocationCode } from "@/lib/countries";
+import { createAutoNamer, planLocationRename, type RenamePlan } from "@/lib/server-naming";
 
 type TabId = "v2ray" | "ssh" | "openvpn" | "wireguard" | "warp" | "custom" | "bulk" | "routing" | "http" | "l2tp" | "users";
 type SshMode = "direct" | "dnstt";
@@ -156,6 +159,20 @@ const PROTOCOLS: Array<{
   { id: "routing", label: "Routing Rules", badge: "Iran Direct", support: "Geo IP bypass" },
   { id: "users", label: "Active Users", badge: "Telemetry & Devices", support: "Live activity" },
 ];
+
+const NAV_META: Record<TabId, { short: string; tone: string; group: "protocols" | "manage" }> = {
+  v2ray: { short: "V2", tone: "from-violet-500/30 to-violet-500/10 text-violet-200 ring-violet-400/30", group: "protocols" },
+  ssh: { short: "SSH", tone: "from-amber-500/30 to-amber-500/10 text-amber-200 ring-amber-400/30", group: "protocols" },
+  warp: { short: "WP", tone: "from-orange-500/30 to-orange-500/10 text-orange-200 ring-orange-400/30", group: "protocols" },
+  http: { short: "HT", tone: "from-sky-500/30 to-sky-500/10 text-sky-200 ring-sky-400/30", group: "protocols" },
+  wireguard: { short: "WG", tone: "from-rose-500/30 to-rose-500/10 text-rose-200 ring-rose-400/30", group: "protocols" },
+  openvpn: { short: "OV", tone: "from-emerald-500/30 to-emerald-500/10 text-emerald-200 ring-emerald-400/30", group: "protocols" },
+  l2tp: { short: "L2", tone: "from-cyan-500/30 to-cyan-500/10 text-cyan-200 ring-cyan-400/30", group: "protocols" },
+  custom: { short: "{ }", tone: "from-zinc-500/30 to-zinc-500/10 text-zinc-200 ring-zinc-400/30", group: "protocols" },
+  bulk: { short: "⇪", tone: "from-indigo-500/30 to-indigo-500/10 text-indigo-200 ring-indigo-400/30", group: "manage" },
+  routing: { short: "⇄", tone: "from-teal-500/30 to-teal-500/10 text-teal-200 ring-teal-400/30", group: "manage" },
+  users: { short: "◉", tone: "from-fuchsia-500/30 to-fuchsia-500/10 text-fuchsia-200 ring-fuchsia-400/30", group: "manage" },
+};
 
 const stripLeadingCountryFlag = (value: string): string =>
   value
@@ -376,6 +393,22 @@ const buildL2tpProfile = (form: FormState): string => {
   );
 };
 
+/** " — 🇩🇪 Germany 3 … Germany 5" style suffix for success messages. */
+const describeCreatedNames = (names: string[] | undefined) => {
+  if (!names || names.length === 0) return "";
+  if (names.length === 1) return ` as ${names[0]}`;
+  return ` — ${names[0]} … ${stripLeadingCountryFlag(names[names.length - 1]).trim()}`;
+};
+
+/** First value that resolves to a known location code, or "GLOBAL". */
+const firstKnownLocation = (...values: (string | null | undefined)[]) => {
+  for (const value of values) {
+    const code = normalizeLocationCode(value);
+    if (code !== "GLOBAL") return code;
+  }
+  return "GLOBAL";
+};
+
 const buildImportedPayload = (
   rawConfig: string,
   fallbackProtocol: string,
@@ -461,6 +494,172 @@ function Field(props: {
         className={`w-full rounded-2xl border border-zinc-800 bg-zinc-950/80 px-3 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none transition focus:border-cyan-500 ${mono ? "font-mono" : ""}`}
       />
     </label>
+  );
+}
+
+function ServerNameField(props: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  autoName: boolean;
+  onAutoNameChange: (value: boolean) => void;
+  /** False while editing an existing server — auto naming only applies to new servers. */
+  autoNameAvailable: boolean;
+  /** Names that will be generated, in order. Empty when the location is unknown. */
+  previewNames: string[];
+  /** Shown instead of the preview when no names could be generated. */
+  previewHint: string;
+  /** Extra info under the preview, e.g. items whose location couldn't be detected. */
+  previewNote?: string;
+}) {
+  const { label, value, onChange, placeholder, autoName, onAutoNameChange, autoNameAvailable, previewNames, previewHint, previewNote } = props;
+  const active = autoName && autoNameAvailable;
+  const shown = previewNames.length > 3
+    ? `${previewNames[0]} … ${stripLeadingCountryFlag(previewNames[previewNames.length - 1])}`
+    : previewNames.join(", ");
+
+  return (
+    <div className="block">
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <span className="text-xs text-zinc-500">{label}</span>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={active}
+          disabled={!autoNameAvailable}
+          onClick={() => onAutoNameChange(!autoName)}
+          title={
+            autoNameAvailable
+              ? "Name new servers after their location, numbered after the existing servers in that country"
+              : "Auto naming applies to new servers only. Use “Auto-name” in the server list to rename existing ones."
+          }
+          className="flex items-center gap-1.5 text-[11px] font-medium text-zinc-400 transition hover:text-zinc-200 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <span
+            className={`relative inline-flex h-3.5 w-6 items-center rounded-full transition ${active ? "bg-cyan-500" : "bg-zinc-700"}`}
+          >
+            <span
+              className={`absolute h-2.5 w-2.5 rounded-full bg-white transition-all ${active ? "left-3" : "left-0.5"}`}
+            />
+          </span>
+          Auto-name
+        </button>
+      </div>
+      {active ? (
+        <div
+          className="flex min-h-[46px] w-full items-center gap-2 rounded-2xl border border-cyan-500/30 bg-cyan-500/5 px-3 py-2 text-sm"
+          title={previewNames.join("\n")}
+        >
+          {previewNames.length > 0 ? (
+            <>
+              <span className="truncate text-zinc-100">{shown}</span>
+              {previewNames.length > 1 ? (
+                <span className="ml-auto flex-shrink-0 rounded-full border border-cyan-500/30 px-2 py-0.5 text-[10px] font-semibold text-cyan-300">
+                  {previewNames.length} servers
+                </span>
+              ) : null}
+            </>
+          ) : (
+            <span className="text-xs text-zinc-500">{previewHint}</span>
+          )}
+        </div>
+      ) : (
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          className="w-full rounded-2xl border border-zinc-800 bg-zinc-950/80 px-3 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none transition focus:border-cyan-500"
+        />
+      )}
+      {active && previewNote ? <p className="mt-1 text-[11px] text-amber-400/80">{previewNote}</p> : null}
+    </div>
+  );
+}
+
+function AutoNameModal(props: {
+  plan: RenamePlan;
+  scope: string;
+  busy: boolean;
+  onClose: () => void;
+  onConfirm: () => void | Promise<void>;
+}) {
+  const { plan, scope, busy, onClose, onConfirm } = props;
+  const { changes, unchanged, skipped } = plan;
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" onClick={onClose}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="auto-name-title"
+        onClick={(event) => event.stopPropagation()}
+        className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-2xl border border-zinc-800 bg-zinc-950 shadow-2xl"
+      >
+        <div className="border-b border-zinc-900 px-6 py-5">
+          <h3 id="auto-name-title" className="text-lg font-semibold text-zinc-100">Auto-name servers</h3>
+          <p className="mt-1 text-xs leading-5 text-zinc-500">
+            Renames {scope} to their location. Countries with several servers get a number at the end.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
+            <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-0.5 font-semibold text-amber-300">{changes.length} to rename</span>
+            {unchanged > 0 ? <span className="rounded-full border border-zinc-800 px-2.5 py-0.5 text-zinc-400">{unchanged} already named</span> : null}
+            {skipped.length > 0 ? (
+              <span className="rounded-full border border-rose-500/30 bg-rose-500/10 px-2.5 py-0.5 text-rose-300" title={skipped.map((item) => item.name).join("\n")}>
+                {skipped.length} skipped — unknown location
+              </span>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+          {changes.length === 0 ? (
+            <p className="py-8 text-center text-sm text-zinc-500">Nothing to rename — these servers already follow the location naming.</p>
+          ) : (
+            <ul className="space-y-1.5">
+              {changes.map((item) => (
+                <li key={item.id} className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 rounded-xl border border-zinc-900 bg-zinc-900/40 px-3 py-2 text-sm">
+                  <span className="truncate text-zinc-500 line-through decoration-zinc-700" title={item.oldName}>{item.oldName}</span>
+                  <span className="text-zinc-600">→</span>
+                  <span className="truncate font-medium text-zinc-100" title={item.newName}>{item.newName}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {skipped.length > 0 ? (
+            <p className="mt-4 text-[11px] leading-5 text-zinc-500">
+              Skipped servers have no country set and none could be detected from their name. Set a country on them to include them.
+            </p>
+          ) : null}
+        </div>
+
+        <div className="flex justify-end gap-3 border-t border-zinc-900 px-6 py-4">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            className="rounded-2xl border border-zinc-800 px-5 py-2.5 text-sm text-zinc-300 transition hover:bg-zinc-900 disabled:opacity-40"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => void onConfirm()}
+            disabled={busy || changes.length === 0}
+            className="rounded-2xl bg-amber-400 px-5 py-2.5 text-sm font-semibold text-amber-950 transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {busy ? "Renaming..." : `Rename ${changes.length} server${changes.length === 1 ? "" : "s"}`}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -661,6 +860,11 @@ export function AdminDashboard() {
   const [editingServerId, setEditingServerId] = useState<string | null>(null);
   const [serversPage, setServersPage] = useState(0);
   const [selectedServerIds, setSelectedServerIds] = useState<Set<string>>(new Set());
+  const [adminCategories, setAdminCategories] = useState<Record<string, string>>({});
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [categoryDraft, setCategoryDraft] = useState("");
+  const [selectedOnly, setSelectedOnly] = useState(false);
+  const lastSelectionRef = useRef<string | null>(null);
   const [bulkCredUsername, setBulkCredUsername] = useState("");
   const [bulkCredPassword, setBulkCredPassword] = useState("");
   const [bulkCredPsk, setBulkCredPsk] = useState("");
@@ -684,6 +888,9 @@ export function AdminDashboard() {
   const [syncingDb, setSyncingDb] = useState(false);
   const [syncModalOpen, setSyncModalOpen] = useState(false);
   const [bulkReplaceOpen, setBulkReplaceOpen] = useState(false);
+  const [autoName, setAutoNameState] = useState(false);
+  const [renamePlan, setRenamePlan] = useState<{ ids: string[] | null; plan: RenamePlan } | null>(null);
+  const [renameBusy, setRenameBusy] = useState(false);
   const [dnsttDefaults, setDnsttDefaults] = useState<{ dns: string; querySize: string; mtu: string }>({
     dns: "8.8.8.8:53",
     querySize: "1232",
@@ -710,6 +917,18 @@ export function AdminDashboard() {
     localStorage.setItem("astro_admin_dnstt_defaults_v1", JSON.stringify(dnsttDefaults));
   }, [dnsttDefaults]);
 
+  useEffect(() => {
+    if (localStorage.getItem("astro_admin_auto_name_v1") === "1") setAutoNameState(true);
+  }, []);
+
+  const setAutoName = useCallback((value: boolean) => {
+    setAutoNameState(value);
+    localStorage.setItem("astro_admin_auto_name_v1", value ? "1" : "0");
+  }, []);
+
+  // Auto naming only applies to new servers, never while editing one.
+  const autoNameActive = autoName && !editingServerId;
+
   const api = useCallback(async <T,>(path: string, init?: RequestInit): Promise<T> => {
     const res = await fetch(path, {
       ...init,
@@ -724,9 +943,21 @@ export function AdminDashboard() {
 
   const load = useCallback(async () => {
     setBusy(true);
+    // Secondary data loads in parallel and never blocks the server list.
+    void api<{ categories: Record<string, string> }>("/api/admin/categories")
+      .then(data => setAdminCategories(data.categories)).catch(() => {});
+    void api<any>("/api/admin/users?summary=1")
+      .then((uData) => setUserAnalytics(uData))
+      .catch(() => {});
+    void api<any>("/api/admin/db-sync")
+      .then((dbData) => {
+        if (dbData?.status) setDbStatus(dbData.status);
+      })
+      .catch(() => {});
     try {
       const data = await api<{ servers: ServerRecord[] }>("/api/admin/servers");
       setServers(data.servers);
+      setSelectedServerIds(current => new Set([...current].filter(id => data.servers.some(server => server.id === id))));
       setServersPage((p) => Math.min(p, Math.max(0, Math.ceil(data.servers.length / PAGE_SIZE) - 1)));
       const enabledServers = data.servers.filter((server) => server.isEnabled);
       const enabledLocations = new Set(
@@ -746,16 +977,6 @@ export function AdminDashboard() {
         totalLocations,
       });
 
-      try {
-        const uData = await api<any>("/api/admin/users");
-        setUserAnalytics(uData);
-      } catch {}
-      try {
-        const dbData = await api<any>("/api/admin/db-sync");
-        if (dbData?.status) setDbStatus(dbData.status);
-      } catch {
-        // user analytics load is non-blocking
-      }
     } catch (error) {
       setMsg({ ok: false, text: error instanceof Error ? error.message : "Load failed" });
     } finally {
@@ -909,6 +1130,7 @@ export function AdminDashboard() {
   }, [customProto, openVpnMode, sshMode, tab, variant]);
 
   const [protocolFilter, setProtocolFilter] = useState<string>("all");
+  const [serverSearch, setServerSearch] = useState("");
   const [showBulkPasteAuth, setShowBulkPasteAuth] = useState(false);
   const [bulkPasteText, setBulkPasteText] = useState("");
 
@@ -1025,8 +1247,18 @@ export function AdminDashboard() {
   }, [servers]);
 
   const filteredServers = useMemo(() => {
-    if (protocolFilter === "all") return servers;
-    return servers.filter((s) => {
+    const query = serverSearch.trim().toLowerCase();
+    const scoped = servers.filter(server =>
+      (!selectedOnly || selectedServerIds.has(server.id)) &&
+      (categoryFilter === "all" || (adminCategories[server.id] || "") === categoryFilter));
+    const searched = query
+      ? scoped.filter((s) =>
+          [s.name, s.country, s.host, s.protocol, s.notice]
+            .some((value) => typeof value === "string" && value.toLowerCase().includes(query)),
+        )
+      : scoped;
+    if (protocolFilter === "all") return searched;
+    return searched.filter((s) => {
       const p = s.protocol.toLowerCase();
       if (protocolFilter === "l2tp") return p.startsWith("l2tp");
       if (protocolFilter === "v2ray") {
@@ -1047,9 +1279,9 @@ export function AdminDashboard() {
       if (protocolFilter === "http") return p === "http";
       return true;
     });
-  }, [servers, protocolFilter]);
+  }, [servers, protocolFilter, serverSearch, adminCategories, categoryFilter, selectedOnly, selectedServerIds]);
 
-  const PAGE_SIZE = 8;
+  const PAGE_SIZE = 15;
   const totalFilteredPages = Math.max(1, Math.ceil(filteredServers.length / PAGE_SIZE));
   const displayedServers = useMemo(
     () => filteredServers.slice(serversPage * PAGE_SIZE, (serversPage + 1) * PAGE_SIZE),
@@ -1084,14 +1316,18 @@ export function AdminDashboard() {
     [filteredServers, selectedServerIds],
   );
 
-  const toggleServerSelection = useCallback((id: string, checked: boolean) => {
+  const toggleServerSelection = useCallback((id: string, checked: boolean, range = false) => {
     setSelectedServerIds((current) => {
       const next = new Set(current);
-      if (checked) next.add(id);
-      else next.delete(id);
+      const start = filteredServers.findIndex(server => server.id === lastSelectionRef.current);
+      const end = filteredServers.findIndex(server => server.id === id);
+      const ids = range && start >= 0 && end >= 0
+        ? filteredServers.slice(Math.min(start, end), Math.max(start, end) + 1).map(server => server.id) : [id];
+      for (const selected of ids) { if (checked) next.add(selected); else next.delete(selected); }
       return next;
     });
-  }, []);
+    lastSelectionRef.current = id;
+  }, [filteredServers]);
 
   const selectedServersList = useMemo(
     () => servers.filter((server) => selectedServerIds.has(server.id)),
@@ -1388,13 +1624,65 @@ export function AdminDashboard() {
     return "This profile is stored cleanly in admin, but the current desktop runtime path is not enabled yet.";
   }, [sshMode, tab]);
 
+  /**
+   * Preview of the names auto naming will produce, one entry per server that
+   * will be created. Countries are resolved the same way `submit` does; the
+   * API recomputes the numbers against the live list, so this is a preview only.
+   */
+  const autoNamePreview = useMemo(() => {
+    const empty = { items: [] as { country: string; name: string | null }[], names: [] as string[], hint: "", note: undefined as string | undefined };
+    if (!autoNameActive || tab === "bulk") return empty;
+
+    const formCode = form.country.trim() && form.country !== "XX" ? normalizeLocationCode(form.country) : "GLOBAL";
+    const fixed = formCode !== "GLOBAL" ? formCode : null;
+
+    let countries: string[] = [];
+    let hint = "Pick a country to generate the name";
+    if (tab === "wireguard" && wgInputMode === "file") {
+      countries = wgFiles.filter((file) => file.selected).map((file) => fixed ?? firstKnownLocation(file.name));
+      hint = "Add .conf files to preview the names";
+    } else if (tab === "openvpn" && openVpnInputMode === "file") {
+      countries = ovpnFiles.filter((file) => file.selected).map((file) => fixed ?? firstKnownLocation(file.name));
+      hint = "Add .ovpn files to preview the names";
+    } else if (tab === "v2ray" || tab === "custom") {
+      if (parsedImportProfiles.length > 1) {
+        countries = parsedImportProfiles.map((entry, index) => buildImportedPayload(entry, protocol, form, index).country);
+      } else if (effectiveRawConfig.trim()) {
+        const detected = detectProfileMetadata(effectiveRawConfig.trim(), protocol);
+        countries = [fixed ?? firstKnownLocation(detected.name, detected.country)];
+        hint = "Location not detected — pick a country to auto-name";
+      } else {
+        if (fixed) countries = [fixed];
+        hint = "Paste a config or pick a country — the location is detected automatically";
+      }
+    } else if (fixed) {
+      countries = [fixed];
+    }
+
+    const namer = createAutoNamer(servers);
+    const items = countries.map((country) => ({ country, name: namer.next(country) }));
+    const names = items.flatMap((item) => (item.name ? [item.name] : []));
+    const unresolved = items.length - names.length;
+    const note = unresolved > 0 && names.length > 0
+      ? `${unresolved} item${unresolved !== 1 ? "s have" : " has"} no detectable location and will keep ${unresolved !== 1 ? "their" : "its"} original name — pick a country to name them all`
+      : unresolved > 1
+        ? "No location detected — pick a country to auto-name these servers"
+        : undefined;
+    return { items, names, hint, note };
+  }, [autoNameActive, effectiveRawConfig, form, openVpnInputMode, ovpnFiles, parsedImportProfiles, protocol, servers, tab, wgFiles, wgInputMode]);
+
   const canSubmit = useMemo(() => {
     if (tab === "bulk") return bulk.trim().length > 0;
     if (tab === "v2ray" || tab === "custom") return effectiveRawConfig.trim().length > 0;
     if (tab === "openvpn" && openVpnInputMode === "file") {
       return ovpnFiles.some((file) => file.selected);
     }
-    if (!form.name.trim() || !form.country.trim()) return false;
+    if (autoNameActive) {
+      // The name is generated from the location, so a known country is required.
+      if (!autoNamePreview.names[0]) return false;
+    } else if (!form.name.trim() || !form.country.trim()) {
+      return false;
+    }
     if (tab === "ssh" && sshMode === "direct") {
       return Boolean(form.host.trim() && form.port.trim() && form.sshUser.trim() && (form.sshPassword.trim() || form.sshPrivateKey.trim()));
     }
@@ -1412,7 +1700,7 @@ export function AdminDashboard() {
     }
     if (tab === "openvpn") {
       const detectedRemote = parseOvpnRemote(form.rawConfig);
-      return Boolean(form.name.trim() && form.rawConfig.trim() && (form.host.trim() || detectedRemote));
+      return Boolean((autoNameActive || form.name.trim()) && form.rawConfig.trim() && (form.host.trim() || detectedRemote));
     }
     if (tab === "http") {
       return Boolean(form.host.trim() && form.port.trim());
@@ -1421,7 +1709,7 @@ export function AdminDashboard() {
       return Boolean(form.host.trim() && form.l2tpUsername.trim() && form.l2tpPassword.trim() && form.l2tpPsk.trim());
     }
     return effectiveRawConfig.trim().length > 0;
-  }, [bulk, effectiveRawConfig, form, openVpnInputMode, ovpnFiles, sshMode, tab, wgFiles, wgInputMode]);
+  }, [autoNameActive, autoNamePreview, bulk, effectiveRawConfig, form, openVpnInputMode, ovpnFiles, sshMode, tab, wgFiles, wgInputMode]);
 
   const submit = useCallback(async () => {
     setBusy(true);
@@ -1441,7 +1729,7 @@ export function AdminDashboard() {
             throw new Error(`Could not parse WireGuard configuration in ${file.name}`);
           }
           const rawConfig = JSON.stringify(parsed, null, 2);
-          let chosenName = (selectedFiles.length === 1 && form.name.trim())
+          let chosenName = (selectedFiles.length === 1 && form.name.trim() && !autoNameActive)
             ? form.name.trim()
             : (file.name.trim() || `WireGuard ${parsed.endpoint.host}`);
 
@@ -1470,11 +1758,11 @@ export function AdminDashboard() {
             port: parsed.endpoint.port,
           };
         });
-        await api("/api/admin/servers", {
+        const result = await api<{ names?: string[] }>("/api/admin/servers", {
           method: "POST",
-          body: JSON.stringify({ servers: payloads }),
+          body: JSON.stringify({ servers: payloads, ...(autoNameActive ? { autoName: true } : {}) }),
         });
-        setMsg({ ok: true, text: `Imported ${payloads.length} WireGuard profile${payloads.length !== 1 ? "s" : ""}` });
+        setMsg({ ok: true, text: `Imported ${payloads.length} WireGuard profile${payloads.length !== 1 ? "s" : ""}${autoNameActive ? describeCreatedNames(result.names) : ""}` });
         setWgFiles([]);
         await load();
         return;
@@ -1504,7 +1792,7 @@ export function AdminDashboard() {
             credentials: { username, password },
             profile: file.content,
           });
-          let chosenName = (selectedFiles.length === 1 && form.name.trim())
+          let chosenName = (selectedFiles.length === 1 && form.name.trim() && !autoNameActive)
             ? form.name.trim()
             : (file.name.trim() || `OpenVPN ${detected?.host ?? "Config"}`);
 
@@ -1533,11 +1821,11 @@ export function AdminDashboard() {
             port: detected?.port ?? 1194,
           };
         });
-        await api("/api/admin/servers", {
+        const result = await api<{ names?: string[] }>("/api/admin/servers", {
           method: "POST",
-          body: JSON.stringify({ servers: payloads }),
+          body: JSON.stringify({ servers: payloads, ...(autoNameActive ? { autoName: true } : {}) }),
         });
-        setMsg({ ok: true, text: `Imported ${payloads.length} OpenVPN profile${payloads.length !== 1 ? "s" : ""}` });
+        setMsg({ ok: true, text: `Imported ${payloads.length} OpenVPN profile${payloads.length !== 1 ? "s" : ""}${autoNameActive ? describeCreatedNames(result.names) : ""}` });
         setOvpnFiles([]);
         await load();
         return;
@@ -1551,11 +1839,11 @@ export function AdminDashboard() {
         const payloads = importableProfiles.map((entry, index) =>
           buildImportedPayload(entry, protocol, form, index),
         );
-        await api("/api/admin/servers", {
+        const result = await api<{ names?: string[] }>("/api/admin/servers", {
           method: "POST",
-          body: JSON.stringify({ servers: payloads }),
+          body: JSON.stringify({ servers: payloads, ...(autoNameActive ? { autoName: true } : {}) }),
         });
-        setMsg({ ok: true, text: `Imported ${payloads.length} profiles` });
+        setMsg({ ok: true, text: `Imported ${payloads.length} profiles${autoNameActive ? describeCreatedNames(result.names) : ""}` });
         reset(false);
         await load();
         return;
@@ -1563,10 +1851,13 @@ export function AdminDashboard() {
 
       const detected = detectProfileMetadata(effectiveRawConfig.trim(), protocol);
       const selectedCountry = COUNTRIES.find((c) => c.code === form.country);
-      let finalName = form.name.trim() || detected.name;
+      // When auto naming, the preview already resolved the location; the API
+      // assigns the final number against the live list.
+      const autoItem = autoNameActive ? autoNamePreview.items[0] : undefined;
+      let finalName = autoItem?.name || (autoNameActive ? "" : form.name.trim()) || detected.name || form.name.trim();
 
       const rawDetectedCountry = normalizeLocationCode(form.country);
-      const countryCode = (selectedCountry?.code && selectedCountry.code !== "XX" && selectedCountry.code !== "GLOBAL")
+      const countryCode = autoItem?.name ? autoItem.country : (selectedCountry?.code && selectedCountry.code !== "XX" && selectedCountry.code !== "GLOBAL")
         ? selectedCountry.code
         : (rawDetectedCountry && rawDetectedCountry !== "XX" && rawDetectedCountry !== "GLOBAL")
           ? rawDetectedCountry
@@ -1606,14 +1897,15 @@ export function AdminDashboard() {
 
       if (payloadHost || detected.host) payload.host = payloadHost || detected.host;
       if (payloadPort || detected.port) payload.port = payloadPort ?? detected.port;
+      if (autoItem?.name) payload.autoName = true;
 
       if (editingServerId) {
         await api(`/api/admin/servers/${editingServerId}`, { method: "PATCH", body: JSON.stringify(payload) });
         setMsg({ ok: true, text: `Server updated successfully` });
         reset(false);
       } else {
-        await api("/api/admin/servers", { method: "POST", body: JSON.stringify(payload) });
-        setMsg({ ok: true, text: `${String(payload.name)} saved successfully` });
+        const result = await api<{ name?: string }>("/api/admin/servers", { method: "POST", body: JSON.stringify(payload) });
+        setMsg({ ok: true, text: `${result.name ?? String(payload.name)} saved successfully` });
         reset(true);
       }
       await load();
@@ -1622,7 +1914,7 @@ export function AdminDashboard() {
     } finally {
       setBusy(false);
     }
-  }, [api, editingServerId, effectiveRawConfig, form, load, openVpnInputMode, openVpnMode, ovpnBulkPassword, ovpnBulkUsername, ovpnFiles, payloadHost, payloadPort, protocol, tab, reset]);
+  }, [api, autoNameActive, autoNamePreview, editingServerId, effectiveRawConfig, form, load, openVpnInputMode, openVpnMode, ovpnBulkPassword, ovpnBulkUsername, ovpnFiles, payloadHost, payloadPort, protocol, tab, reset]);
 
   const submitBulk = useCallback(async () => {
     setBusy(true);
@@ -1699,8 +1991,11 @@ export function AdminDashboard() {
         );
       }
 
-      await api("/api/admin/servers", { method: "POST", body: JSON.stringify({ servers: mapped }) });
-      setMsg({ ok: true, text: `Imported ${mapped.length} servers` });
+      const result = await api<{ names?: string[] }>("/api/admin/servers", {
+        method: "POST",
+        body: JSON.stringify({ servers: mapped, ...(autoName ? { autoName: true } : {}) }),
+      });
+      setMsg({ ok: true, text: `Imported ${mapped.length} servers${autoName ? describeCreatedNames(result.names) : ""}` });
       setBulk("");
       await load();
     } catch (error) {
@@ -1708,7 +2003,7 @@ export function AdminDashboard() {
     } finally {
       setBusy(false);
     }
-  }, [api, bulk, form, load]);
+  }, [api, autoName, bulk, form, load]);
 
   const toggle = useCallback(async (id: string, isEnabled: boolean) => {
     setPendingServerId(id);
@@ -2399,29 +2694,50 @@ export function AdminDashboard() {
     setForm((current) => ({ ...current, [key]: value }));
 
   return (
-    <div className="flex flex-col md:flex-row min-h-[calc(100vh-3.5rem)] overflow-hidden rounded-[24px] border border-white/6 bg-zinc-950/80 text-zinc-100 shadow-2xl backdrop-blur-xl">
+    <div className="flex flex-col md:flex-row min-h-[calc(100vh-6.5rem)] overflow-clip rounded-2xl border border-white/6 bg-zinc-950/80 text-zinc-100 shadow-2xl backdrop-blur-xl">
       {/* Sidebar */}
-      <aside className="flex flex-col md:w-56 flex-shrink-0 border-b md:border-b-0 md:border-r border-white/5 bg-black/20">
+      <aside className="flex flex-col md:w-64 flex-shrink-0 border-b md:border-b-0 md:border-r border-white/5 bg-black/20">
         {/* Protocol nav */}
-        <nav aria-label="Control panel sections" className="flex md:flex-col overflow-x-auto md:overflow-y-auto space-x-1 md:space-x-0 md:space-y-0.5 px-2 py-2 md:py-3 scrollbar-none">
-          {PROTOCOLS.map((item) => {
-            const isActive = tab === item.id;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                aria-current={isActive ? "page" : undefined}
-                onClick={() => { setTab(item.id); setMsg(null); }}
-                className={`group whitespace-nowrap md:w-full rounded-lg px-3 py-1.5 md:py-2 text-left transition-all ${
-                  isActive ? "bg-white/8 ring-1 ring-white/10" : "hover:bg-white/4"
-                }`}
-              >
-                <span className={`text-sm font-medium transition ${isActive ? "text-zinc-50" : "text-zinc-400 group-hover:text-zinc-200"}`}>
-                  {item.label}
-                </span>
-              </button>
-            );
-          })}
+        <nav aria-label="Control panel sections" className="flex md:flex-col overflow-x-auto md:overflow-y-auto gap-1 md:gap-0 px-2 py-2 md:py-3 scrollbar-none">
+          {(["protocols", "manage"] as const).map((group) => (
+            <div key={group} className="flex md:flex-col gap-1 md:gap-0.5 md:mb-3">
+              <p className="hidden md:block px-3 pb-1.5 pt-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-zinc-600">
+                {group === "protocols" ? "Add server" : "Manage"}
+              </p>
+              {PROTOCOLS.filter((item) => NAV_META[item.id].group === group).map((item) => {
+                const isActive = tab === item.id;
+                const meta = NAV_META[item.id];
+                const count =
+                  item.id === "users"
+                    ? userAnalytics?.totalAll
+                    : protocolFilterTabs.find((f) => f.id === item.id)?.count;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    aria-current={isActive ? "page" : undefined}
+                    onClick={() => { setTab(item.id); setMsg(null); }}
+                    className={`group relative flex items-center gap-2.5 whitespace-nowrap md:w-full rounded-xl px-2 py-1.5 text-left transition-all ${
+                      isActive ? "bg-gradient-to-r from-white/10 to-white/[0.03] ring-1 ring-white/10 shadow-lg shadow-black/20" : "hover:bg-white/5"
+                    }`}
+                  >
+                    {isActive ? <span className="absolute -left-2 top-1/2 hidden h-5 w-1 -translate-y-1/2 rounded-r-full bg-cyan-400 md:block" /> : null}
+                    <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br ring-1 text-[10px] font-bold ${meta.tone} ${isActive ? "" : "opacity-70 group-hover:opacity-100"}`}>
+                      {meta.short}
+                    </span>
+                    <span className={`flex-1 text-sm font-medium transition ${isActive ? "text-zinc-50" : "text-zinc-400 group-hover:text-zinc-200"}`}>
+                      {item.label}
+                    </span>
+                    {typeof count === "number" && count > 0 ? (
+                      <span className={`hidden md:inline rounded-md px-1.5 py-0.5 font-mono text-[10px] ${isActive ? "bg-cyan-400/15 text-cyan-300" : "bg-white/5 text-zinc-500"}`}>
+                        {count}
+                      </span>
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
         </nav>
 
         {/* Stats + actions */}
@@ -2528,6 +2844,8 @@ export function AdminDashboard() {
             </div>
           </div>
 
+          <AccessPolicyPanel />
+          <DuplicateReport />
           {/* Database Engine & Sync */}
           <div className="rounded-xl border border-white/6 bg-white/3 p-3 space-y-2.5">
             <div className="flex items-center justify-between">
@@ -2571,25 +2889,6 @@ export function AdminDashboard() {
             </div>
           </div>
 
-          {/* Action buttons */}
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              onClick={() => void autoSort()}
-              disabled={busy}
-              className="rounded-xl border border-white/8 bg-white/3 px-3 py-2 text-xs text-zinc-400 transition hover:bg-white/6 hover:text-zinc-200 disabled:opacity-40"
-            >
-              Auto sort
-            </button>
-            <button
-              type="button"
-              onClick={() => void load()}
-              disabled={busy}
-              className="rounded-xl border border-white/8 bg-white/3 px-3 py-2 text-xs text-zinc-400 transition hover:bg-white/6 hover:text-zinc-200 disabled:opacity-40"
-            >
-              Refresh
-            </button>
-          </div>
           <button
             type="button"
             onClick={logout}
@@ -2601,29 +2900,89 @@ export function AdminDashboard() {
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 overflow-y-auto min-w-0 max-w-full">
-        <div className="border-b border-white/5 px-6 py-4">
-          <div className="flex items-center justify-between gap-4">
-            <h3 className="text-base font-semibold text-zinc-100">
-              {PROTOCOLS.find((item) => item.id === tab)?.label}
-            </h3>
-            <div className="flex items-center gap-2">
-              <span className="rounded-full border border-white/8 px-3 py-1 font-mono text-xs text-zinc-400">{protocol}</span>
-              <button type="button" onClick={logout} className="md:hidden rounded-lg border border-rose-900/40 px-3 py-2 text-xs text-rose-300">Lock session</button>
-            </div>
-          </div>
+      <main className="flex-1 min-w-0 max-w-full">
+        <div className="sticky top-14 z-20 border-b border-white/5 bg-zinc-950/90 px-4 py-4 backdrop-blur-xl sm:px-6">
+          {(() => {
+            const current = PROTOCOLS.find((item) => item.id === tab);
+            const meta = NAV_META[tab];
+            const livePct = stats.total > 0 ? Math.round((stats.enabled / stats.total) * 100) : 0;
+            return (
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div className="flex min-w-0 items-center gap-3">
+                  <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br ring-1 text-xs font-bold ${meta.tone}`}>
+                    {meta.short}
+                  </span>
+                  <div className="min-w-0">
+                    <h3 className="truncate text-lg font-semibold tracking-tight text-zinc-50">{current?.label}</h3>
+                    <p className="truncate text-xs text-zinc-500">
+                      <span className="font-mono text-zinc-400">{current?.badge}</span>
+                      <span className="mx-1.5 text-zinc-700">•</span>
+                      {current?.support}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="hidden items-center gap-2 lg:flex">
+                    <span className="flex items-center gap-1.5 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1.5 text-xs text-emerald-300">
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shadow shadow-emerald-400/60" />
+                      <span className="font-mono font-semibold">{stats.enabled}</span>/<span className="font-mono">{stats.total}</span> live
+                      <span className="text-emerald-500/70">({livePct}%)</span>
+                    </span>
+                    <span className="flex items-center gap-1.5 rounded-lg border border-cyan-500/20 bg-cyan-500/10 px-2.5 py-1.5 text-xs text-cyan-300">
+                      <span className="font-mono font-semibold">{stats.locations}</span> locations
+                    </span>
+                    {typeof userAnalytics?.active24hAll === "number" ? (
+                      <span className="flex items-center gap-1.5 rounded-lg border border-fuchsia-500/20 bg-fuchsia-500/10 px-2.5 py-1.5 text-xs text-fuchsia-300">
+                        <span className="font-mono font-semibold">{userAnalytics.active24hAll}</span> users 24h
+                      </span>
+                    ) : null}
+                  </div>
+                  <span className="mx-1 hidden h-6 w-px bg-white/10 lg:block" />
+                  <button
+                    type="button"
+                    onClick={() => void load()}
+                    disabled={busy}
+                    className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-zinc-300 transition hover:bg-white/10 hover:text-white disabled:opacity-40"
+                    title="Reload servers and stats"
+                  >
+                    <svg className={`h-3.5 w-3.5 ${busy ? "animate-spin" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992V4.356M2.985 19.644v-4.992h4.992m0 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182" /></svg>
+                    Refresh
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void autoSort()}
+                    disabled={busy}
+                    className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-zinc-300 transition hover:bg-white/10 hover:text-white disabled:opacity-40"
+                    title="Sort servers by country and protocol"
+                  >
+                    <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7.5L7.5 3m0 0L12 7.5M7.5 3v13.5m13.5 0L16.5 21m0 0L12 16.5m4.5 4.5V7.5" /></svg>
+                    Auto sort
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSyncModalOpen(true)}
+                    disabled={busy}
+                    className="hidden items-center gap-1.5 rounded-lg border border-violet-500/30 bg-violet-500/15 px-3 py-1.5 text-xs font-medium text-violet-200 transition hover:bg-violet-500/25 disabled:opacity-40 sm:flex"
+                  >
+                    Sync DBs
+                  </button>
+                  <button type="button" onClick={logout} className="md:hidden rounded-lg border border-rose-900/40 px-3 py-1.5 text-xs text-rose-300">Lock</button>
+                </div>
+              </div>
+            );
+          })()}
         </div>
 
-        <div className={`grid gap-6 p-3 sm:p-6 lg:p-8 min-w-0 ${tab === "users" || tab === "routing" ? "" : "xl:grid-cols-[minmax(0,1.5fr)_360px]"}`}>
-          <section className="space-y-6 min-w-0 max-w-full">
+        <div className={`grid gap-4 p-3 sm:p-5 lg:p-5 min-w-0 ${tab === "users" || tab === "routing" ? "" : "xl:grid-cols-[minmax(0,1.5fr)_360px]"}`}>
+          <section className="space-y-4 min-w-0 max-w-full">
             {tab === "routing" ? (
               <RoutingRulesPanel api={api} busy={busy} setBusy={setBusy} setMsg={setMsg} />
             ) : tab === "users" ? (
-              <ActiveUsersPanel api={api} busy={busy} setBusy={setBusy} setMsg={setMsg} />
+              <ActiveUsersPanel api={api} setMsg={setMsg} />
             ) : tab !== "bulk" ? (
-              <div className="rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-6">
+              <div className="rounded-2xl border border-zinc-900 bg-zinc-950/70 p-4">
                 <div className="grid gap-4 md:grid-cols-2">
-                  <Field label="Server name" value={form.name} onChange={(value) => set("name", value)} placeholder="Germany Premium #1" />
+                  <ServerNameField label="Server name" value={form.name} onChange={(value) => set("name", value)} placeholder="Germany Premium #1" autoName={autoName} onAutoNameChange={setAutoName} autoNameAvailable={!editingServerId} previewNames={autoNamePreview.names} previewHint={autoNamePreview.hint} previewNote={autoNamePreview.note} />
                   <CountrySelector country={form.country} name={form.name} set={set} />
                 </div>
                 <div className="mt-4">
@@ -2641,7 +3000,7 @@ export function AdminDashboard() {
                 ) : null}
 
                 {tab === "v2ray" ? (
-                  <div className="mt-6 space-y-4">
+                  <div className="mt-4 space-y-4">
                     <div className="flex flex-wrap gap-2">
                       {["vless", "vmess", "trojan", "shadowsocks", "hysteria2", "socks"].map((item) => (
                         <ToggleChip key={item} label={item} checked={variant === item} onChange={() => setVariant(item)} />
@@ -2667,7 +3026,7 @@ export function AdminDashboard() {
                 ) : null}
 
                 {tab === "ssh" ? (
-                  <div className="mt-6 space-y-4">
+                  <div className="mt-4 space-y-4">
                     <div className="flex flex-wrap gap-2">
                       <ToggleChip label="Direct SSH" checked={sshMode === "direct"} onChange={() => selectSshMode("direct")} />
                       <ToggleChip label="SSH over DNSTT" checked={sshMode === "dnstt"} onChange={() => selectSshMode("dnstt")} />
@@ -2781,7 +3140,7 @@ export function AdminDashboard() {
                 ) : null}
 
                 {tab === "wireguard" ? (
-                  <div className="mt-6 space-y-5">
+                  <div className="mt-4 space-y-3.5">
                     <div className="flex flex-wrap items-center gap-2">
                       <ToggleChip label="Manual form" checked={wgInputMode === "form"} onChange={() => setWgInputMode("form")} />
                       <ToggleChip label="Upload .conf files" checked={wgInputMode === "file"} onChange={() => setWgInputMode("file")} />
@@ -2800,7 +3159,7 @@ export function AdminDashboard() {
                             void handleWgFiles(files);
                           }}
                           onClick={() => wgFileInputRef.current?.click()}
-                          className={`cursor-pointer select-none rounded-2xl border-2 border-dashed px-6 py-12 text-center transition ${
+                          className={`cursor-pointer select-none rounded-2xl border-2 border-dashed px-5 py-8 text-center transition ${
                             wgDragging
                               ? "border-cyan-400/80 bg-cyan-400/10"
                               : "border-zinc-700 hover:border-zinc-600 hover:bg-zinc-900/40"
@@ -3028,7 +3387,7 @@ export function AdminDashboard() {
                 ) : null}
 
                 {tab === "openvpn" ? (
-                  <div className="mt-6 space-y-5">
+                  <div className="mt-4 space-y-3.5">
                     {/* Mode + transport toggles */}
                     <div className="flex flex-wrap items-center gap-2">
                       <ToggleChip label="Upload .ovpn files" checked={openVpnInputMode === "file"} onChange={() => { setOpenVpnInputMode("file"); }} />
@@ -3051,7 +3410,7 @@ export function AdminDashboard() {
                             void handleOvpnFiles(files);
                           }}
                           onClick={() => ovpnFileInputRef.current?.click()}
-                          className={`cursor-pointer select-none rounded-2xl border-2 border-dashed px-6 py-12 text-center transition ${
+                          className={`cursor-pointer select-none rounded-2xl border-2 border-dashed px-5 py-8 text-center transition ${
                             ovpnDragging
                               ? "border-cyan-400/80 bg-cyan-400/10"
                               : "border-zinc-700 hover:border-zinc-600 hover:bg-zinc-900/40"
@@ -3191,7 +3550,7 @@ export function AdminDashboard() {
                       /* Paste mode */
                       <div className="space-y-4">
                         <div className="grid gap-4 md:grid-cols-2">
-                          <Field label="Config name" value={form.name} onChange={(value) => set("name", value)} placeholder="My OpenVPN Server" />
+                          <ServerNameField label="Config name" value={form.name} onChange={(value) => set("name", value)} placeholder="My OpenVPN Server" autoName={autoName} onAutoNameChange={setAutoName} autoNameAvailable={!editingServerId} previewNames={autoNamePreview.names} previewHint={autoNamePreview.hint} previewNote={autoNamePreview.note} />
                           <CountrySelector country={form.country} name={form.name} set={set} />
                           <Field label="Username (optional)" value={form.openVpnUsername} onChange={(value) => set("openVpnUsername", value)} placeholder="VPN username" />
                           <Field label="Password (optional)" value={form.openVpnPassword} onChange={(value) => set("openVpnPassword", value)} placeholder="VPN password" />
@@ -3226,7 +3585,7 @@ export function AdminDashboard() {
                 ) : null}
 
                 {tab === "http" ? (
-                  <div className="mt-6 space-y-4">
+                  <div className="mt-4 space-y-4">
                     <div className="grid gap-4 md:grid-cols-2">
                       <Field label="Proxy host / IP" value={form.host} onChange={(value) => set("host", value)} placeholder="192.168.1.1" />
                       <Field label="Proxy port" value={form.port} onChange={(value) => set("port", value)} placeholder="8080" />
@@ -3237,7 +3596,7 @@ export function AdminDashboard() {
                 ) : null}
 
                 {tab === "l2tp" ? (
-                  <div className="mt-6 space-y-4">
+                  <div className="mt-4 space-y-4">
                     {/* Server connection and primary credentials */}
                     <div className="rounded-2xl border border-white/6 bg-white/2 p-4">
                       <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
@@ -3399,7 +3758,7 @@ export function AdminDashboard() {
                 ) : null}
 
                 {tab === "warp" ? (
-                  <div className="mt-6 space-y-4">
+                  <div className="mt-4 space-y-4">
                     <div className="rounded-2xl border border-white/6 bg-white/2 p-4">
                       <div className="flex items-center justify-between">
                         <p className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
@@ -3490,7 +3849,7 @@ export function AdminDashboard() {
                 ) : null}
 
                 {tab === "custom" ? (
-                  <div className="mt-6 space-y-4">
+                  <div className="mt-4 space-y-4">
                     <Field label="Custom protocol id" value={customProto} onChange={setCustomProto} placeholder="custom:tcp or sing-box:manual" mono />
                     <div className="grid gap-4 md:grid-cols-2">
                       <Field label="Optional host" value={form.host} onChange={(value) => set("host", value)} placeholder="Used for list display and ping" />
@@ -3511,7 +3870,7 @@ export function AdminDashboard() {
                   </div>
                 ) : null}
 
-                <div className="mt-6 rounded-3xl border border-zinc-900 bg-zinc-950/80 p-5">
+                <div className="mt-4 rounded-2xl border border-zinc-900 bg-zinc-950/80 p-4">
                   <div className="flex items-center justify-between gap-4">
                     <div>
                       <p className="text-sm font-semibold text-zinc-100">Routing switches</p>
@@ -3538,12 +3897,12 @@ export function AdminDashboard() {
                   </div>
                 </div>
 
-                <div className="mt-6 flex flex-wrap gap-3">
+                <div className="mt-4 flex flex-wrap gap-3">
                   <button
                     type="button"
                     onClick={() => void submit()}
                     disabled={busy || !canSubmit}
-                    className="rounded-2xl bg-cyan-400 px-6 py-3 text-sm font-semibold text-cyan-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-40"
+                    className="rounded-xl bg-cyan-400 px-5 py-2 text-sm font-semibold text-cyan-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     {busy ? "Saving..." : editingServerId ? "Update profile" : "Save profile"}
                   </button>
@@ -3554,7 +3913,7 @@ export function AdminDashboard() {
                         reset(false);
                         setMsg(null);
                       }}
-                      className="rounded-2xl border border-zinc-800 bg-zinc-950 px-6 py-3 text-sm text-zinc-400 transition hover:border-zinc-700 hover:text-zinc-100"
+                      className="rounded-xl border border-zinc-800 bg-zinc-950 px-5 py-2 text-sm text-zinc-400 transition hover:border-zinc-700 hover:text-zinc-100"
                     >
                       Cancel edit
                     </button>
@@ -3563,7 +3922,7 @@ export function AdminDashboard() {
                     <button
                       type="button"
                       onClick={() => reset(false)}
-                      className="rounded-2xl border border-zinc-800 bg-zinc-950 px-6 py-3 text-sm text-zinc-400 transition hover:border-zinc-700 hover:text-zinc-100"
+                      className="rounded-xl border border-zinc-800 bg-zinc-950 px-5 py-2 text-sm text-zinc-400 transition hover:border-zinc-700 hover:text-zinc-100"
                     >
                       Reset form
                     </button>
@@ -3571,7 +3930,7 @@ export function AdminDashboard() {
                 </div>
               </div>
             ) : (
-              <div className="rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-6">
+              <div className="rounded-2xl border border-zinc-900 bg-zinc-950/70 p-4">
                 <TextArea
                   label="Bulk import"
                   value={bulk}
@@ -3595,15 +3954,24 @@ or
                 <p className="mt-3 text-xs leading-6 text-zinc-500">
                   Paste a JSON array or paste one share link per line. Names, protocol, host, and port are auto-detected when possible.
                 </p>
-                <div className="mt-4 flex gap-3">
+                <div className="mt-4 flex flex-wrap items-center gap-3">
                   <button
                     type="button"
                     onClick={() => void submitBulk()}
                     disabled={busy || !bulk.trim()}
-                    className="rounded-2xl bg-cyan-400 px-6 py-3 text-sm font-semibold text-cyan-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-40"
+                    className="rounded-xl bg-cyan-400 px-5 py-2 text-sm font-semibold text-cyan-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     {busy ? "Importing..." : "Import profiles"}
                   </button>
+                  <label className="flex cursor-pointer items-center gap-2 text-xs text-zinc-400" title="Name each imported server after its detected location, numbered after the existing servers in that country. Entries without a detectable location keep their own name.">
+                    <input
+                      type="checkbox"
+                      checked={autoName}
+                      onChange={(e) => setAutoName(e.target.checked)}
+                      className="h-3.5 w-3.5 accent-cyan-400"
+                    />
+                    Auto-name by location
+                  </label>
                 </div>
               </div>
             )}
@@ -3614,21 +3982,20 @@ or
               </div>
             ) : null}
 
-            <div className="min-w-0 max-w-full overflow-hidden rounded-2xl sm:rounded-[28px] border border-zinc-900 bg-zinc-950/70 p-3.5 sm:p-5 lg:p-6">
+            <div className="min-w-0 max-w-full overflow-hidden rounded-2xl border border-zinc-900 bg-zinc-950/70 p-3.5 sm:p-5 lg:p-5">
               <div className="mb-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                <h4 className="text-sm font-semibold text-zinc-100 flex flex-wrap items-center gap-2">
-                  <span>Stored servers</span>
-                  <span className="text-xs font-mono text-zinc-500">({stats.total})</span>
-                  <span className="text-zinc-600">•</span>
-                  <span className="text-xs text-cyan-400 font-medium">
-                    {stats.locations} active locations
+                <div>
+                  <h4 className="flex items-center gap-2 text-base font-semibold tracking-tight text-zinc-50">
+                    Stored servers
+                    <span className="rounded-md bg-white/6 px-1.5 py-0.5 font-mono text-xs text-zinc-400">{stats.total}</span>
+                  </h4>
+                  <p className="mt-0.5 text-xs text-zinc-500">
+                    <span className="text-cyan-400">{stats.locations} active locations</span>
                     {protocolFilter !== "all" && filteredLocationsCount !== stats.locations ? ` (${filteredLocationsCount} in filter)` : ""}
-                  </span>
-                  <span className="text-zinc-600">•</span>
-                  <span className="text-xs text-emerald-400 font-medium">
-                    {userAnalytics?.platforms?.android?.total ?? "—"} Android users ({userAnalytics?.platforms?.android?.active24h ?? "—"} active today)
-                  </span>
-                </h4>
+                    <span className="mx-1.5 text-zinc-700">•</span>
+                    <span className="text-emerald-400">{userAnalytics?.platforms?.android?.total ?? "—"} Android users</span> ({userAnalytics?.platforms?.android?.active24h ?? "—"} today)
+                  </p>
+                </div>
                 <div className="flex flex-wrap items-center gap-2">
                   {hasPendingReorder && (
                     <button
@@ -3644,7 +4011,7 @@ or
                     type="button"
                     onClick={() => void bulkServerAction("enable-all")}
                     disabled={busy || stats.total === 0}
-                    className="rounded-xl border border-emerald-700/50 px-3 py-2 text-xs font-semibold text-emerald-300 transition hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+                    className="rounded-lg border border-emerald-700/50 px-3 py-1.5 text-xs font-semibold text-emerald-300 transition hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     Enable all
                   </button>
@@ -3652,7 +4019,7 @@ or
                     type="button"
                     onClick={() => void bulkServerAction("disable-all")}
                     disabled={busy || stats.total === 0}
-                    className="rounded-xl border border-zinc-800 px-3 py-2 text-xs font-semibold text-zinc-400 transition hover:bg-zinc-900 hover:text-zinc-200 disabled:cursor-not-allowed disabled:opacity-40"
+                    className="rounded-lg border border-zinc-800 px-3 py-1.5 text-xs font-semibold text-zinc-400 transition hover:bg-zinc-900 hover:text-zinc-200 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     Disable all
                   </button>
@@ -3660,15 +4027,75 @@ or
                     type="button"
                     onClick={() => void bulkServerAction("delete-all")}
                     disabled={busy || stats.total === 0}
-                    className="rounded-xl border border-rose-700/50 px-3 py-2 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+                    className="rounded-lg border border-rose-700/50 px-3 py-1.5 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     Delete all
                   </button>
                 </div>
               </div>
 
+              {/* Search */}
+              <div className="relative mb-3">
+                <svg className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
+                <input
+                  type="search"
+                  value={serverSearch}
+                  onChange={(e) => { setServerSearch(e.target.value); setServersPage(0); }}
+                  placeholder="Search servers by name, country, host or protocol..."
+                  className="w-full rounded-xl border border-white/8 bg-black/30 py-2.5 pl-10 pr-24 text-sm text-zinc-100 placeholder:text-zinc-600 outline-none transition focus:border-cyan-500/50 focus:ring-2 focus:ring-cyan-500/15"
+                />
+                {serverSearch ? (
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-zinc-500">
+                    {filteredServers.length} match{filteredServers.length === 1 ? "" : "es"}
+                  </span>
+                ) : null}
+              </div>
+
               {/* Protocol Filter Tabs */}
-              <div className="flex flex-wrap items-center gap-1.5 rounded-2xl border border-white/6 bg-white/2 p-1.5">
+              <div className="mb-3 flex flex-wrap items-center gap-2 text-sm">
+                <select aria-label="Admin category filter" value={categoryFilter} onChange={event => { setCategoryFilter(event.target.value); setServersPage(0); }} className="rounded-lg bg-zinc-900 p-2">
+                  <option value="all">All admin categories</option><option value="">Uncategorized</option>
+                  {[...new Set(Object.values(adminCategories).filter(Boolean))].sort().map(category => <option key={category} value={category}>{category}</option>)}
+                </select>
+                {categoryFilter !== "all" && categoryFilter !== "" && <>
+                  <button type="button" disabled={busy} onClick={async () => {
+                    const to = window.prompt("Rename category (existing names merge assignments)", categoryFilter)?.trim();
+                    if (!to || to === categoryFilter) return;
+                    setBusy(true);
+                    try {
+                      await api("/api/admin/categories", { method: "PATCH", body: JSON.stringify({ from: categoryFilter, to }) });
+                      setAdminCategories(current => Object.fromEntries(Object.entries(current).map(([id, category]) => [id, category === categoryFilter ? to : category])));
+                      setCategoryFilter(to);
+                    } catch (error) { setMsg({ ok: false, text: error instanceof Error ? error.message : "Rename failed" }); }
+                    finally { setBusy(false); }
+                  }}>Rename category</button>
+                  <button type="button" disabled={busy} onClick={async () => {
+                    setBusy(true);
+                    try {
+                      await api("/api/admin/categories", { method: "PATCH", body: JSON.stringify({ from: categoryFilter, to: "" }) });
+                      setAdminCategories(current => Object.fromEntries(Object.entries(current).filter(([, category]) => category !== categoryFilter)));
+                      setCategoryFilter("all");
+                    } catch (error) { setMsg({ ok: false, text: error instanceof Error ? error.message : "Delete category failed" }); }
+                    finally { setBusy(false); }
+                  }}>Delete category</button>
+                </>}
+                <label><input type="checkbox" checked={selectedOnly} onChange={event => { setSelectedOnly(event.target.checked); setServersPage(0); }} /> Selected only ({selectedServerIds.size})</label>
+                <button type="button" onClick={() => setSelectedServerIds(current => new Set([...current, ...displayedServers.map(server => server.id)]))}>Select page</button>
+                <button type="button" onClick={() => toggleAllFilteredServers(true)}>Select all matching</button>
+                <button type="button" onClick={() => setSelectedServerIds(new Set())}>Clear selection</button>
+                <input aria-label="Admin category name" placeholder="Category (blank to clear)" value={categoryDraft} maxLength={60} onChange={event => setCategoryDraft(event.target.value)} className="rounded-lg bg-zinc-900 p-2" />
+                <button type="button" disabled={busy || !selectedServerIds.size} onClick={async () => {
+                  setBusy(true);
+                  try {
+                    const ids = [...selectedServerIds];
+                    await api("/api/admin/categories", { method: "PUT", body: JSON.stringify({ ids, category: categoryDraft }) });
+                    setAdminCategories(current => ({ ...current, ...Object.fromEntries(ids.map(id => [id, categoryDraft.trim()])) }));
+                    setMsg({ ok: true, text: `Category updated for ${ids.length} selected servers` });
+                  } catch (error) { setMsg({ ok: false, text: error instanceof Error ? error.message : "Category update failed" }); }
+                  finally { setBusy(false); }
+                }}>Assign to {selectedServerIds.size} selected</button>
+              </div>
+              <div className="mb-4 flex flex-wrap items-center gap-1.5 rounded-xl border border-white/6 bg-white/2 p-1">
                 {protocolFilterTabs.map((f) => {
                   const isActive = protocolFilter === f.id;
                   return (
@@ -3701,7 +4128,7 @@ or
               </div>
 
               {filteredServers.length > 0 ? (
-                <div className="mb-4 rounded-2xl border border-white/6 bg-white/3 px-5 py-4">
+                <div className="sticky top-2 z-20 mb-4 rounded-2xl border border-white/6 bg-zinc-950/95 px-5 py-4">
                   {/* Header row: select all checkbox + enable / disable / update actions */}
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <label className="flex cursor-pointer items-center gap-2.5">
@@ -3762,6 +4189,27 @@ or
                         className="flex-shrink-0 rounded-xl border border-indigo-500/30 bg-indigo-500/10 px-3 py-1.5 text-xs font-semibold text-indigo-300 transition hover:bg-indigo-500/20 disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         Bulk Replace ({selectedFilteredCount})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const ids = filteredServers.filter((server) => selectedServerIds.has(server.id)).map((server) => server.id);
+                          setRenamePlan({ ids, plan: planLocationRename(servers, ids) });
+                        }}
+                        disabled={busy || selectedFilteredCount === 0}
+                        title="Rename the selected servers to their location (numbered when a country has several)"
+                        className="flex-shrink-0 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-300 transition hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        Auto-name ({selectedFilteredCount})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setRenamePlan({ ids: null, plan: planLocationRename(servers) })}
+                        disabled={busy || servers.length === 0}
+                        title="Rename every server to its location (numbered when a country has several)"
+                        className="flex-shrink-0 rounded-xl border border-amber-500/20 px-3 py-1.5 text-xs font-semibold text-amber-300/80 transition hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        Auto-name all
                       </button>
                       {selectedFilteredCredentialCount > 0 && (
                         <button
@@ -3951,7 +4399,7 @@ or
                 </div>
               ) : null}
 
-              <div className="grid gap-2">
+              <div className="grid gap-1.5">
                 {displayedServers.map((server) => {
                   const supportsCredentials = protocolSupportsCredentials(server.protocol);
                   const serverIndexInAll = servers.findIndex((s) => s.id === server.id);
@@ -3968,19 +4416,28 @@ or
                     return "bg-zinc-800 text-zinc-400";
                   })();
                   return (
-                  <div key={server.id} className="group min-w-0 max-w-full overflow-hidden rounded-xl border border-white/5 bg-white/3 px-3 sm:px-4 py-3 transition hover:border-white/8 hover:bg-white/4">
-                    <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between min-w-0">
-                      <div className="flex min-w-0 items-start gap-3">
+                  <div key={server.id} className={`group relative min-w-0 max-w-full overflow-hidden rounded-xl border py-2.5 pl-4 pr-3 transition ${
+                    selectedServerIds.has(server.id)
+                      ? "border-cyan-500/40 bg-cyan-500/[0.06]"
+                      : "border-white/5 bg-white/[0.025] hover:border-white/10 hover:bg-white/[0.045]"
+                  } ${server.isEnabled ? "" : "opacity-60 hover:opacity-100"}`}>
+                    <span className={`absolute inset-y-0 left-0 w-1 ${server.isEnabled ? "bg-gradient-to-b from-emerald-400 to-emerald-600" : "bg-zinc-700"}`} />
+                    <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between min-w-0">
+                      <div className="flex min-w-0 items-center gap-3">
                         <input
                           type="checkbox"
                           checked={selectedServerIds.has(server.id)}
-                          onChange={(e) => toggleServerSelection(server.id, e.target.checked)}
-                          className="mt-0.5 rounded border-zinc-700 bg-zinc-900 accent-cyan-400 cursor-pointer"
+                          onChange={(e) => toggleServerSelection(server.id, e.target.checked, (e.nativeEvent as MouseEvent).shiftKey)}
+                          className="rounded border-zinc-700 bg-zinc-900 accent-cyan-400 cursor-pointer"
                           aria-label={`Select ${server.name}`}
                         />
+                        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-white/8 bg-black/30 text-xl leading-none">
+                          {getCountryMeta(normalizeLocationCode(server.country || server.name)).flag}
+                        </span>
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-center gap-2">
                             <p className="truncate text-sm font-semibold text-zinc-100">{server.name}</p>
+                            {adminCategories[server.id] && <span className="rounded bg-white/10 px-2 text-xs">{adminCategories[server.id]}</span>}
                             <span className={`rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${protoBadgeColor}`}>
                               {server.protocol.toUpperCase()}
                             </span>
@@ -4003,7 +4460,6 @@ or
                             const meta = getCountryMeta(locCode);
                             return (
                               <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-zinc-400">
-                                <span>{meta.flag}</span>
                                 {meta.code !== "GLOBAL" ? (
                                   <span className="font-medium text-zinc-300">
                                     {meta.name} <span className="font-mono text-zinc-500">({meta.code})</span> ·
@@ -4015,12 +4471,12 @@ or
                           })()}
                         </div>
                       </div>
-                      <div className="flex flex-wrap items-center gap-1 sm:gap-1.5 justify-start lg:justify-end min-w-0">
+                      <div className="flex flex-wrap items-center gap-1 sm:gap-1.5 justify-start md:justify-end shrink-0 min-w-0 md:opacity-60 md:transition md:group-hover:opacity-100">
                         <button
                           type="button"
                           onClick={() => void moveServer(server.id, 'up')}
                           disabled={isFirst || busy}
-                          className="rounded-lg border border-white/8 px-2 py-1 text-xs text-zinc-500 transition hover:bg-white/6 hover:text-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed"
+                          className="rounded-lg border border-white/8 px-1.5 py-0.5 text-xs text-zinc-500 transition hover:bg-white/6 hover:text-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed"
                           title="Move up"
                         >
                           ↑
@@ -4029,7 +4485,7 @@ or
                           type="button"
                           onClick={() => void moveServer(server.id, 'down')}
                           disabled={isLast || busy}
-                          className="rounded-lg border border-white/8 px-2 py-1 text-xs text-zinc-500 transition hover:bg-white/6 hover:text-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed"
+                          className="rounded-lg border border-white/8 px-1.5 py-0.5 text-xs text-zinc-500 transition hover:bg-white/6 hover:text-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed"
                           title="Move down"
                         >
                           ↓
@@ -4038,7 +4494,7 @@ or
                           type="button"
                           onClick={() => void editServer(server.id)}
                           disabled={pendingServerId === server.id}
-                          className="rounded-lg border border-white/8 px-2.5 py-1 text-xs text-zinc-400 transition hover:bg-white/6 hover:text-zinc-100"
+                          className="rounded-lg border border-white/8 px-2 py-0.5 text-xs text-zinc-400 transition hover:bg-white/6 hover:text-zinc-100"
                         >
                           Edit
                         </button>
@@ -4046,7 +4502,7 @@ or
                           type="button"
                           onClick={() => void duplicateServer(server.id)}
                           disabled={pendingServerId === server.id}
-                          className="rounded-lg border border-white/8 px-2.5 py-1 text-xs text-zinc-400 transition hover:bg-white/6 hover:text-zinc-100"
+                          className="rounded-lg border border-white/8 px-2 py-0.5 text-xs text-zinc-400 transition hover:bg-white/6 hover:text-zinc-100"
                           title="Duplicate server"
                         >
                           {pendingServerId === server.id ? "..." : "Duplicate"}
@@ -4055,7 +4511,7 @@ or
                           type="button"
                           onClick={() => void toggle(server.id, !server.isEnabled)}
                           disabled={pendingServerId === server.id}
-                          className={`rounded-lg border px-2.5 py-1 text-xs font-medium transition ${
+                          className={`rounded-lg border px-2 py-0.5 text-xs font-medium transition ${
                             server.isEnabled
                               ? "border-emerald-700/40 text-emerald-400 hover:bg-emerald-500/10"
                               : "border-white/8 text-zinc-400 hover:bg-white/6 hover:text-zinc-100"
@@ -4067,7 +4523,7 @@ or
                           type="button"
                           onClick={() => void remove(server.id)}
                           disabled={pendingServerId === server.id}
-                          className="rounded-lg border border-rose-700/30 px-2.5 py-1 text-xs text-rose-400/80 transition hover:bg-rose-500/10 hover:text-rose-300"
+                          className="rounded-lg border border-rose-700/30 px-2 py-0.5 text-xs text-rose-400/80 transition hover:bg-rose-500/10 hover:text-rose-300"
                         >
                           {pendingServerId === server.id ? "..." : "Delete"}
                         </button>
@@ -4079,16 +4535,18 @@ or
                   <div className="rounded-xl border border-dashed border-white/8 px-4 py-10 text-center text-sm text-zinc-600">
                     {servers.length === 0
                       ? "No servers yet. Use one of the builders above to create the first profile."
-                      : `No servers found matching the "${protocolFilter.toUpperCase()}" filter.`}
+                      : serverSearch.trim()
+                        ? `No servers match "${serverSearch.trim()}".`
+                        : `No servers found matching the "${protocolFilter.toUpperCase()}" filter.`}
                   </div>
                 ) : null}
               </div>
 
               {filteredServers.length > PAGE_SIZE ? (
-                <div className="mt-4 flex items-center justify-between gap-3">
+                <div className="mt-3 flex items-center justify-between gap-3">
                   <button
                     type="button"
-                    className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-2 text-xs text-zinc-400 transition hover:border-zinc-700 hover:text-zinc-100 disabled:opacity-40 disabled:cursor-not-allowed"
+                    className="rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-1.5 text-xs text-zinc-400 transition hover:border-zinc-700 hover:text-zinc-100 disabled:opacity-40 disabled:cursor-not-allowed"
                     onClick={() => setServersPage((p) => Math.max(0, p - 1))}
                     disabled={serversPage === 0}
                   >
@@ -4111,7 +4569,7 @@ or
           </section>
 
           {tab !== "users" && tab !== "routing" && (
-          <aside className="space-y-4 min-w-0">
+          <aside className="space-y-4 min-w-0 xl:sticky xl:top-36 xl:self-start">
             <div className="rounded-2xl border border-white/6 bg-white/3 p-4">
               <div className="flex items-center justify-between">
                 <p className="text-xs font-medium text-zinc-400">Config preview</p>
@@ -4168,6 +4626,37 @@ or
         onSuccess={load}
         api={api}
       />
+      {renamePlan ? (
+        <AutoNameModal
+          plan={renamePlan.plan}
+          scope={renamePlan.ids ? `${renamePlan.ids.length} selected server${renamePlan.ids.length === 1 ? "" : "s"}` : `all ${servers.length} servers`}
+          busy={renameBusy}
+          onClose={() => { if (!renameBusy) setRenamePlan(null); }}
+          onConfirm={async () => {
+            setRenameBusy(true);
+            try {
+              const result = await api<{ renamed?: number; unchanged?: number; skipped?: number }>("/api/admin/servers", {
+                method: "PATCH",
+                body: JSON.stringify({ action: "auto-name", ...(renamePlan.ids ? { ids: renamePlan.ids } : {}) }),
+              });
+              const renamed = result.renamed ?? 0;
+              const skipped = result.skipped ?? 0;
+              setMsg({
+                ok: true,
+                text: renamed > 0
+                  ? `Renamed ${renamed} server${renamed === 1 ? "" : "s"} to their location${skipped > 0 ? ` · ${skipped} skipped (unknown location)` : ""}`
+                  : "All servers already follow the location naming",
+              });
+              setRenamePlan(null);
+              await load();
+            } catch (error) {
+              setMsg({ ok: false, text: error instanceof Error ? error.message : "Auto naming failed" });
+            } finally {
+              setRenameBusy(false);
+            }
+          }}
+        />
+      ) : null}
       <BulkReplaceModal
         isOpen={bulkReplaceOpen}
         onClose={() => setBulkReplaceOpen(false)}

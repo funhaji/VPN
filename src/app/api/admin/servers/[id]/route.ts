@@ -6,6 +6,7 @@ import { isAuthorized, limitRequest } from "@/lib/auth";
 import { decryptConfig, encryptConfig } from "@/lib/crypto";
 import { updateServerSchema } from "@/lib/validation";
 import { normalizeLocationCode } from "@/lib/countries";
+import { checkServerDuplicates } from "@/lib/duplicate-check";
 
 export const dynamic = "force-dynamic";
 
@@ -77,6 +78,17 @@ export async function PATCH(
     }
 
     const data = parsed.data;
+    if (data.rawConfig !== undefined || data.host !== undefined || data.port !== undefined || data.protocol !== undefined) {
+      const current = await getServer(id);
+      if (!current) return NextResponse.json({ error: "Not found" }, { status: 404 });
+      const matches = await checkServerDuplicates([{
+        id, name: data.name ?? current.name, protocol: data.protocol ?? current.protocol,
+        host: data.host ?? current.host, port: data.port ?? current.port,
+        rawConfig: data.rawConfig ?? decryptConfig(current.encryptedConfig),
+      }], [id]);
+      const duplicate = matches.find(match => match.kind === "duplicate");
+      if (duplicate) return NextResponse.json({ error: `Duplicate server: matches ${duplicate.existing}`, duplicates: matches }, { status: 409 });
+    }
     const safeCountry = data.country !== undefined
       ? normalizeLocationCode((data.country && data.country !== "XX" && data.country !== "GLOBAL") ? data.country : data.name)
       : undefined;

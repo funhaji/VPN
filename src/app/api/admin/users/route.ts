@@ -13,8 +13,14 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const report = await getClientAnalytics();
-    return NextResponse.json(report);
+    const params = request.nextUrl.searchParams;
+    const report = await getClientAnalytics({
+      summaryOnly: params.get("summary") === "1",
+      limit: Number(params.get("limit")) || undefined,
+      platform: params.get("platform"),
+      search: params.get("q"),
+    });
+    return NextResponse.json(report, { headers: { "Cache-Control": "no-store" } });
   } catch (err) {
     console.warn("Client analytics fallback:", err instanceof Error ? err.message : String(err));
     return NextResponse.json(
@@ -26,6 +32,7 @@ export async function GET(request: NextRequest) {
         totalAll: 0,
         active24hAll: 0,
         recentDevices: [],
+        deviceMatches: 0,
         updatedAt: new Date().toISOString(),
         warning: err instanceof Error ? err.message : "Database unavailable",
       },

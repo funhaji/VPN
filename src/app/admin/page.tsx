@@ -15,7 +15,7 @@ export default async function Home() {
     <main className="space-bg min-h-screen">
       {/* Slim top nav */}
       <header className="sticky top-0 z-50 border-b border-white/6 bg-zinc-950/80 backdrop-blur-xl">
-        <div className="mx-auto flex h-14 max-w-7xl items-center justify-between px-6">
+        <div className="mx-auto flex h-14 max-w-[1600px] items-center justify-between px-6">
           <div className="flex items-center gap-3">
             <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-cyan-400 to-blue-500 shadow shadow-cyan-500/30">
               <svg className="h-4 w-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.2}>
@@ -33,7 +33,7 @@ export default async function Home() {
         </div>
       </header>
 
-      <div className="mx-auto max-w-7xl px-4 py-6 md:px-6">
+      <div className="mx-auto max-w-[1600px] px-4 py-6 md:px-6">
         <AdminDashboard />
       </div>
     </main>

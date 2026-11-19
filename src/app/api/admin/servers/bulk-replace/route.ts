@@ -8,6 +8,7 @@ import { detectProfileMetadata } from "@/lib/profile-import";
 import { serverInputSchema } from "@/lib/validation";
 import { normalizeLocationCode } from "@/lib/countries";
 import { z } from "zod";
+import { checkServerDuplicates } from "@/lib/duplicate-check";
 
 export const dynamic = "force-dynamic";
 
@@ -53,6 +54,9 @@ export async function POST(request: NextRequest) {
     }
 
     const { oldIds, servers } = parsed.data;
+    const duplicates = await checkServerDuplicates(servers, oldIds);
+    const duplicate = duplicates.find(match => match.kind === "duplicate");
+    if (duplicate) return NextResponse.json({ error: `Duplicate server: ${duplicate.incoming} matches ${duplicate.existing}`, duplicates }, { status: 409 });
 
     const itemsToInsert = servers.map((data) => {
       const endpoint = normalizeEndpoint(data);
