@@ -78,17 +78,90 @@ export function validateSnapshot(snapshot) {
   return snapshot;
 }
 
-export function isBuildBlocked(policy, platform, build) {
+export function parseSemver(v) {
+  if (typeof v !== "string") return null;
+  const clean = v.trim().replace(/^v/i, "");
+  const match = clean.match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-([0-9A-Za-z.-]+))?$/);
+  if (!match) return null;
+  return {
+    major: parseInt(match[1], 10),
+    minor: match[2] !== undefined ? parseInt(match[2], 10) : 0,
+    patch: match[3] !== undefined ? parseInt(match[3], 10) : 0,
+    prerelease: match[4] || null,
+  };
+}
+
+export function compareSemver(a, b) {
+  const pa = parseSemver(a);
+  const pb = parseSemver(b);
+  if (!pa || !pb) return 0;
+  if (pa.major !== pb.major) return pa.major - pb.major;
+  if (pa.minor !== pb.minor) return pa.minor - pb.minor;
+  if (pa.patch !== pb.patch) return pa.patch - pb.patch;
+  if (pa.prerelease && !pb.prerelease) return -1;
+  if (!pa.prerelease && pb.prerelease) return 1;
+  if (pa.prerelease && pb.prerelease) {
+    return pa.prerelease.localeCompare(pb.prerelease);
+  }
+  return 0;
+}
+
+export function semverToBuild(v) {
+  const p = parseSemver(v);
+  if (!p) return 0;
+  return p.major * 1_000_000 + p.minor * 1_000 + p.patch;
+}
+
+export function isClientBlocked(policy, platform, version, build) {
   const rule = policy?.[platform];
-  if (!rule || !Number.isSafeInteger(build) || build < 1) return true;
-  return rule.disabled || build < rule.minimumBuild || rule.blockedBuilds.includes(build);
+  if (!rule) return true;
+  if (rule.disabled === true) return true;
+
+  // 1. Check version string against blockedVersions and minimumVersion
+  if (typeof version === "string" && version.trim()) {
+    const v = version.trim();
+    if (Array.isArray(rule.blockedVersions) && rule.blockedVersions.some(bv => {
+      const bvs = typeof bv === "string" ? bv.trim() : "";
+      return bvs && (compareSemver(v, bvs) === 0 || v.toLowerCase() === bvs.toLowerCase());
+    })) {
+      return true;
+    }
+    if (rule.minimumVersion && typeof rule.minimumVersion === "string" && rule.minimumVersion.trim() && rule.minimumVersion.trim() !== "0.0.0") {
+      if (compareSemver(v, rule.minimumVersion.trim()) < 0) {
+        return true;
+      }
+    }
+  }
+
+  // 2. Check build number if provided or derived
+  const buildNum = Number.isSafeInteger(build) && build > 0 ? build : semverToBuild(version);
+  if (buildNum > 0) {
+    if (Array.isArray(rule.blockedBuilds) && rule.blockedBuilds.includes(buildNum)) {
+      return true;
+    }
+    if (Number.isSafeInteger(rule.minimumBuild) && rule.minimumBuild > 0 && buildNum < rule.minimumBuild) {
+      return true;
+    }
+  } else if (!version) {
+    // Neither valid build nor valid version provided
+    return true;
+  }
+
+  return false;
+}
+
+export function isBuildBlocked(policy, platform, build) {
+  return isClientBlocked(policy, platform, undefined, build);
 }
 
 export function validatePolicy(policy) {
   for (const platform of ["android", "windows"]) {
     const rule = policy?.[platform];
-    if (!rule || typeof rule.disabled !== "boolean" || !Number.isSafeInteger(rule.minimumBuild) || rule.minimumBuild < 0 ||
-      !Array.isArray(rule.blockedBuilds) || rule.blockedBuilds.some(build => !Number.isSafeInteger(build) || build < 0)) throw new Error("Invalid policy");
+    if (!rule || typeof rule.disabled !== "boolean") throw new Error("Invalid policy");
+    if (rule.minimumBuild !== undefined && (!Number.isSafeInteger(rule.minimumBuild) || rule.minimumBuild < 0)) throw new Error("Invalid minimum build");
+    if (rule.blockedBuilds !== undefined && (!Array.isArray(rule.blockedBuilds) || rule.blockedBuilds.some(b => !Number.isSafeInteger(b) || b < 0))) throw new Error("Invalid blocked builds");
+    if (rule.minimumVersion !== undefined && typeof rule.minimumVersion !== "string") throw new Error("Invalid minimum version");
+    if (rule.blockedVersions !== undefined && (!Array.isArray(rule.blockedVersions) || rule.blockedVersions.some(v => typeof v !== "string"))) throw new Error("Invalid blocked versions");
   }
   return policy;
 }

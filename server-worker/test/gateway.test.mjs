@@ -138,3 +138,43 @@ test("publication reuse checks the shared generation and never uses cache during
   offline = true;
   await assert.rejects(store.publication());
 });
+
+test("semver version blocking and kill switch enforce minimum and blocked versions", async () => {
+  const semverPolicy = {
+    android: { disabled: false, minimumVersion: "1.3.0", blockedVersions: ["1.2.7", "1.2.8"], minimumBuild: 0, blockedBuilds: [] },
+    windows: { disabled: false, minimumVersion: "1.2.0", blockedVersions: ["1.2.2"], minimumBuild: 0, blockedBuilds: [] },
+  };
+  const semverAdapter = adapter({ publication: async () => ({ ...publication, policy: semverPolicy }) });
+
+  // 1. Allowed version 1.3.0 on android
+  const okReq = await request("/v2/catalog", { platform: "android", version: "1.3.0" });
+  const okRes = await gateway(okReq, semverAdapter);
+  assert.equal(okRes.status, 200);
+
+  // 2. Blocked specific version 1.2.7
+  const blockedReq = await request("/v2/catalog", { platform: "android", version: "1.2.7" });
+  const blockedRes = await gateway(blockedReq, semverAdapter);
+  assert.equal(blockedRes.status, 426);
+
+  // 3. Below minimum version 1.2.0 (min is 1.3.0)
+  const belowMinReq = await request("/v2/catalog", { platform: "android", version: "1.2.0" });
+  const belowMinRes = await gateway(belowMinReq, semverAdapter);
+  assert.equal(belowMinRes.status, 426);
+
+  // 4. Kill switch: require all versions to update
+  const killSwitchPolicy = {
+    android: { disabled: true, minimumVersion: "0.0.0", blockedVersions: [], minimumBuild: 0, blockedBuilds: [] },
+    windows: { disabled: false, minimumVersion: "0.0.0", blockedVersions: [], minimumBuild: 0, blockedBuilds: [] },
+  };
+  const killSwitchAdapter = adapter({ publication: async () => ({ ...publication, policy: killSwitchPolicy }) });
+  const killRes = await gateway(await request("/v2/catalog", { platform: "android", version: "1.3.0" }), killSwitchAdapter);
+  assert.equal(killRes.status, 426);
+});
+
+test("in-memory storage fallback works seamlessly when Redis is absent", async () => {
+  const emptyEnv = {};
+  const memAdapter = createAdapter(emptyEnv);
+  assert.equal(typeof memAdapter.consume, "function");
+  const res = await memAdapter.consume("a".repeat(43), "b".repeat(24), 1);
+  assert.equal(res.allowed, true);
+});

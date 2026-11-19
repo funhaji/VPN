@@ -35,7 +35,8 @@ test("duplicate configs ignore labels, UUID case, host spelling and query orderi
 test("shared endpoints and UUIDs are visible overlaps, not exact duplicates", () => {
   const a = candidate("a", "vless://abc@example.com:443?security=tls");
   assert.equal(findServerDuplicates([candidate("b", "vless://def@example.com:443?security=tls")], [a])[0].kind, "shared-endpoint");
-  assert.equal(findServerDuplicates([candidate("b", "vless://abc@other.example:443?security=tls")], [a])[0].kind, "shared-credential");
+  assert.equal(findServerDuplicates([candidate("b", "vless://abc@example.com:8443?security=tls")], [a]).find(m => m.kind === "shared-credential")?.kind, "shared-credential");
+  assert.equal(findServerDuplicates([candidate("b", "vless://abc@other.example:443?security=tls")], [a]).length, 0);
   assert.equal(findServerDuplicates([a, { ...a, name: "duplicate import" }], [])[0].kind, "duplicate");
   assert.deepEqual(findServerDuplicates([{ ...a, id: "same" }], [{ ...a, id: "same" }]), []);
 });

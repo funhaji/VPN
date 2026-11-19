@@ -3,6 +3,8 @@ import { z } from "zod";
 import { getSetting, setSetting } from "@/lib/db";
 
 const platformRule = z.object({
+  minimumVersion: z.string().default("0.0.0"),
+  blockedVersions: z.array(z.string()).max(500).default([]),
   minimumBuild: z.number().int().nonnegative().default(0),
   blockedBuilds: z.array(z.number().int().nonnegative()).max(500).default([]),
   disabled: z.boolean().default(false),
@@ -21,8 +23,8 @@ export type AccessPolicy = z.infer<typeof accessPolicySchema>;
 export const defaultAccessPolicy: AccessPolicy = {
   legacyEnabled: true,
   allServersRemoved: false,
-  android: { minimumBuild: 0, blockedBuilds: [], disabled: false },
-  windows: { minimumBuild: 0, blockedBuilds: [], disabled: false },
+  android: { minimumVersion: "0.0.0", blockedVersions: [], minimumBuild: 0, blockedBuilds: [], disabled: false },
+  windows: { minimumVersion: "0.0.0", blockedVersions: [], minimumBuild: 0, blockedBuilds: [], disabled: false },
   messageEn: "Update Astro VPN to continue.",
   messageFa: "برای ادامه، برنامه آسترو وی‌پی‌ان را به‌روزرسانی کنید.",
 };

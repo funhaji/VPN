@@ -1,4 +1,4 @@
-import { catalogMetadata, encryptResponse, isBuildBlocked, signDocument, validatePolicy, validateSnapshot, verifyInstallationRequest } from "./protocol.mjs";
+import { catalogMetadata, encryptResponse, isBuildBlocked, isClientBlocked, signDocument, validatePolicy, validateSnapshot, verifyInstallationRequest } from "./protocol.mjs";
 
 const headers = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Content-Type": "application/json" };
 const reply = (body, status = 200, extra = {}) => new Response(JSON.stringify(body), { status, headers: { ...headers, ...extra } });
@@ -28,7 +28,10 @@ export async function gateway(request, adapter) {
   let input;
   try { input = JSON.parse(new TextDecoder().decode(bytes)); }
   catch { return reply({ error: "Invalid JSON" }, 400); }
-  if (!input || !["android", "windows"].includes(input.platform) || !Number.isSafeInteger(input.build) || input.build < 1) return reply({ error: "Invalid platform/build" }, 400);
+  if (!input || !["android", "windows"].includes(input.platform)) return reply({ error: "Invalid platform" }, 400);
+  const hasValidBuild = Number.isSafeInteger(input.build) && input.build >= 1;
+  const hasValidVersion = typeof input.version === "string" && input.version.trim().length > 0 && input.version.length <= 32;
+  if (!hasValidBuild && !hasValidVersion) return reply({ error: "Invalid platform/build/version" }, 400);
   const ids = input.ids;
   if (path === "/v2/configs" && (!Array.isArray(ids) || !ids.length || ids.length > 12 || new Set(ids).size !== ids.length || ids.some(id => typeof id !== "string" || id.length > 80))) return reply({ error: "Request 1–12 distinct server IDs" }, 400);
   try {
@@ -42,7 +45,7 @@ export async function gateway(request, adapter) {
     const binding = { installation: installation.id, nonce: installation.nonce, generation: publication.generation };
     const signedPolicy = await signDocument({ ...policy, ...binding, issuedAt, expiresAt: issuedAt + 300_000 }, adapter.signingKey, adapter.keyId);
     if (path === "/v2/policy") return reply(signedPolicy);
-    if (isBuildBlocked(policy, input.platform, input.build)) return reply({ error: "Update required", policy: signedPolicy }, 426);
+    if (isClientBlocked(policy, input.platform, input.version, input.build)) return reply({ error: "Update required", policy: signedPolicy }, 426);
     const snapshot = validateSnapshot(publication.snapshot);
     if (path === "/v2/catalog") {
       return reply(await signDocument({ version: 2, ...binding, revision: snapshot.revision, issuedAt, expiresAt: issuedAt + 300_000,

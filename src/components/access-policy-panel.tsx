@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import type { DuplicateMatch } from "@/lib/server-duplicates";
 
 type PlatformRule = {
+  minimumVersion?: string;
+  blockedVersions?: string[];
   minimumBuild: number;
   blockedBuilds: number[];
   disabled: boolean;
@@ -43,6 +45,10 @@ export function AccessPolicyPanel({
     android: "",
     windows: "",
   });
+  const [blockedVersionsInput, setBlockedVersionsInput] = useState<{ android: string; windows: string }>({
+    android: "",
+    windows: "",
+  });
 
   // Duplication & shared endpoints state
   const [matches, setMatches] = useState<DuplicateMatch[]>([]);
@@ -57,6 +63,15 @@ export function AccessPolicyPanel({
   };
   const notify = (ok: boolean, text: string) => {
     if (setMsg) setMsg({ ok, text });
+  };
+
+  const semverToBuildNum = (v: string): number => {
+    const match = v.trim().replace(/^v/i, "").match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
+    if (!match) return 0;
+    const major = parseInt(match[1] || "0", 10);
+    const minor = parseInt(match[2] || "0", 10);
+    const patch = parseInt(match[3] || "0", 10);
+    return major * 1_000_000 + minor * 1_000 + patch;
   };
 
   const fetchJson = useCallback(
@@ -80,6 +95,14 @@ export function AccessPolicyPanel({
       setBlockedInput({
         android: data.android.blockedBuilds.join(", "),
         windows: data.windows.blockedBuilds.join(", "),
+      });
+      setBlockedVersionsInput({
+        android: data.android.blockedVersions && data.android.blockedVersions.length > 0
+          ? data.android.blockedVersions.join(", ")
+          : (data.android.blockedBuilds.length > 0 ? data.android.blockedBuilds.join(", ") : ""),
+        windows: data.windows.blockedVersions && data.windows.blockedVersions.length > 0
+          ? data.windows.blockedVersions.join(", ")
+          : (data.windows.blockedBuilds.length > 0 ? data.windows.blockedBuilds.join(", ") : ""),
       });
     } catch (error) {
       notify(false, error instanceof Error ? error.message : "Failed to load access policy");
@@ -402,71 +425,112 @@ export function AccessPolicyPanel({
                     />
                   </label>
 
-                  {/* Minimum Build */}
+                  {/* Minimum Version (Semver) */}
                   <div className="space-y-1.5">
-                    <label className="text-xs font-medium text-zinc-400">
-                      Minimum required build number
+                    <label className="text-xs font-medium text-zinc-300 flex items-center justify-between">
+                      <span>Minimum Allowed Version</span>
+                      <span className="text-[11px] font-mono text-zinc-500">Build: {rule.minimumBuild}</span>
                     </label>
                     <input
-                      type="number"
-                      min="0"
-                      step="1"
-                      value={rule.minimumBuild}
-                      onChange={(e) =>
+                      type="text"
+                      value={rule.minimumVersion ?? ""}
+                      onChange={(e) => {
+                        const ver = e.target.value.trim();
+                        const bNum = semverToBuildNum(ver);
                         setPolicy({
                           ...policy,
                           [platform]: {
                             ...rule,
-                            minimumBuild: Math.max(0, Math.floor(Number(e.target.value))),
+                            minimumVersion: ver,
+                            minimumBuild: bNum > 0 ? bNum : rule.minimumBuild,
                           },
-                        })
-                      }
+                        });
+                      }}
                       className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-zinc-100 font-mono focus:border-cyan-400 focus:outline-none focus:ring-1 focus:ring-cyan-400"
-                      placeholder={isAndroid ? "1003000" : "1002019"}
+                      placeholder={isAndroid ? "1.3.0" : "1.2.3"}
                     />
                     <p className="text-[11px] text-zinc-500">
-                      Clients with build number &lt; {rule.minimumBuild} will be prompted to update.
+                      Clients older than this (e.g. &lt; {rule.minimumVersion || "1.0.0"}) are blocked with a mandatory update screen.
                     </p>
                   </div>
 
-                  {/* Blocked Builds */}
+                  {/* Blocked Versions (Semver comma-separated) */}
                   <div className="space-y-1.5">
-                    <label className="text-xs font-medium text-zinc-400">
-                      Blocked build numbers (comma separated)
+                    <label className="text-xs font-medium text-zinc-300 flex items-center justify-between">
+                      <span>Blocked Versions (comma separated)</span>
+                      <span className="text-[11px] font-mono text-zinc-500">
+                        {rule.blockedVersions?.length ?? rule.blockedBuilds.length} blocked
+                      </span>
                     </label>
                     <input
                       type="text"
-                      value={blockedInput[platform]}
+                      value={blockedVersionsInput[platform]}
                       onChange={(e) =>
-                        setBlockedInput({
-                          ...blockedInput,
+                        setBlockedVersionsInput({
+                          ...blockedVersionsInput,
                           [platform]: e.target.value,
                         })
                       }
                       onBlur={(e) => {
-                        const vals = e.target.value
+                        const rawItems = e.target.value
                           .split(",")
-                          .map((v) => Number(v.trim()))
-                          .filter((v) => !isNaN(v) && Number.isSafeInteger(v) && v >= 0);
+                          .map((v) => v.trim())
+                          .filter(Boolean);
+                        const semvers = [...new Set(rawItems)];
+                        const numericBuilds = semvers
+                          .map((v) => (/^\d+$/.test(v) ? Number(v) : semverToBuildNum(v)))
+                          .filter((n) => n > 0);
+
                         setPolicy({
                           ...policy,
                           [platform]: {
                             ...rule,
-                            blockedBuilds: [...new Set(vals)],
+                            blockedVersions: semvers,
+                            blockedBuilds: [...new Set(numericBuilds)],
                           },
+                        });
+                        setBlockedVersionsInput({
+                          ...blockedVersionsInput,
+                          [platform]: semvers.join(", "),
                         });
                         setBlockedInput({
                           ...blockedInput,
-                          [platform]: [...new Set(vals)].join(", "),
+                          [platform]: [...new Set(numericBuilds)].join(", "),
                         });
                       }}
                       className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-zinc-100 font-mono focus:border-cyan-400 focus:outline-none focus:ring-1 focus:ring-cyan-400"
-                      placeholder="e.g. 1002015, 1002018"
+                      placeholder="e.g. 1.2.7, 1.2.8, 1.2.2"
                     />
                     <p className="text-[11px] text-zinc-500">
-                      Specifically blacklisted buggy builds blocked from establishing tunnels.
+                      Enter version numbers like 1.2.7 or 1.2.8 to blacklist specific releases immediately.
                     </p>
                   </div>
+
+                  {/* Collapsible raw build number view for legacy fallback */}
+                  <details className="pt-1 text-[11px] text-zinc-500">
+                    <summary className="cursor-pointer hover:text-zinc-400 transition select-none">
+                      Legacy Build Numbers (Advanced)
+                    </summary>
+                    <div className="mt-2 space-y-2 pl-2 border-l border-white/5">
+                      <div className="flex items-center justify-between">
+                        <span>Minimum integer build:</span>
+                        <input
+                          type="number"
+                          value={rule.minimumBuild}
+                          onChange={(e) =>
+                            setPolicy({
+                              ...policy,
+                              [platform]: {
+                                ...rule,
+                                minimumBuild: Math.max(0, Math.floor(Number(e.target.value))),
+                              },
+                            })
+                          }
+                          className="w-28 rounded-lg border border-white/10 bg-black/50 px-2 py-1 text-xs text-zinc-200 font-mono"
+                        />
+                      </div>
+                    </div>
+                  </details>
                 </div>
               );
             })}

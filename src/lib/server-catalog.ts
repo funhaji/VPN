@@ -1225,12 +1225,20 @@ const getSharedCatalog = unstable_cache(buildCatalog, ["server-catalog-v1"], {
 /** V2 publication rejects partial catalogs instead of interpreting errors as deletions. */
 export async function compilePublicationCatalog(authorizeEmpty = false) {
   const source = await listServers(true);
-  const servers = source.map(server => ({
-    id: server.id, name: server.name, protocol: server.protocol, country: server.country,
-    options: server.options, notice: server.notice || undefined,
-    updatedAt: String(server.updatedAt),
-    runtimeProfile: buildRuntimeProfile(server, decryptConfig(server.encryptedConfig)),
-  }));
+  const servers = source.map(server => {
+    const rawConfig = decryptConfig(server.encryptedConfig);
+    return {
+      id: server.id,
+      name: server.name,
+      protocol: server.protocol,
+      country: server.country,
+      options: server.options,
+      notice: server.notice || undefined,
+      updatedAt: String(server.updatedAt),
+      rawConfig,
+      runtimeProfile: buildRuntimeProfile(server, rawConfig),
+    };
+  });
   if (servers.some(server => server.runtimeProfile.supported !== true)) throw new Error("Fix unsupported enabled profiles before publishing");
   if (servers.length === 0 && !authorizeEmpty) throw new Error("Empty catalog is not authorized");
   if (servers.length > 0 && authorizeEmpty) throw new Error("Cannot authorize removal while enabled servers exist");
