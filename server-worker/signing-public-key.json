@@ -1,0 +1,10 @@
+﻿{
+    "keyId":  "astro-v2-2",
+    "algorithm":  "ECDSA-P256-SHA256",
+    "publicKey":  {
+                      "kty":  "EC",
+                      "crv":  "P-256",
+                      "x":  "tREq-gnoksreiEdjwqN9eWFAe0kH9iXgDHa3czTKsg8",
+                      "y":  "xrimwq7ueorPRgfgI92sX1LNyKoXnkTKZ-fdIU9EL1Q"
+                  }
+}
