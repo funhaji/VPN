@@ -38,9 +38,10 @@ export function redisClient(env, transport = fetch) {
   const url = new URL(env.V2_REDIS_REST_URL);
   if (url.protocol !== "https:" || !env.V2_REDIS_REST_TOKEN) throw new Error("Shared V2 storage is not configured");
   return async command => {
-    const response = await transport(url, { method: "POST", redirect: "error", cache: "no-store",
+    const response = await transport(url, { method: "POST", redirect: "manual", cache: "no-store",
       headers: { Authorization: `Bearer ${env.V2_REDIS_REST_TOKEN}`, "Content-Type": "application/json" },
       body: JSON.stringify(command), signal: AbortSignal.timeout(5000) });
+    if (response.status >= 300 && response.status < 400) throw new Error("Shared V2 storage unavailable");
     if (!response.ok) throw new Error("Shared V2 storage unavailable");
     const body = await response.json();
     if (body.error) throw new Error("Shared V2 storage rejected command");

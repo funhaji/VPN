@@ -9,6 +9,8 @@ compatibility_date = "2026-01-01"
 [vars]
 CACHE_SECONDS = "3600"
 SITE_URL = "https://astrovpn.vercel.app"
+V2_STORAGE_PREFIX = "astro-v2"
+V2_INSTALLATION_BUDGET = "240"
 
 # Optional: serve files from R2 instead of GitHub (10 GB free, zero egress).
 # [[r2_buckets]]
