@@ -10,11 +10,10 @@ import { ActiveUsersPanel } from "@/components/active-users-panel";
 import { DbSyncModal } from "@/components/db-sync-modal";
 import { BulkReplaceModal } from "@/components/bulk-replace-modal";
 import { AccessPolicyPanel } from "@/components/access-policy-panel";
-import { DuplicateReport } from "@/components/duplicate-report";
 import { COUNTRIES, flagFromCountryCode, getCountryMeta, normalizeLocationCode } from "@/lib/countries";
 import { createAutoNamer, planLocationRename, type RenamePlan } from "@/lib/server-naming";
 
-type TabId = "v2ray" | "ssh" | "openvpn" | "wireguard" | "warp" | "custom" | "bulk" | "routing" | "http" | "l2tp" | "users";
+type TabId = "v2ray" | "ssh" | "openvpn" | "wireguard" | "warp" | "custom" | "bulk" | "routing" | "http" | "l2tp" | "users" | "safety";
 type SshMode = "direct" | "dnstt";
 type SshResolverMode = "udp" | "dot" | "doh";
 type OpenVpnMode = "tcp" | "udp";
@@ -158,6 +157,7 @@ const PROTOCOLS: Array<{
   { id: "bulk", label: "Bulk", badge: "JSON array import", support: "Import" },
   { id: "routing", label: "Routing Rules", badge: "Iran Direct", support: "Geo IP bypass" },
   { id: "users", label: "Active Users", badge: "Telemetry & Devices", support: "Live activity" },
+  { id: "safety", label: "Catalog & Safety", badge: "V2 & API Policy", support: "Publication & deduplication" },
 ];
 
 const NAV_META: Record<TabId, { short: string; tone: string; group: "protocols" | "manage" }> = {
@@ -172,6 +172,7 @@ const NAV_META: Record<TabId, { short: string; tone: string; group: "protocols" 
   bulk: { short: "⇪", tone: "from-indigo-500/30 to-indigo-500/10 text-indigo-200 ring-indigo-400/30", group: "manage" },
   routing: { short: "⇄", tone: "from-teal-500/30 to-teal-500/10 text-teal-200 ring-teal-400/30", group: "manage" },
   users: { short: "◉", tone: "from-fuchsia-500/30 to-fuchsia-500/10 text-fuchsia-200 ring-fuchsia-400/30", group: "manage" },
+  safety: { short: "🛡", tone: "from-emerald-500/30 to-emerald-500/10 text-emerald-200 ring-emerald-400/30", group: "manage" },
 };
 
 const stripLeadingCountryFlag = (value: string): string =>
@@ -2844,8 +2845,24 @@ export function AdminDashboard() {
             </div>
           </div>
 
-          <AccessPolicyPanel />
-          <DuplicateReport />
+          {/* Catalog & Safety Quick Card */}
+          <div
+            onClick={() => { setTab("safety"); setMsg(null); }}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setTab("safety"); setMsg(null); } }}
+            className="cursor-pointer rounded-xl border border-white/6 bg-white/3 p-3 space-y-1.5 transition hover:border-emerald-500/30 hover:bg-white/5"
+            title="Click to open Catalog & Safety panel"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] uppercase tracking-[0.18em] text-zinc-500 flex items-center gap-1.5">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                Catalog & Safety
+              </span>
+              <span className="text-[10px] font-mono text-emerald-300">Open ↗</span>
+            </div>
+            <p className="text-[11px] text-zinc-400">V2 publication, client version gates & endpoint duplicates.</p>
+          </div>
           {/* Database Engine & Sync */}
           <div className="rounded-xl border border-white/6 bg-white/3 p-3 space-y-2.5">
             <div className="flex items-center justify-between">
@@ -2973,12 +2990,14 @@ export function AdminDashboard() {
           })()}
         </div>
 
-        <div className={`grid gap-4 p-3 sm:p-5 lg:p-5 min-w-0 ${tab === "users" || tab === "routing" ? "" : "xl:grid-cols-[minmax(0,1.5fr)_360px]"}`}>
+        <div className={`grid gap-4 p-3 sm:p-5 lg:p-5 min-w-0 ${tab === "users" || tab === "routing" || tab === "safety" ? "" : "xl:grid-cols-[minmax(0,1.5fr)_360px]"}`}>
           <section className="space-y-4 min-w-0 max-w-full">
             {tab === "routing" ? (
               <RoutingRulesPanel api={api} busy={busy} setBusy={setBusy} setMsg={setMsg} />
             ) : tab === "users" ? (
               <ActiveUsersPanel api={api} setMsg={setMsg} />
+            ) : tab === "safety" ? (
+              <AccessPolicyPanel api={api} busy={busy} setBusy={setBusy} setMsg={setMsg} />
             ) : tab !== "bulk" ? (
               <div className="rounded-2xl border border-zinc-900 bg-zinc-950/70 p-4">
                 <div className="grid gap-4 md:grid-cols-2">
@@ -4568,7 +4587,7 @@ or
             </div>
           </section>
 
-          {tab !== "users" && tab !== "routing" && (
+          {tab !== "users" && tab !== "routing" && tab !== "safety" && (
           <aside className="space-y-4 min-w-0 xl:sticky xl:top-36 xl:self-start">
             <div className="rounded-2xl border border-white/6 bg-white/3 p-4">
               <div className="flex items-center justify-between">

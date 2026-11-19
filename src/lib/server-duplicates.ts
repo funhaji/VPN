@@ -42,7 +42,8 @@ export function serverIdentity(candidate: DuplicateCandidate) {
         if (!value || typeof value !== "object") return;
         for (const [key, item] of Object.entries(value)) {
           if (!credential && /^(uuid|private_key|privateKey|password)$/i.test(key) && typeof item === "string") credential = item;
-          if (/^(server|address|host)$/i.test(key) && typeof item === "string" && !host) host = item;
+          if (/^(server|address|host)$/i.test(key) && typeof item === "string" && (!host || host === "embedded-config")) host = item;
+          if (/^(server_port|port)$/i.test(key) && typeof item === "number" && !port) port = item;
           visit(item);
         }
       };
@@ -51,13 +52,19 @@ export function serverIdentity(candidate: DuplicateCandidate) {
     } else {
       const endpoint = config.match(/^\s*Endpoint\s*=\s*(\[[^\]]+\]|[^:\s]+):(\d+)/im);
       if (endpoint) { host = endpoint[1]; port = Number(endpoint[2]); }
+      const remote = config.match(/^\s*remote\s+(\[[^\]]+\]|\S+)(?:\s+(\d+))?/im);
+      if (remote && (!host || host === "embedded-config")) {
+        host = remote[1];
+        if (remote[2]) port = Number(remote[2]);
+      }
       credential = config.match(/^\s*PrivateKey\s*=\s*(\S+)/im)?.[1] ?? "";
       // Ignore comments, preserve directive order (significant for OpenVPN).
       config = config.split("\n").filter(line => !/^\s*[#;]/.test(line)).map(line => line.trim()).filter(Boolean).join("\n");
     }
   } catch { /* Unrecognized formats still get exact-config duplicate detection. */ }
   const endpoint = host && host !== "embedded-config" ? `${normalizeHost(host)}:${port}` : "";
-  return { exact: digest(config), endpoint, host: endpoint ? normalizeHost(host) : "", credential: credential ? digest(credential) : "" };
+  const normalizedHost = endpoint ? normalizeHost(host) : (host && host !== "embedded-config" ? normalizeHost(host) : "");
+  return { exact: digest(config), endpoint, host: normalizedHost, credential: credential ? digest(credential) : "" };
 }
 
 export function findServerDuplicates(incoming: DuplicateCandidate[], existing: DuplicateCandidate[]): DuplicateMatch[] {
@@ -74,7 +81,14 @@ export function findServerDuplicates(incoming: DuplicateCandidate[], existing: D
       const endpointKind = identity.endpoint && identity.endpoint === other.identity.endpoint ? "shared-endpoint"
         : identity.host && identity.host === other.identity.host ? "shared-host" : null;
       if (endpointKind) matches.push({ incoming: server.name, existing: other.server.name, kind: endpointKind });
-      if (identity.credential && identity.credential === other.identity.credential) matches.push({ incoming: server.name, existing: other.server.name, kind: "shared-credential" });
+      if (
+        identity.credential &&
+        identity.credential === other.identity.credential &&
+        identity.host &&
+        identity.host === other.identity.host
+      ) {
+        matches.push({ incoming: server.name, existing: other.server.name, kind: "shared-credential" });
+      }
     }
     indexed.push({ server, identity });
   }
