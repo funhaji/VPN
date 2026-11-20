@@ -440,63 +440,103 @@ const buildOutboundFromHttpUri = (
   );
 };
 
-const buildOutboundFromSsh = (
+export const buildOutboundFromSsh = (
   rawConfig: string,
 ): JsonObject => {
   const parsed = parseJson(rawConfig);
   if (isObject(parsed)) {
     const pType = pickString(parsed.type)?.toLowerCase();
     if (pType === "ssh-profile" || pType === "ssh" || (!pType && (parsed.server || parsed.host))) {
-    const server = pickString(parsed.server) ?? pickString(parsed.host) ?? "";
-    const port = pickNumber(parsed.port) ?? pickNumber(parsed.server_port) ?? 22;
-    const user = pickString(parsed.username) ?? pickString(parsed.user) ?? "root";
-    const password = pickString(parsed.password) ?? pickString(parsed.pass);
-    const proxyHost = pickString(parsed.proxyHost) ?? pickString(parsed.httpProxy);
-    const proxyPort = pickNumber(parsed.proxyPort) ?? 8880;
-    const sni = pickString(parsed.sni);
-    const isTls = Boolean(parsed.tls);
+      const server = pickString(parsed.server) ?? pickString(parsed.host) ?? "";
+      const port = pickNumber(parsed.port) ?? pickNumber(parsed.server_port) ?? 22;
+      const user = pickString(parsed.username) ?? pickString(parsed.user) ?? "root";
+      const password = pickString(parsed.password) ?? pickString(parsed.pass);
+      const privateKey = pickString(parsed.private_key) ?? pickString(parsed.privateKey);
+      const privateKeyPassphrase = pickString(parsed.private_key_passphrase) ?? pickString(parsed.privateKeyPassphrase);
+      const clientVersion = pickString(parsed.client_version) ?? pickString(parsed.clientVersion);
+      const hostKey = parsed.host_key ?? parsed.hostKey;
 
-    const baseOutbound: JsonObject = {
-      type: "ssh",
-      tag: "proxy",
-      server,
-      server_port: port,
-      user,
-    };
-    if (password) {
-      baseOutbound.password = password;
-    }
+      const profileObj = isObject(parsed._ssh_profile) ? (parsed._ssh_profile as JsonObject) : null;
+      const rawTransport = pickString(parsed.transport) ?? pickString(profileObj?.transport);
+      const wsPath = pickString(parsed.wsPath) ?? pickString(parsed.path) ?? pickString(profileObj?.wsPath);
+      const isWs = rawTransport === "ws" || Boolean(wsPath);
+      const proxyHost = pickString(parsed.proxyHost) ?? pickString(parsed.httpProxy) ?? pickString(profileObj?.proxyHost);
+      const isTls = Boolean(parsed.tls ?? profileObj?.tls);
+      const defaultProxyPort = isWs ? (isTls ? 443 : 80) : 8080;
+      const proxyPort = pickNumber(parsed.proxyPort) ?? pickNumber(profileObj?.proxyPort) ?? defaultProxyPort;
+      const sni = pickString(parsed.sni) ?? pickString(profileObj?.sni);
+      const hostHeader = pickString(parsed.hostHeader) ?? pickString(profileObj?.hostHeader);
+      const rawHeaders = isObject(parsed.headers) ? parsed.headers : (isObject(profileObj?.headers) ? profileObj?.headers : null);
 
-    if (proxyHost) {
-      baseOutbound.detour = "http-proxy";
-      const extraOutbounds: JsonObject[] = [
-        withOptional(
+      const baseOutbound: JsonObject = {
+        type: "ssh",
+        tag: "proxy",
+        server,
+        server_port: port,
+        user,
+      };
+      if (password) baseOutbound.password = password;
+      if (privateKey) baseOutbound.private_key = privateKey;
+      if (privateKeyPassphrase) baseOutbound.private_key_passphrase = privateKeyPassphrase;
+      if (clientVersion) baseOutbound.client_version = clientVersion;
+      if (Array.isArray(hostKey) && hostKey.length > 0) baseOutbound.host_key = hostKey;
+
+      if (Array.isArray(parsed._extra_outbounds) && parsed._extra_outbounds.length > 0) {
+        baseOutbound.detour = pickString(parsed.detour) ?? "ssh-transport";
+        baseOutbound._extra_outbounds = parsed._extra_outbounds;
+      } else if (proxyHost || isWs) {
+        const detourTag = pickString(parsed.detour) ?? "ssh-transport";
+        baseOutbound.detour = detourTag;
+        const targetProxyHost = proxyHost || server;
+        const effectiveSni = sni && sni.toLowerCase() !== "empty" ? sni : undefined;
+        const effectiveHostHeader = hostHeader || effectiveSni || (isWs ? server : `${server}:${port}`);
+
+        const transportHeaders: Record<string, string> = {
+          Host: effectiveHostHeader,
+          ...(isWs ? { Upgrade: "websocket", Connection: "Upgrade" } : {}),
+          ...(rawHeaders ? (rawHeaders as Record<string, string>) : {}),
+        };
+
+        const transportOutbound: JsonObject = withOptional(
           {
             type: "http",
-            tag: "http-proxy",
-            server: proxyHost,
+            tag: detourTag,
+            server: targetProxyHost,
             server_port: proxyPort,
           },
           {
+            path: isWs ? (wsPath || "/") : undefined,
             tls: isTls
               ? withOptional(
                   { enabled: true },
-                  { server_name: sni && sni.toLowerCase() !== "empty" ? sni : undefined },
+                  { server_name: effectiveSni },
                 )
               : undefined,
-            headers: {
-              Host: `${server}:${port}`,
-            },
+            headers: transportHeaders,
           },
-        ),
-      ];
-      baseOutbound._extra_outbounds = extraOutbounds;
-    }
+        );
+        baseOutbound._extra_outbounds = [transportOutbound];
+      }
 
-    baseOutbound._ssh_profile = parsed;
-    return baseOutbound;
+      baseOutbound._ssh_profile = {
+        ...(profileObj ?? parsed),
+        server,
+        port,
+        username: user,
+        ...(password ? { password } : {}),
+        transport: isWs ? "ws" : (proxyHost ? "http" : "direct"),
+        ...(proxyHost ? { proxyHost } : {}),
+        ...(proxyPort ? { proxyPort } : {}),
+        ...(isWs ? { wsPath: wsPath || "/" } : {}),
+        ...(isTls ? { tls: true } : {}),
+        ...(sni ? { sni } : {}),
+        ...(hostHeader ? { hostHeader } : {}),
+        ...(rawHeaders ? { headers: rawHeaders } : {}),
+      };
+
+      return baseOutbound;
+    }
   }
-}
 
   const url = new URL(rawConfig);
   return withOptional(

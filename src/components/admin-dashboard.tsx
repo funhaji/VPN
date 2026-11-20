@@ -14,7 +14,7 @@ import { COUNTRIES, flagFromCountryCode, getCountryMeta, normalizeLocationCode }
 import { createAutoNamer, planLocationRename, type RenamePlan } from "@/lib/server-naming";
 
 type TabId = "v2ray" | "ssh" | "openvpn" | "wireguard" | "warp" | "custom" | "bulk" | "routing" | "http" | "l2tp" | "users" | "safety";
-type SshMode = "direct" | "dnstt";
+type SshMode = "direct" | "http" | "ws" | "dnstt";
 type SshResolverMode = "udp" | "dot" | "doh";
 type OpenVpnMode = "tcp" | "udp";
 type OpenVpnInputMode = "file" | "paste";
