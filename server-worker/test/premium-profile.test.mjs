@@ -37,3 +37,11 @@ test("the published (V2) catalog excludes premium servers so legacy clients cann
   assert.ok(publication, "compilePublicationCatalog must be located");
   assert.match(publication, /listServers\(true,\s*true\)/, "publication catalog must use the premium-filtered server list");
 });
+
+test("the premium proof covers device identity only, never the app version (premium previews regression)", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(new URL("../../src/lib/premium-proof.ts", import.meta.url), "utf8");
+  assert.ok(!source.includes(".test(version)"), "the server must never gate or block on the app version");
+  assert.match(source, /platform, version, marker, time, nonce/, "legacy clients that sign the version must still verify during transition");
+  assert.match(source, /platform, marker, time, nonce/, "the current contract signs marker, device ID, platform, time, nonce and body digest only");
+});

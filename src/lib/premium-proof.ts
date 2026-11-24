@@ -42,8 +42,12 @@ export async function authenticatePremium(request: Request, body: string, option
     const jwk = JSON.parse(Buffer.from(key, "base64url").toString());
     if (jwk.kty !== "EC" || jwk.crv !== "P-256" || typeof jwk.x !== "string" || typeof jwk.y !== "string" || jwk.d) throw new Error();
     canonicalKey = JSON.stringify({ kty: "EC", crv: "P-256", x: jwk.x, y: jwk.y });
-    const message = ["astro-premium-v1", request.method, new URL(request.url).pathname, device, platform, version, marker, time, nonce, digest(body)].join("\n");
-    if (!verify("sha256", Buffer.from(message), { key: createPublicKey({ key: JSON.parse(canonicalKey), format: "jwk" }), dsaEncoding: "ieee-p1363" }, Buffer.from(signature, "base64url"))) throw new Error();
+    const message = ["astro-premium-v1", request.method, new URL(request.url).pathname, device, platform, marker, time, nonce, digest(body)].join("\n");
+    // Transition: older clients sign the app version into the proof; accept both shapes.
+    const legacy = ["astro-premium-v1", request.method, new URL(request.url).pathname, device, platform, version, marker, time, nonce, digest(body)].join("\n");
+    const verifyKey = { key: createPublicKey({ key: JSON.parse(canonicalKey), format: "jwk" }), dsaEncoding: "ieee-p1363" } as const;
+    const sig = Buffer.from(signature, "base64url");
+    if (!verify("sha256", Buffer.from(message), verifyKey, sig) && !verify("sha256", Buffer.from(legacy), verifyKey, sig)) throw new Error();
   } catch { throw new PremiumError("Invalid device proof", 401); }
   // Only enrolled identities with the pinned key may trigger a punitive action.
   const [existing] = await sql`SELECT * FROM premium_devices WHERE device_hash = ${deviceHash}`;
@@ -68,14 +72,14 @@ export async function authenticatePremium(request: Request, body: string, option
   // Reject captured proofs before any punitive side effects.
   const inserted = await sql`INSERT INTO premium_nonces(device_hash, nonce, expires_at) VALUES(${deviceHash}, ${nonce}, NOW() + INTERVAL '2 minutes') ON CONFLICT DO NOTHING RETURNING nonce`;
   if (!inserted.length) throw new PremiumError("Replayed request", 409);
-  if (marker !== PREMIUM_MARKER || !["android", "windows"].includes(platform) || !/^\d+\.\d+\.\d+$/.test(version)) {
+  if (marker !== PREMIUM_MARKER || !["android", "windows"].includes(platform)) {
     if (existing) {
       await sql.begin(async tx => {
         const [current] = await tx`SELECT active_subscription FROM premium_devices WHERE device_hash = ${deviceHash} FOR UPDATE`;
         await tx`UPDATE premium_devices SET blocked_at = NOW() WHERE device_hash = ${deviceHash}`;
         if (current?.active_subscription) await tx`UPDATE premium_subscriptions SET revoked_at = NOW() WHERE id = ${current.active_subscription}`;
         await tx`INSERT INTO premium_security_logs(device_hash, subscription_id, event, detail)
-          VALUES(${deviceHash}, ${current?.active_subscription ?? null}, 'authenticated_protocol_violation', 'Signed request used invalid marker, platform or app version; device blocked and subscription revoked')`;
+          VALUES(${deviceHash}, ${current?.active_subscription ?? null}, 'authenticated_protocol_violation', 'Signed request used invalid marker or platform; device blocked and subscription revoked')`;
       });
     }
     throw new PremiumError("Invalid client protocol. DM @AstroVPN_Help and send your subscription key privately. Never post it publicly.", 403);
