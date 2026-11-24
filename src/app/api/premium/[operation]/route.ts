@@ -12,10 +12,9 @@ const headers = {
   "Access-Control-Allow-Headers": "Content-Type,x-astro-premium,x-astro-device,x-astro-time,x-astro-nonce,x-astro-key,x-astro-signature,x-astro-platform,x-astro-version",
 };
 export function OPTIONS() { return new Response(null, { status: 204, headers }); }
-export async function GET(_request: Request, context: { params: Promise<{ operation: string }> }) {
-  if ((await context.params).operation !== "previews") return Response.json({ error: "Not found" }, { status: 404, headers });
-  try { return Response.json({ servers: await premiumPreviews() }, { headers }); }
-  catch { return Response.json({ error: "Premium unavailable" }, { status: 503, headers }); }
+export async function GET() {
+  // Premium endpoints never answer anonymous requests: no proof, no data.
+  return Response.json({ error: "Unauthorized" }, { status: 401, headers });
 }
 export async function POST(request: NextRequest, context: { params: Promise<{ operation: string }> }) {
   try {
@@ -30,6 +29,10 @@ export async function POST(request: NextRequest, context: { params: Promise<{ op
     try { data = JSON.parse(body); } catch { throw new PremiumError("Invalid JSON"); }
     if (!data || typeof data !== "object" || Array.isArray(data)) throw new PremiumError("Invalid body");
     if (operation === "account") return Response.json(await premiumAccount(deviceHash), { headers });
+    if (operation === "previews") {
+      await premiumRateLimit(`previews:${deviceHash}`, 30);
+      return Response.json(await premiumPreviews(deviceHash), { headers });
+    }
     if (operation === "trial" || operation === "redeem") {
       await premiumRateLimit(`redeem:${deviceHash}`, 8);
       return Response.json(await redeemPremium(deviceHash, typeof data.key === "string" ? data.key.trim().toUpperCase() : "", operation === "trial"), { headers });

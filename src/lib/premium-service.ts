@@ -81,9 +81,36 @@ export async function recoverPremium(deviceHash: string) {
   return premiumAccount(deviceHash);
 }
 
-export async function premiumPreviews() {
+// Previews are metadata-only but still authenticated: the endpoint refuses to
+// respond without a valid device proof, so the premium list cannot be scraped
+// anonymously. Ping targets come from the encrypted template and never include
+// credentials.
+export type PremiumPingTarget = { host: string; port: number };
+
+function pingTargetFromTemplate(rawConfig: string): PremiumPingTarget | null {
+  try {
+    const parsed = JSON.parse(rawConfig) as Record<string, unknown>;
+    const host = [parsed.server, parsed.address, parsed.host].find(v => typeof v === "string" && v.length > 0 && v.length <= 253) as string | undefined;
+    const port = [parsed.server_port, parsed.port].find(v => typeof v === "number" && Number.isInteger(v) && v > 0 && v < 65536) as number | undefined;
+    if (host && port) return { host, port };
+  } catch { /* Template is not JSON (for example an OpenVPN profile); no ping target. */ }
+  return null;
+}
+
+export async function premiumPreviews(deviceHash: string) {
   await ensurePremiumSchema();
-  return premiumDb()`SELECT id, name, country FROM premium_servers WHERE enabled = TRUE ORDER BY name, id`;
+  const sql = premiumDb();
+  const rows = await sql`SELECT id, name, country, config_json FROM premium_servers WHERE enabled = TRUE ORDER BY name, id`;
+  const account = await premiumAccount(deviceHash);
+  return {
+    serverTime: new Date().toISOString(),
+    account,
+    servers: rows.map(row => {
+      let ping: PremiumPingTarget | null = null;
+      try { ping = pingTargetFromTemplate(decryptConfig(JSON.parse(row.config_json))); } catch { ping = null; }
+      return { id: row.id, name: row.name, country: row.country, pingHost: ping?.host ?? null, pingPort: ping?.port ?? null };
+    }),
+  };
 }
 
 // A node controller, not a client-supplied byte counter, is the traffic authority.
