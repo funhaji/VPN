@@ -29,3 +29,11 @@ test("JumpJump rejects malformed and cyclic detours", () => {
     assert.throws(() => jumpJumpProfile(input));
   }
 });
+
+test("the published (V2) catalog excludes premium servers so legacy clients cannot connect to them for free", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(new URL("../../src/lib/server-catalog.ts", import.meta.url), "utf8");
+  const publication = source.match(/export async function compilePublicationCatalog\([\s\S]*?\n\}\n/)?.[0];
+  assert.ok(publication, "compilePublicationCatalog must be located");
+  assert.match(publication, /listServers\(true,\s*true\)/, "publication catalog must use the premium-filtered server list");
+});

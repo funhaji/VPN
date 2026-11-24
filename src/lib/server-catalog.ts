@@ -1269,7 +1269,9 @@ const getSharedCatalog = unstable_cache(buildCatalog, ["server-catalog-v1"], {
 
 /** V2 publication rejects partial catalogs instead of interpreting errors as deletions. */
 export async function compilePublicationCatalog(authorizeEmpty = false) {
-  const source = await listServers(true);
+  // Premium servers must never reach the published catalog: older app
+  // versions consume it with no premium logic and would expose them for free.
+  const source = await listServers(true, true);
   const servers = source.map(server => {
     const rawConfig = decryptConfig(server.encryptedConfig);
     return {

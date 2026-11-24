@@ -1882,6 +1882,7 @@ export function AdminDashboard() {
         country: countryCode,
         rawConfig: effectiveRawConfig.trim(),
         isEnabled: true,
+        isPremium: form.isPremium,
         options: {
           mux: form.mux,
           fragment: form.fragment,

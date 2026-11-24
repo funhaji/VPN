@@ -56,6 +56,31 @@ export async function redeemPremium(deviceHash: string, key: string, trial: bool
   return premiumAccount(deviceHash);
 }
 
+// Recovery: a reinstalled or logged-out device keeps its device ID, so re-bind the most
+// recent subscription redeemed on this device that is still active.
+export async function recoverPremium(deviceHash: string) {
+  const sql = premiumDb();
+  await sql.begin(async tx => {
+    const [device] = await tx`SELECT * FROM premium_devices WHERE device_hash = ${deviceHash} FOR UPDATE`;
+    if (!device) throw new PremiumError("No subscription found on this device ID", 404);
+    if (device.blocked_at) throw new PremiumError("Device blocked", 403);
+    if (device.active_subscription) {
+      const [current] = await tx`SELECT * FROM premium_subscriptions WHERE id = ${device.active_subscription}`;
+      if (current && !current.revoked_at && new Date(current.expires_at).getTime() > Date.now() && BigInt(current.used_bytes) < BigInt(current.traffic_limit)) {
+        return; // Already active; nothing to recover.
+      }
+    }
+    const [candidate] = await tx`SELECT s.* FROM premium_redemptions r JOIN premium_subscriptions s ON s.id = r.subscription_id
+      WHERE r.device_hash = ${deviceHash} AND s.revoked_at IS NULL AND s.expires_at > NOW() AND s.used_bytes < s.traffic_limit
+      ORDER BY s.expires_at DESC LIMIT 1`;
+    if (!candidate) throw new PremiumError("No active subscription found on this device ID", 404);
+    await tx`UPDATE premium_devices SET active_subscription = ${candidate.id} WHERE device_hash = ${deviceHash}`;
+    await tx`INSERT INTO premium_security_logs(device_hash, subscription_id, event, detail)
+      VALUES(${deviceHash}, ${candidate.id}, 'subscription_recovered', 'Subscription re-bound from this device ID redemption history')`;
+  });
+  return premiumAccount(deviceHash);
+}
+
 export async function premiumPreviews() {
   await ensurePremiumSchema();
   return premiumDb()`SELECT id, name, country FROM premium_servers WHERE enabled = TRUE ORDER BY name, id`;
@@ -117,7 +142,8 @@ export async function savePremiumServer(input: { id?: string; name: string; coun
   const encrypted = JSON.stringify(encryptConfig(input.rawConfig));
   await premiumDb().begin(async tx => {
     await tx`INSERT INTO premium_servers(id, name, country, controller_node, config_json)
-      VALUES(${id}, ${input.name}, ${input.country}, ${input.node}, ${encrypted})`;
+      VALUES(${id}, ${input.name}, ${input.country}, ${input.node}, ${encrypted})
+      ON CONFLICT (id) DO UPDATE SET name = ${input.name}, country = ${input.country}, controller_node = ${input.node}, config_json = ${encrypted}`;
     await tx`INSERT INTO premium_security_logs(event, detail)
       VALUES('admin_server_added', ${`Private server ${id} added; template is not recorded`})`;
   });

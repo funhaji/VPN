@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
 import { deleteServer, getServer, updateServer } from "@/lib/db";
+import { savePremiumServer } from "@/lib/premium-service";
+import { premiumDb } from "@/lib/premium-db";
 import { isAuthorized, limitRequest } from "@/lib/auth";
 
 import { decryptConfig, encryptConfig } from "@/lib/crypto";
@@ -100,6 +102,7 @@ export async function PATCH(
       port: data.port,
       country: safeCountry,
       isEnabled: data.isEnabled,
+      isPremium: data.isPremium,
       options: data.options,
     };
     if (data.rawConfig !== undefined) {
@@ -107,6 +110,21 @@ export async function PATCH(
     }
 
     await updateServer(id, updateInput);
+    if (data.isPremium !== undefined) {
+      if (!data.isPremium) {
+        try { await premiumDb()`DELETE FROM premium_servers WHERE id = ${id}`; } catch (premiumError) {
+          console.error("Failed to remove premium mirror:", premiumError);
+        }
+      } else {
+        try {
+          const record = await getServer(id);
+          const raw = record ? decryptConfig(record.encryptedConfig) : "";
+          if (record) await savePremiumServer({ id, name: record.name, country: record.country, node: "default", rawConfig: raw });
+        } catch (premiumError) {
+          console.error("Failed to register premium server:", premiumError);
+        }
+      }
+    }
     revalidateServerCatalog();
     return NextResponse.json({ ok: true });
   } catch {

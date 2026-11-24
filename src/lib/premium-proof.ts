@@ -21,7 +21,7 @@ export async function premiumRateLimit(bucket: string, max: number) {
   if (row.hits > max) throw new PremiumError("Too many requests. Try again shortly.", 429);
 }
 
-export async function authenticatePremium(request: Request, body: string) {
+export async function authenticatePremium(request: Request, body: string, options?: { recover?: boolean }) {
   await ensurePremiumSchema();
   const sql = premiumDb();
   const device = request.headers.get("x-astro-device") || "";
@@ -47,7 +47,22 @@ export async function authenticatePremium(request: Request, body: string) {
   } catch { throw new PremiumError("Invalid device proof", 401); }
   // Only enrolled identities with the pinned key may trigger a punitive action.
   const [existing] = await sql`SELECT * FROM premium_devices WHERE device_hash = ${deviceHash}`;
-  if (existing && existing.public_key !== canonicalKey) throw new PremiumError("Device identity changed. DM @AstroVPN_Help and send your subscription key privately. Never post it publicly.", 403);
+  if (existing && existing.public_key !== canonicalKey) {
+    // Recovery: a reinstalled app keeps its device ID but regenerates its signing key.
+    // Re-pin the key only when an active subscription is bound to this device identity.
+    let recovered = false;
+    if (options?.recover && !existing.blocked_at) {
+      const [bound] = await sql`SELECT 1 FROM premium_redemptions r JOIN premium_subscriptions s ON s.id = r.subscription_id
+        WHERE r.device_hash = ${deviceHash} AND s.revoked_at IS NULL AND s.expires_at > NOW() AND s.used_bytes < s.traffic_limit`;
+      if (bound) {
+        await sql`UPDATE premium_devices SET public_key = ${canonicalKey} WHERE device_hash = ${deviceHash}`;
+        await sql`INSERT INTO premium_security_logs(device_hash, event, detail)
+          VALUES(${deviceHash}, 'device_identity_recovered', 'Signing key re-pinned after reinstall; active subscription verified on this device ID')`;
+        recovered = true;
+      }
+    }
+    if (!recovered) throw new PremiumError("Device identity changed. DM @AstroVPN_Help and send your subscription key privately. Never post it publicly.", 403);
+  }
   if (existing?.blocked_at) throw new PremiumError("Device blocked. DM @AstroVPN_Help and send your subscription key privately. Never post it publicly.", 403);
   await premiumRateLimit(`device:${deviceHash}`, 90);
   // Reject captured proofs before any punitive side effects.
