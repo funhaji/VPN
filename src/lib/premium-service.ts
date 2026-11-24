@@ -122,6 +122,8 @@ function pingTargetFromTemplate(rawConfig: string): PremiumPingTarget | null {
   return null;
 }
 
+// Without an active subscription the list is names and countries only: no
+// server id, no ping target, nothing that identifies or reaches a node.
 export async function premiumPreviews(deviceHash: string) {
   await ensurePremiumSchema();
   const sql = premiumDb();
@@ -131,6 +133,7 @@ export async function premiumPreviews(deviceHash: string) {
     serverTime: new Date().toISOString(),
     account,
     servers: rows.map(row => {
+      if (!account.active) return { name: row.name, country: row.country };
       let ping: PremiumPingTarget | null = null;
       try { ping = pingTargetFromTemplate(decryptConfig(JSON.parse(row.config_json))); } catch { ping = null; }
       return { id: row.id, name: row.name, country: row.country, pingHost: ping?.host ?? null, pingPort: ping?.port ?? null };

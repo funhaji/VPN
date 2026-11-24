@@ -4,9 +4,11 @@ import { premiumDb, ensurePremiumSchema } from "@/lib/premium-db";
 export const PREMIUM_MARKER = "astro-premium-v1";
 export class PremiumError extends Error {
   public status: number;
-  constructor(message: string, status = 400) {
+  public code: string;
+  constructor(message: string, status = 400, code = "premium_error") {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 export const digest = (value: string) => createHash("sha256").update(value).digest("base64url");
@@ -18,7 +20,7 @@ export async function premiumRateLimit(bucket: string, max: number) {
       hits = CASE WHEN premium_request_limits.window_start < NOW() - INTERVAL '1 minute' THEN 1 ELSE premium_request_limits.hits + 1 END,
       window_start = CASE WHEN premium_request_limits.window_start < NOW() - INTERVAL '1 minute' THEN NOW() ELSE premium_request_limits.window_start END
     RETURNING hits`;
-  if (row.hits > max) throw new PremiumError("Too many requests. Try again shortly.", 429);
+  if (row.hits > max) throw new PremiumError("Too many requests. Try again shortly.", 429, "rate_limited");
 }
 
 export async function authenticatePremium(request: Request, body: string, options?: { recover?: boolean }) {
@@ -34,7 +36,7 @@ export async function authenticatePremium(request: Request, body: string, option
   const marker = request.headers.get("x-astro-premium") || "";
   if (!/^[\w.:-]{8,128}$/.test(device) || !/^\d{13}$/.test(time) || Math.abs(Date.now() - Number(time)) > 60_000 ||
     !/^[A-Za-z0-9_-]{24,64}$/.test(nonce) || key.length > 1024 || !/^[A-Za-z0-9_-]{86}$/.test(signature)) {
-    throw new PremiumError("Invalid device proof", 401);
+    throw new PremiumError("Invalid device proof", 401, "bad_proof");
   }
   const deviceHash = digest(device);
   let canonicalKey: string;
@@ -48,7 +50,7 @@ export async function authenticatePremium(request: Request, body: string, option
     const verifyKey = { key: createPublicKey({ key: JSON.parse(canonicalKey), format: "jwk" }), dsaEncoding: "ieee-p1363" } as const;
     const sig = Buffer.from(signature, "base64url");
     if (!verify("sha256", Buffer.from(message), verifyKey, sig) && !verify("sha256", Buffer.from(legacy), verifyKey, sig)) throw new Error();
-  } catch { throw new PremiumError("Invalid device proof", 401); }
+  } catch { throw new PremiumError("Invalid device proof", 401, "bad_proof"); }
   // Only enrolled identities with the pinned key may trigger a punitive action.
   const [existing] = await sql`SELECT * FROM premium_devices WHERE device_hash = ${deviceHash}`;
   if (existing && existing.public_key !== canonicalKey) {
@@ -65,13 +67,13 @@ export async function authenticatePremium(request: Request, body: string, option
         recovered = true;
       }
     }
-    if (!recovered) throw new PremiumError("Device identity changed. DM @AstroVPN_Help and send your subscription key privately. Never post it publicly.", 403);
+    if (!recovered) throw new PremiumError("Device identity changed. DM @AstroVPN_Help and send your subscription key privately. Never post it publicly.", 403, "device_changed");
   }
-  if (existing?.blocked_at) throw new PremiumError("Device blocked. DM @AstroVPN_Help and send your subscription key privately. Never post it publicly.", 403);
+  if (existing?.blocked_at) throw new PremiumError("Device blocked. DM @AstroVPN_Help and send your subscription key privately. Never post it publicly.", 403, "device_blocked");
   await premiumRateLimit(`device:${deviceHash}`, 90);
   // Reject captured proofs before any punitive side effects.
   const inserted = await sql`INSERT INTO premium_nonces(device_hash, nonce, expires_at) VALUES(${deviceHash}, ${nonce}, NOW() + INTERVAL '2 minutes') ON CONFLICT DO NOTHING RETURNING nonce`;
-  if (!inserted.length) throw new PremiumError("Replayed request", 409);
+  if (!inserted.length) throw new PremiumError("Replayed request", 409, "replayed");
   if (marker !== PREMIUM_MARKER || !["android", "windows"].includes(platform)) {
     if (existing) {
       await sql.begin(async tx => {
@@ -82,12 +84,12 @@ export async function authenticatePremium(request: Request, body: string, option
           VALUES(${deviceHash}, ${current?.active_subscription ?? null}, 'authenticated_protocol_violation', 'Signed request used invalid marker or platform; device blocked and subscription revoked')`;
       });
     }
-    throw new PremiumError("Invalid client protocol. DM @AstroVPN_Help and send your subscription key privately. Never post it publicly.", 403);
+    throw new PremiumError("Invalid client protocol. DM @AstroVPN_Help and send your subscription key privately. Never post it publicly.", 403, "bad_protocol");
   }
   await sql`INSERT INTO premium_devices(device_hash, public_key, platform) VALUES(${deviceHash}, ${canonicalKey}, ${platform}) ON CONFLICT DO NOTHING`;
   // Recheck after concurrent enrollment: INSERT ON CONFLICT must not authorize a different key.
   const [pinned] = await sql`SELECT * FROM premium_devices WHERE device_hash = ${deviceHash}`;
-  if (pinned.public_key !== canonicalKey || pinned.blocked_at) throw new PremiumError("Device identity rejected", 403);
+  if (pinned.public_key !== canonicalKey || pinned.blocked_at) throw new PremiumError("Device identity rejected", 403, "identity_rejected");
   await sql`DELETE FROM premium_nonces WHERE expires_at < NOW()`;
   return { deviceHash, platform };
 }

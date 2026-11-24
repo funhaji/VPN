@@ -45,3 +45,13 @@ test("the premium proof covers device identity only, never the app version (prem
   assert.match(source, /platform, version, marker, time, nonce/, "legacy clients that sign the version must still verify during transition");
   assert.match(source, /platform, marker, time, nonce/, "the current contract signs marker, device ID, platform, time, nonce and body digest only");
 });
+
+test("free-tier premium previews expose names only — no ids, ping targets or node data (premium catalog regression)", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(new URL("../../src/lib/premium-service.ts", import.meta.url), "utf8");
+  const fn = source.match(/export async function premiumPreviews\([\s\S]*?\n\}\n/)?.[0];
+  assert.ok(fn, "premiumPreviews must be located");
+  assert.match(fn, /if \(!account\.active\) return \{ name: row\.name, country: row\.country \};/, "rows without an active subscription must carry name and country only");
+  assert.ok(!/id: row\.id/.test(fn.split("if (!account.active)")[0]), "the free-tier branch must not include the server id");
+  assert.match(fn, /id: row\.id, name: row\.name[\s\S]*pingPort: ping\?\.port/, "subscriber path keeps ids and ping targets");
+});

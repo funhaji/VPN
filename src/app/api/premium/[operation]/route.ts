@@ -51,8 +51,8 @@ export async function POST(request: NextRequest, context: { params: Promise<{ op
     }
     throw new PremiumError("Not found", 404);
   } catch (error) {
-    if (error instanceof BodyLimitError) return Response.json({ error: "Request too large" }, { status: 413, headers });
+    if (error instanceof BodyLimitError) return Response.json({ error: "Request too large", code: "body_too_large" }, { status: 413, headers });
     const known = error instanceof PremiumError;
-    return Response.json({ error: known ? error.message : "Premium service unavailable", supportUrl: "https://t.me/AstroVPN_Help" }, { status: known ? error.status : 503, headers });
+    return Response.json({ error: known ? error.message : "Premium service unavailable", code: known ? error.code : "service_unavailable", supportUrl: "https://t.me/AstroVPN_Help" }, { status: known ? error.status : 503, headers });
   }
 }
