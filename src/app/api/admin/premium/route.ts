@@ -21,7 +21,7 @@ export async function GET(request: NextRequest) {
       sql`SELECT id, device_hash, subscription_id, event, detail, created_at FROM premium_security_logs ORDER BY id DESC LIMIT 200`,
     ]);
     return Response.json({ subscriptions, servers, logs, controllerConfigured: Boolean(process.env.PREMIUM_CONTROLLER_URL && process.env.PREMIUM_CONTROLLER_TOKEN) }, { headers });
-  } catch { return Response.json({ error: "Premium database unavailable; configure PREMIUM_DATABASE_URL" }, { status: 503, headers }); }
+  } catch { return Response.json({ error: "Premium database unavailable. Connect the main Neon database (NEON_DATABASE_URL) in Vercel env vars, or set PREMIUM_DATABASE_URL." }, { status: 503, headers }); }
 }
 const schema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("issue"), days: z.number().int().min(1).max(3650), devices: z.number().int().min(1).max(100), bytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER) }),

@@ -50,6 +50,7 @@ type FormState = {
   fragment: boolean;
   sniffing: boolean;
   allowInsecure: boolean;
+  isPremium: boolean;
   sshUser: string;
   sshPassword: string;
   sshPrivateKey: string;
@@ -105,6 +106,7 @@ const BLANK: FormState = {
   fragment: false,
   sniffing: true,
   allowInsecure: false,
+  isPremium: false,
   sshUser: "",
   sshPassword: "",
   sshPrivateKey: "",
@@ -443,6 +445,7 @@ const buildImportedPayload = (
     country: safeCountry,
     rawConfig: detected.rawConfig,
     isEnabled: true,
+    isPremium: form.isPremium,
     options: {
       mux: form.mux,
       fragment: form.fragment,
@@ -2053,6 +2056,7 @@ export function AdminDashboard() {
         country: s.country || "GLOBAL",
         rawConfig: data.rawConfig,
         isEnabled: s.isEnabled,
+        isPremium: s.isPremium,
         options: {
           mux: Boolean(s.options?.mux),
           fragment: Boolean(s.options?.fragment),
@@ -3907,6 +3911,7 @@ export function AdminDashboard() {
                     <ToggleChip label="Fragment" checked={form.fragment} onChange={(checked) => set("fragment", checked)} />
                     <ToggleChip label="Sniffing" checked={form.sniffing} onChange={(checked) => set("sniffing", checked)} />
                     <ToggleChip label="Allow insecure" checked={form.allowInsecure} onChange={(checked) => set("allowInsecure", checked)} />
+                    <ToggleChip label="★ Premium only" checked={form.isPremium} onChange={(checked) => set("isPremium", checked)} />
                   </div>
                   <div className="mt-4">
                     <TextArea
@@ -4459,6 +4464,7 @@ or
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-center gap-2">
                             <p className="truncate text-sm font-semibold text-zinc-100">{server.name}</p>
+                            {server.isPremium && <span className="rounded bg-amber-400/15 px-2 text-xs font-semibold text-amber-300">★ Premium</span>}
                             {adminCategories[server.id] && <span className="rounded bg-white/10 px-2 text-xs">{adminCategories[server.id]}</span>}
                             <span className={`rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${protoBadgeColor}`}>
                               {server.protocol.toUpperCase()}

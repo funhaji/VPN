@@ -107,6 +107,7 @@ const DDL_SCRIPT = `
     port INT NOT NULL,
     country VARCHAR(80) NOT NULL,
     is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    is_premium BOOLEAN NOT NULL DEFAULT FALSE,
     options_json TEXT NOT NULL,
     config_cipher TEXT NOT NULL,
     config_salt TEXT,
@@ -120,6 +121,7 @@ const DDL_SCRIPT = `
   ALTER TABLE vpn_servers ADD COLUMN IF NOT EXISTS config_salt TEXT;
   ALTER TABLE vpn_servers ADD COLUMN IF NOT EXISTS config_version INT NOT NULL DEFAULT 1;
   ALTER TABLE vpn_servers ADD COLUMN IF NOT EXISTS sort_order INT NOT NULL DEFAULT 0;
+  ALTER TABLE vpn_servers ADD COLUMN IF NOT EXISTS is_premium BOOLEAN NOT NULL DEFAULT FALSE;
   CREATE INDEX IF NOT EXISTS idx_vpn_servers_enabled ON vpn_servers(is_enabled);
   CREATE TABLE IF NOT EXISTS routing_rules (
     id UUID PRIMARY KEY,
@@ -168,6 +170,7 @@ const DDL_STATEMENTS = [
   `ALTER TABLE vpn_servers ADD COLUMN IF NOT EXISTS config_salt TEXT`,
   `ALTER TABLE vpn_servers ADD COLUMN IF NOT EXISTS config_version INT NOT NULL DEFAULT 1`,
   `ALTER TABLE vpn_servers ADD COLUMN IF NOT EXISTS sort_order INT NOT NULL DEFAULT 0`,
+  `ALTER TABLE vpn_servers ADD COLUMN IF NOT EXISTS is_premium BOOLEAN NOT NULL DEFAULT FALSE`,
   `CREATE INDEX IF NOT EXISTS idx_vpn_servers_enabled ON vpn_servers(is_enabled)`,
   `CREATE TABLE IF NOT EXISTS routing_rules (
     id UUID PRIMARY KEY,
@@ -432,6 +435,7 @@ type DatabaseServer = {
   port: number;
   country: string;
   is_enabled: boolean;
+  is_premium: boolean | null;
   options_json: string;
   config_cipher: string;
   config_salt: string | null;
@@ -484,6 +488,7 @@ const mapServer = (row: DatabaseServer): ServerRecord => {
     port: Number(row.port) || 443,
     country: String(row.country || ""),
     isEnabled: Boolean(row.is_enabled),
+    isPremium: Boolean(row.is_premium),
     options,
     notice,
     encryptedConfig: {
@@ -593,7 +598,7 @@ export const migrateServerEncryption = async (): Promise<{ migrated: number; fai
   return { migrated, failed };
 };
 
-export const listServers = async (enabledOnly: boolean): Promise<ServerRecord[]> => {
+export const listServers = async (enabledOnly: boolean, freeOnly = false): Promise<ServerRecord[]> => {
   await migrateLegacyEncryption();
   const rows = (enabledOnly
     ? await queryRead`
@@ -602,7 +607,8 @@ export const listServers = async (enabledOnly: boolean): Promise<ServerRecord[]>
     : await queryRead`
       SELECT * FROM vpn_servers ORDER BY sort_order ASC, created_at DESC
     `) as DatabaseServer[];
-  return rows.map((row) => mapServer(row));
+  const mapped = rows.map((row) => mapServer(row));
+  return freeOnly ? mapped.filter((server) => !server.isPremium) : mapped;
 };
 
 export type LocationStatItem = {
@@ -666,6 +672,7 @@ export const createServer = async (input: {
   port: number;
   country: string;
   isEnabled: boolean;
+  isPremium?: boolean;
   options: ProtocolOptions;
   encryptedConfig: { version?: number; cipherText: string; salt?: string; iv: string; authTag: string };
   sortOrder?: number;
@@ -685,7 +692,7 @@ export const createServer = async (input: {
 
   await queryWrite`
     INSERT INTO vpn_servers (
-      id, name, protocol, host, port, country, is_enabled, options_json, config_cipher, config_salt, config_iv, config_tag, config_version, sort_order
+      id, name, protocol, host, port, country, is_enabled, is_premium, options_json, config_cipher, config_salt, config_iv, config_tag, config_version, sort_order
     ) VALUES (
       ${input.id},
       ${input.name},
@@ -694,6 +701,7 @@ export const createServer = async (input: {
       ${input.port},
       ${input.country},
       ${input.isEnabled},
+      ${input.isPremium ?? false},
       ${JSON.stringify(input.options)},
       ${input.encryptedConfig.cipherText},
       ${input.encryptedConfig.salt ?? null},
@@ -714,6 +722,7 @@ export const createServers = async (
     port: number;
     country: string;
     isEnabled: boolean;
+    isPremium?: boolean;
     options: ProtocolOptions;
     encryptedConfig: { version?: number; cipherText: string; salt?: string; iv: string; authTag: string };
   }>,
@@ -742,6 +751,7 @@ export const createServers = async (
       port: item.port,
       country: item.country,
       is_enabled: item.isEnabled,
+      is_premium: item.isPremium ?? false,
       options_json: JSON.stringify(item.options),
       config_cipher: item.encryptedConfig.cipherText,
       config_salt: item.encryptedConfig.salt ?? null,
@@ -752,7 +762,7 @@ export const createServers = async (
     }));
     await queryWrite`
       INSERT INTO vpn_servers (
-        id, name, protocol, host, port, country, is_enabled, options_json,
+        id, name, protocol, host, port, country, is_enabled, is_premium, options_json,
         config_cipher, config_salt, config_iv, config_tag, config_version, sort_order
       )
       SELECT
@@ -763,6 +773,7 @@ export const createServers = async (
         port,
         country,
         is_enabled,
+        is_premium,
         options_json,
         config_cipher,
         config_salt,
@@ -778,6 +789,7 @@ export const createServers = async (
         port int,
         country text,
         is_enabled boolean,
+        is_premium boolean,
         options_json text,
         config_cipher text,
         config_salt text,
@@ -800,6 +812,7 @@ export const replaceServers = async (
     port: number;
     country: string;
     isEnabled: boolean;
+    isPremium?: boolean;
     options: ProtocolOptions;
     encryptedConfig: { version?: number; cipherText: string; salt?: string; iv: string; authTag: string };
   }>,
@@ -850,6 +863,7 @@ export const replaceServers = async (
       port: item.port,
       country: item.country,
       is_enabled: item.isEnabled,
+      is_premium: item.isPremium ?? false,
       options_json: JSON.stringify(item.options),
       config_cipher: item.encryptedConfig.cipherText,
       config_salt: item.encryptedConfig.salt ?? null,
@@ -860,7 +874,7 @@ export const replaceServers = async (
     }));
     await queryWrite`
       INSERT INTO vpn_servers (
-        id, name, protocol, host, port, country, is_enabled, options_json,
+        id, name, protocol, host, port, country, is_enabled, is_premium, options_json,
         config_cipher, config_salt, config_iv, config_tag, config_version, sort_order
       )
       SELECT
@@ -871,6 +885,7 @@ export const replaceServers = async (
         port,
         country,
         is_enabled,
+        is_premium,
         options_json,
         config_cipher,
         config_salt,
@@ -886,6 +901,7 @@ export const replaceServers = async (
         port int,
         country text,
         is_enabled boolean,
+        is_premium boolean,
         options_json text,
         config_cipher text,
         config_salt text,
@@ -968,6 +984,7 @@ export const updateServer = async (
     port?: number;
     country?: string;
     isEnabled?: boolean;
+    isPremium?: boolean;
     options?: ProtocolOptions;
     encryptedConfig?: { version?: number; cipherText: string; salt?: string; iv: string; authTag: string };
   },
@@ -986,6 +1003,7 @@ export const updateServer = async (
       port = ${input.port ?? current.port},
       country = ${input.country ?? current.country},
       is_enabled = ${input.isEnabled ?? current.isEnabled},
+      is_premium = ${input.isPremium ?? current.isPremium},
       options_json = ${input.options ? JSON.stringify(input.options) : JSON.stringify(current.options)},
       config_cipher = ${input.encryptedConfig?.cipherText ?? current.encryptedConfig.cipherText},
       config_salt = ${input.encryptedConfig?.salt ?? current.encryptedConfig.salt ?? null},

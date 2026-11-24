@@ -10,6 +10,8 @@ import { serverInputSchema } from "@/lib/validation";
 import { normalizeLocationCode } from "@/lib/countries";
 import { createAutoNamer, planLocationRename } from "@/lib/server-naming";
 import { checkServerDuplicates } from "@/lib/duplicate-check";
+import { savePremiumServer } from "@/lib/premium-service";
+import { premiumDb } from "@/lib/premium-db";
 
 export const dynamic = "force-dynamic";
 
@@ -122,13 +124,24 @@ export async function POST(request: NextRequest) {
           port: endpoint.port,
           country: safeCountry,
           isEnabled: data.isEnabled,
+          isPremium: data.isPremium,
           options: data.options,
           encryptedConfig: encryptConfig(data.rawConfig),
         };
       });
       await createServers(records);
+      const premiumWarnings: string[] = duplicates.filter(match => match.kind === "duplicate").map(match => `${match.incoming} matches ${match.existing}`);
+      for (let i = 0; i < records.length; i += 1) {
+        if (!records[i].isPremium) continue;
+        try {
+          await savePremiumServer({ name: records[i].name, country: records[i].country, node: validServers[i].data.premiumNode ?? "default", rawConfig: validServers[i].data.rawConfig, id: records[i].id });
+        } catch (premiumError) {
+          console.error("Failed to register premium server:", premiumError);
+          premiumWarnings.push(`${records[i].name}: saved but not registered as premium (premium database unavailable)`);
+        }
+      }
       revalidateServerCatalog();
-      return NextResponse.json({ ok: true, count: records.length, names: records.map((record) => record.name), warnings: duplicates });
+      return NextResponse.json({ ok: true, count: records.length, names: records.map((record) => record.name), warnings: duplicates.length > 0 ? duplicates : [] , premiumWarnings: premiumWarnings.length > 0 ? premiumWarnings : undefined });
     }
 
     const parsed = serverInputSchema.safeParse(payload);
@@ -148,20 +161,32 @@ export async function POST(request: NextRequest) {
     const autoName = (payload as { autoName?: unknown }).autoName === true;
     const name = (autoName && createAutoNamer(await listServers(false)).next(safeCountry)) || parsed.data.name;
 
+    const serverId = randomUUID();
     await createServer({
-      id: randomUUID(),
+      id: serverId,
       name,
       protocol: parsed.data.protocol,
       host: endpoint.host,
       port: endpoint.port,
       country: safeCountry,
       isEnabled: parsed.data.isEnabled,
+      isPremium: parsed.data.isPremium,
       options: parsed.data.options,
       encryptedConfig,
     });
 
+    let premiumWarning: string | undefined;
+    if (parsed.data.isPremium) {
+      try {
+        await savePremiumServer({ id: serverId, name, country: safeCountry, node: parsed.data.premiumNode ?? "default", rawConfig: parsed.data.rawConfig });
+      } catch (premiumError) {
+        console.error("Failed to register premium server:", premiumError);
+        premiumWarning = "Server saved, but it could not be registered as premium because the premium database is unavailable. Tick it again via the premium panel once the database is connected.";
+      }
+    }
+
     revalidateServerCatalog();
-    return NextResponse.json({ ok: true, name });
+    return NextResponse.json({ ok: true, name, ...(premiumWarning ? { warning: premiumWarning } : {}) });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Request failed" },
@@ -186,6 +211,35 @@ export async function PATCH(request: NextRequest) {
       password?: unknown;
     };
     const action = typeof payload.action === "string" ? payload.action : "";
+
+    if (action === "set-premium") {
+      if (!Array.isArray(payload.ids) || payload.ids.length === 0) {
+        return NextResponse.json({ error: "Select at least one server" }, { status: 400 });
+      }
+      const isPremium = (payload as { isPremium?: unknown }).isPremium === true;
+      let updated = 0;
+      for (const rawId of payload.ids) {
+        if (typeof rawId !== "string" || !/^[0-9a-f-]{36}$/i.test(rawId)) continue;
+        await updateServer(rawId, { isPremium });
+        if (!isPremium) {
+          try { await premiumDb()`DELETE FROM premium_servers WHERE id = ${rawId}`; } catch (premiumError) {
+            console.error("Failed to remove premium mirror:", premiumError);
+          }
+        } else {
+          try {
+            const record = await getServer(rawId);
+            const raw = record ? decryptConfig(record.encryptedConfig) : "";
+            if (record) await savePremiumServer({ id: rawId, name: record.name, country: record.country, node: "default", rawConfig: raw });
+          } catch (premiumError) {
+            console.error("Failed to register premium server:", premiumError);
+          }
+        }
+        updated += 1;
+      }
+      if (updated === 0) return NextResponse.json({ error: "No servers were updated" }, { status: 400 });
+      revalidateServerCatalog();
+      return NextResponse.json({ ok: true, updated, isPremium });
+    }
 
     if (action === "update-credentials") {
       if (!Array.isArray(payload.ids) || payload.ids.length === 0) {

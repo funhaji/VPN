@@ -1,11 +1,15 @@
 import postgres from "postgres";
+import { getDatabaseUrl } from "@/lib/env";
 
 // Security state has exactly one authority. Do not use the catalog's replica failover.
 let client: ReturnType<typeof postgres> | undefined;
 let ready: Promise<void> | undefined;
 export function premiumDb() {
-  const url = process.env.PREMIUM_DATABASE_URL;
-  if (!url) throw new Error("Premium service is not configured");
+  // PREMIUM_DATABASE_URL overrides; otherwise the premium_* tables live in the
+  // main Neon/Supabase database, so a separate premium database is optional.
+  const fallback = (() => { try { return getDatabaseUrl(); } catch { return null; } })();
+  const url = process.env.PREMIUM_DATABASE_URL?.trim() || fallback;
+  if (!url) throw new Error("Premium service is not configured: set NEON_DATABASE_URL (or PREMIUM_DATABASE_URL)");
   client ??= postgres(url, { max: 5, prepare: false, connect_timeout: 5, idle_timeout: 20 });
   return client;
 }

@@ -1221,7 +1221,8 @@ type CatalogEntry = {
 /** The expensive part: decrypt every config and build runtime profiles. */
 async function buildCatalog(): Promise<{ servers: CatalogEntry[]; provider: string; generation: string }> {
   const stored = await listServers(false);
-  const servers = stored.filter(server => server.isEnabled);
+  // Premium-only servers are served through the premium lease flow, never the free catalog.
+  const servers = stored.filter(server => server.isEnabled && !server.isPremium);
   const catalogServers: CatalogEntry[] = [];
 
   for (const server of servers) {

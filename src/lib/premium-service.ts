@@ -112,8 +112,8 @@ export async function issuePremium(days: number, devices: number, bytes: number)
   return { id, reference, key };
 }
 
-export async function savePremiumServer(input: { name: string; country: string; node: string; rawConfig: string }) {
-  const id = randomUUID();
+export async function savePremiumServer(input: { id?: string; name: string; country: string; node: string; rawConfig: string }) {
+  const id = input.id ?? randomUUID();
   const encrypted = JSON.stringify(encryptConfig(input.rawConfig));
   await premiumDb().begin(async tx => {
     await tx`INSERT INTO premium_servers(id, name, country, controller_node, config_json)

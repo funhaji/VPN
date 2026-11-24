@@ -22,6 +22,7 @@ export type ServerRecord = {
   port: number;
   country: string;
   isEnabled: boolean;
+  isPremium: boolean;
   options: ProtocolOptions;
   encryptedConfig: EncryptedConfig;
   sortOrder: number;

@@ -13,6 +13,14 @@ export function PremiumPanel() {
   const [days, setDays] = useState(30);
   const [devices, setDevices] = useState(1);
   const [gb, setGb] = useState(30);
+  const [plan, setPlan] = useState("custom");
+  type Plan = { label: string; days: number; devices: number; gb: number };
+  const plans: Plan[] = [
+    { label: "Trial · 3 days · 1 device · 5 GiB", days: 3, devices: 1, gb: 5 },
+    { label: "Monthly · 30 days · 2 devices · 50 GiB", days: 30, devices: 2, gb: 50 },
+    { label: "Quarterly · 90 days · 3 devices · 150 GiB", days: 90, devices: 3, gb: 150 },
+  ];
+  const applyPlan = (p: Plan) => { setPlan(p.label); setDays(p.days); setDevices(p.devices); setGb(p.gb); };
   const [name, setName] = useState("");
   const [country, setCountry] = useState("DE");
   const [node, setNode] = useState("");
@@ -43,9 +51,22 @@ export function PremiumPanel() {
     <header className="flex justify-between"><div><h2 className="text-xl font-semibold">Premium control</h2><p className="text-sm text-slate-400">Keys, private servers and security events. Quotas are shared across the key’s devices.</p></div><button onClick={() => void load()}>Refresh</button></header>
     {error && <p role="alert" className="text-rose-300">{error}</p>}
     {data && !data.controllerConfigured && <p className="rounded-xl border border-amber-400/30 p-3 text-amber-200">VPN-node enforcement is not configured. Previews and key activation work, but premium credentials will not be released until a trusted controller is deployed.</p>}
-    {issued && <div className="rounded-xl border border-emerald-400/30 p-4"><strong>Save this key now — shown only once</strong><p className="break-all font-mono my-3 select-all">{issued}</p><button onClick={() => setIssued("")}>Dismiss key</button></div>}
+    {issued && <div className="rounded-xl border border-emerald-400/30 p-4"><strong>Save this key now — shown only once</strong><p className="break-all font-mono my-3 select-all">{issued}</p><div className="flex gap-2"><button onClick={() => { void navigator.clipboard.writeText(issued); }}>Copy key</button><button onClick={() => setIssued("")}>Dismiss key</button></div></div>}
     <form className="rounded-2xl border border-white/10 p-4 space-y-3" onSubmit={e => { e.preventDefault(); void action({ action: "issue", days, devices, bytes: Math.round(gb * 1073741824) }); }}>
-      <h3 className="font-semibold">Create subscription key</h3><div className="grid sm:grid-cols-3 gap-3">
+      <h3 className="font-semibold">Create subscription key</h3>
+      <div className="flex flex-wrap gap-2">
+        {plans.map(p => (
+          <button type="button" key={p.label} onClick={() => applyPlan(p)} aria-pressed={plan === p.label}
+            className={`rounded-full border px-3 py-1.5 text-xs transition ${plan === p.label ? "border-cyan-400/60 bg-cyan-400/15 text-cyan-200" : "border-white/15 text-slate-300 hover:border-white/30"}`}>
+            {p.label}
+          </button>
+        ))}
+        <button type="button" onClick={() => setPlan("custom")} aria-pressed={plan === "custom"}
+          className={`rounded-full border px-3 py-1.5 text-xs transition ${plan === "custom" ? "border-cyan-400/60 bg-cyan-400/15 text-cyan-200" : "border-white/15 text-slate-300 hover:border-white/30"}`}>
+          Custom
+        </button>
+      </div>
+      <div className="grid sm:grid-cols-3 gap-3">
         <label>Days<input className={input} type="number" min="1" max="3650" required value={days} onChange={e => setDays(Number(e.target.value))} /></label>
         <label>Device slots<input className={input} type="number" min="1" max="100" required value={devices} onChange={e => setDevices(Number(e.target.value))} /></label>
         <label>Total traffic (GiB)<input className={input} type="number" min="0.01" step="0.01" required value={gb} onChange={e => setGb(Number(e.target.value))} /></label>

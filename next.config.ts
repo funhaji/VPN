@@ -3,6 +3,7 @@ import type { NextConfig } from "next";
 const downloadBase = process.env.DOWNLOAD_BASE_URL?.trim().replace(/\/+$/, "");
 
 const nextConfig: NextConfig = {
+  allowedDevOrigins: ["*.vercel.run"],
   async rewrites() {
     if (!downloadBase) return [];
     return {
