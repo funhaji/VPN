@@ -406,6 +406,13 @@ export const detectProfileMetadata = (
   fallbackProtocol = "custom:tcp",
 ): ImportedProfileMetadata => {
   let trimmed = rawConfig.trim();
+  try {
+    const profile = JSON.parse(trimmed);
+    if (profile.provider === "jumpjump") return {
+      rawConfig: trimmed, protocol: `jumpjump:${profile.outbound?.protocol || "unknown"}`,
+      name: "JumpJump · Imported", country: "Imported",
+    };
+  } catch { /* Ordinary share links are not JSON. */ }
 
   try {
     if (trimmed.toLowerCase().startsWith("vless://")) {

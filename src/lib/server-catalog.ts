@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { decryptConfig } from "@/lib/crypto";
 import { unstable_cache } from "next/cache";
 import { getCatalogCacheVersion, getLastUsedProvider, listServers, PUBLIC_DATA_TAG } from "@/lib/db";
+import { jumpJumpProfile } from "@/lib/jumpjump";
 import { parseWireGuardConf } from "@/lib/profile-import";
 import type { ProtocolOptions, ServerRecord } from "@/types/server";
 import { getAccessPolicy } from "@/lib/access-policy";
@@ -958,6 +959,9 @@ const buildOutboundFromXrayJson = (
 };
 
 const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): JsonObject => {
+  if (server.protocol.toLowerCase().startsWith("jumpjump:") || /"provider"\s*:\s*"jumpjump"/.test(rawConfig)) {
+    return jumpJumpProfile(JSON.parse(rawConfig));
+  }
   const loweredProtocol = server.protocol.trim().toLowerCase();
   const normalizedProtocol = normalizeProtocol(server.protocol, rawConfig);
   const trimmed = rawConfig.trim();

@@ -10,10 +10,11 @@ import { ActiveUsersPanel } from "@/components/active-users-panel";
 import { DbSyncModal } from "@/components/db-sync-modal";
 import { BulkReplaceModal } from "@/components/bulk-replace-modal";
 import { AccessPolicyPanel } from "@/components/access-policy-panel";
+import { PremiumPanel } from "@/components/premium-panel";
 import { COUNTRIES, flagFromCountryCode, getCountryMeta, normalizeLocationCode } from "@/lib/countries";
 import { createAutoNamer, planLocationRename, type RenamePlan } from "@/lib/server-naming";
 
-type TabId = "v2ray" | "ssh" | "openvpn" | "wireguard" | "warp" | "custom" | "bulk" | "routing" | "http" | "l2tp" | "users" | "safety";
+type TabId = "v2ray" | "ssh" | "openvpn" | "wireguard" | "warp" | "custom" | "bulk" | "routing" | "http" | "l2tp" | "users" | "safety" | "premium";
 type SshMode = "direct" | "http" | "ws" | "dnstt";
 type SshResolverMode = "udp" | "dot" | "doh";
 type OpenVpnMode = "tcp" | "udp";
@@ -158,9 +159,11 @@ const PROTOCOLS: Array<{
   { id: "routing", label: "Routing Rules", badge: "Iran Direct", support: "Geo IP bypass" },
   { id: "users", label: "Active Users", badge: "Telemetry & Devices", support: "Live activity" },
   { id: "safety", label: "Catalog & Safety", badge: "V2 & API Policy", support: "Publication & deduplication" },
+  { id: "premium", label: "Premium", badge: "Subscriptions & security", support: "Private servers" },
 ];
 
 const NAV_META: Record<TabId, { short: string; tone: string; group: "protocols" | "manage" }> = {
+  premium: { short: "PR", tone: "text-amber-200 ring-amber-400/30", group: "manage" },
   v2ray: { short: "V2", tone: "from-violet-500/30 to-violet-500/10 text-violet-200 ring-violet-400/30", group: "protocols" },
   ssh: { short: "SSH", tone: "from-amber-500/30 to-amber-500/10 text-amber-200 ring-amber-400/30", group: "protocols" },
   warp: { short: "WP", tone: "from-orange-500/30 to-orange-500/10 text-orange-200 ring-orange-400/30", group: "protocols" },
@@ -2990,13 +2993,13 @@ export function AdminDashboard() {
           })()}
         </div>
 
-        <div className={`grid gap-4 p-3 sm:p-5 lg:p-5 min-w-0 ${tab === "users" || tab === "routing" || tab === "safety" ? "" : "xl:grid-cols-[minmax(0,1.5fr)_360px]"}`}>
+        <div className={`grid gap-4 p-3 sm:p-5 lg:p-5 min-w-0 ${tab === "users" || tab === "routing" || tab === "safety" || tab === "premium" ? "" : "xl:grid-cols-[minmax(0,1.5fr)_360px]"}`}>
           <section className="space-y-4 min-w-0 max-w-full">
             {tab === "routing" ? (
               <RoutingRulesPanel api={api} busy={busy} setBusy={setBusy} setMsg={setMsg} />
             ) : tab === "users" ? (
               <ActiveUsersPanel api={api} setMsg={setMsg} />
-            ) : tab === "safety" ? (
+            ) : tab === "premium" ? <PremiumPanel /> : tab === "safety" ? (
               <AccessPolicyPanel api={api} busy={busy} setBusy={setBusy} setMsg={setMsg} />
             ) : tab !== "bulk" ? (
               <div className="rounded-2xl border border-zinc-900 bg-zinc-950/70 p-4">
@@ -4587,7 +4590,7 @@ or
             </div>
           </section>
 
-          {tab !== "users" && tab !== "routing" && tab !== "safety" && (
+          {tab !== "users" && tab !== "routing" && tab !== "safety" && tab !== "premium" && (
           <aside className="space-y-4 min-w-0 xl:sticky xl:top-36 xl:self-start">
             <div className="rounded-2xl border border-white/6 bg-white/3 p-4">
               <div className="flex items-center justify-between">
