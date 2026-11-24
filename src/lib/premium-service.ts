@@ -21,6 +21,31 @@ export async function premiumAccount(deviceHash: string) {
   };
 }
 
+// Admin-only remedy for a device blocked by the protocol guard: clear the block and
+// restore the subscription that was revoked alongside it, if it is still otherwise valid.
+export async function unblockDevice(deviceHash: string) {
+  const sql = premiumDb();
+  return sql.begin(async tx => {
+    const [device] = await tx`SELECT * FROM premium_devices WHERE device_hash = ${deviceHash} FOR UPDATE`;
+    if (!device) throw new PremiumError("Device not found", 404);
+    await tx`UPDATE premium_devices SET blocked_at = NULL WHERE device_hash = ${deviceHash}`;
+    let subscriptionId = device.active_subscription as string | null;
+    if (!subscriptionId) {
+      const [redemption] = await tx`SELECT r.subscription_id FROM premium_redemptions r JOIN premium_subscriptions s ON s.id = r.subscription_id
+        WHERE r.device_hash = ${deviceHash} AND s.revoked_at IS NOT NULL AND s.expires_at > NOW() AND s.used_bytes < s.traffic_limit
+        ORDER BY s.revoked_at DESC LIMIT 1`;
+      if (redemption) {
+        subscriptionId = redemption.subscription_id;
+        await tx`UPDATE premium_devices SET active_subscription = ${subscriptionId} WHERE device_hash = ${deviceHash}`;
+      }
+    }
+    if (subscriptionId) await tx`UPDATE premium_subscriptions SET revoked_at = NULL WHERE id = ${subscriptionId}`;
+    await tx`INSERT INTO premium_security_logs(device_hash, subscription_id, event, detail)
+      VALUES(${deviceHash}, ${subscriptionId ?? null}, 'admin_unblocked', 'Device unblocked and its subscription restored from the admin panel')`;
+    return { ok: true, restored: Boolean(subscriptionId) };
+  });
+}
+
 export async function redeemPremium(deviceHash: string, key: string, trial: boolean) {
   const sql = premiumDb();
   await sql.begin(async tx => {

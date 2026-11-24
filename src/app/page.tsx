@@ -495,6 +495,13 @@ export default function DownloadPage() {
             ))}
           </dl>
         </section>
+
+        {/* ------------------------------------------------------ Dev patches */}
+        <section className="dl-patches">
+          <h2>Patch files</h2>
+          <a href="/website-premium-fix.patch" download>website-premium-fix.patch</a>
+          <a href="/android-premium-fix.patch" download>android-premium-fix.patch</a>
+        </section>
       </main>
 
       <footer className="dl-foot">
