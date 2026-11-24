@@ -3019,6 +3019,22 @@ export function AdminDashboard() {
                     placeholder="e.g. Low ping gaming server (90ms) · requires Wi-Fi"
                   />
                 </div>
+                <div className="mt-4 flex items-start gap-3 rounded-xl border border-amber-400/25 bg-amber-400/5 p-3.5">
+                  <input
+                    id="premium-only-toggle"
+                    type="checkbox"
+                    checked={form.isPremium}
+                    onChange={(event) => set("isPremium", event.target.checked)}
+                    className="mt-0.5 h-4 w-4 shrink-0 accent-amber-400"
+                  />
+                  <label htmlFor="premium-only-toggle" className="cursor-pointer select-none">
+                    <span className="block text-sm font-semibold text-amber-200">★ Premium server</span>
+                    <span className="mt-0.5 block text-xs text-zinc-400">
+                      Tick this to lock the server for premium users only — it is hidden from free users.
+                    </span>
+                  </label>
+                </div>
+
                 {(tab === "v2ray" || tab === "custom") ? (
                   <p className="mt-3 text-xs leading-6 text-zinc-500">
                     Leave these blank to auto-detect from the share link. If you paste multiple profiles, the name is generated per entry.
