@@ -8,16 +8,29 @@ import { applyStoredCredentials } from "@/lib/credentials";
 import { detectProfileMetadata } from "@/lib/profile-import";
 import { serverInputSchema } from "@/lib/validation";
 import { normalizeLocationCode } from "@/lib/countries";
-import { createAutoNamer, planLocationRename } from "@/lib/server-naming";
+import { createAutoNamer, namingServersForTier, planLocationRename } from "@/lib/server-naming";
 import { checkServerDuplicates } from "@/lib/duplicate-check";
 import { savePremiumServer } from "@/lib/premium-service";
-import { premiumDb } from "@/lib/premium-db";
+import { ensurePremiumSchema, premiumDb } from "@/lib/premium-db";
 
 export const dynamic = "force-dynamic";
 
 const revalidateServerCatalog = (): void => {
   revalidatePath("/api/servers");
 };
+
+async function creationNamers(needsFree: boolean, needsPremium: boolean) {
+  const catalog = await listServers(false);
+  let premium: { id: string; name: string; country: string }[] = [];
+  if (needsPremium) {
+    await ensurePremiumSchema();
+    premium = await premiumDb()`SELECT id, name, country FROM premium_servers`;
+  }
+  return {
+    free: needsFree ? createAutoNamer(namingServersForTier(catalog, [], false)) : null,
+    premium: needsPremium ? createAutoNamer(namingServersForTier(catalog, premium, true)) : null,
+  };
+}
 
 const normalizeEndpoint = (
   input: { host?: string; port?: number; rawConfig: string },
@@ -108,14 +121,15 @@ export async function POST(request: NextRequest) {
       }
       // Auto-naming is computed here against the live server list so numbering
       // is always based on what is actually stored, not on a stale client view.
-      const namer = validServers.some((entry) => entry.autoName) ? createAutoNamer(await listServers(false)) : null;
+      const namers = validServers.some(entry => entry.autoName)
+        ? await creationNamers(validServers.some(entry => entry.autoName && !entry.data.isPremium), validServers.some(entry => entry.autoName && entry.data.isPremium)) : null;
       const records = validServers.map(({ data, autoName }) => {
         const endpoint = normalizeEndpoint(data);
         const rawCountry = (data.country && data.country !== "XX" && data.country !== "GLOBAL")
           ? data.country
           : data.name;
         const safeCountry = normalizeLocationCode(rawCountry);
-        const name = (autoName && namer?.next(safeCountry)) || data.name;
+        const name = (autoName && (data.isPremium ? namers?.premium : namers?.free)?.next(safeCountry)) || data.name;
         return {
           id: randomUUID(),
           name,
@@ -159,7 +173,8 @@ export async function POST(request: NextRequest) {
       : parsed.data.name;
     const safeCountry = normalizeLocationCode(rawCountry);
     const autoName = (payload as { autoName?: unknown }).autoName === true;
-    const name = (autoName && createAutoNamer(await listServers(false)).next(safeCountry)) || parsed.data.name;
+    const namers = autoName ? await creationNamers(!parsed.data.isPremium, parsed.data.isPremium) : null;
+    const name = (autoName && (parsed.data.isPremium ? namers?.premium : namers?.free)?.next(safeCountry)) || parsed.data.name;
 
     const serverId = randomUUID();
     await createServer({

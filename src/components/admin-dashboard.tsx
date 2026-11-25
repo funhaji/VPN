@@ -12,7 +12,7 @@ import { BulkReplaceModal } from "@/components/bulk-replace-modal";
 import { AccessPolicyPanel } from "@/components/access-policy-panel";
 import { PremiumPanel } from "@/components/premium-panel";
 import { COUNTRIES, flagFromCountryCode, getCountryMeta, normalizeLocationCode } from "@/lib/countries";
-import { createAutoNamer, planLocationRename, type RenamePlan } from "@/lib/server-naming";
+import { createAutoNamer, namingServersForTier, planLocationRename, type NamingServer, type RenamePlan } from "@/lib/server-naming";
 
 type TabId = "v2ray" | "ssh" | "openvpn" | "wireguard" | "warp" | "custom" | "bulk" | "routing" | "http" | "l2tp" | "users" | "safety" | "premium";
 type SshMode = "direct" | "http" | "ws" | "dnstt";
@@ -849,6 +849,7 @@ export function AdminDashboard() {
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [hasPendingReorder, setHasPendingReorder] = useState(false);
   const [servers, setServers] = useState<ServerRecord[]>([]);
+  const [premiumNamingServers, setPremiumNamingServers] = useState<NamingServer[]>([]);
   const [stats, setStats] = useState({ total: 0, enabled: 0, locations: 0, totalLocations: 0 });
   const [userAnalytics, setUserAnalytics] = useState<{
     platforms: Record<string, {
@@ -950,6 +951,8 @@ export function AdminDashboard() {
 
   const load = useCallback(async () => {
     setBusy(true);
+    void api<{ servers: NamingServer[] }>("/api/admin/premium")
+      .then(data => setPremiumNamingServers(data.servers)).catch(() => setPremiumNamingServers([]));
     // Secondary data loads in parallel and never blocks the server list.
     void api<{ categories: Record<string, string> }>("/api/admin/categories")
       .then(data => setAdminCategories(data.categories)).catch(() => {});
@@ -1666,7 +1669,7 @@ export function AdminDashboard() {
       countries = [fixed];
     }
 
-    const namer = createAutoNamer(servers);
+    const namer = createAutoNamer(namingServersForTier(servers, premiumNamingServers, form.isPremium));
     const items = countries.map((country) => ({ country, name: namer.next(country) }));
     const names = items.flatMap((item) => (item.name ? [item.name] : []));
     const unresolved = items.length - names.length;
@@ -1676,7 +1679,7 @@ export function AdminDashboard() {
         ? "No location detected — pick a country to auto-name these servers"
         : undefined;
     return { items, names, hint, note };
-  }, [autoNameActive, effectiveRawConfig, form, openVpnInputMode, ovpnFiles, parsedImportProfiles, protocol, servers, tab, wgFiles, wgInputMode]);
+  }, [autoNameActive, effectiveRawConfig, form, openVpnInputMode, ovpnFiles, parsedImportProfiles, premiumNamingServers, protocol, servers, tab, wgFiles, wgInputMode]);
 
   const canSubmit = useMemo(() => {
     if (tab === "bulk") return bulk.trim().length > 0;

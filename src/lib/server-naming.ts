@@ -15,6 +15,20 @@ export type NamingServer = {
   country: string;
 };
 
+/** Premium rows can also be mirrored in the main catalog; count each ID once. */
+export const namingServersForTier = (
+  catalog: (NamingServer & { isPremium?: boolean })[],
+  premium: NamingServer[],
+  isPremium: boolean,
+): NamingServer[] => {
+  if (!isPremium) return catalog.filter(server => !server.isPremium);
+  const merged = new Map<string, NamingServer>();
+  for (const server of [...catalog.filter(server => server.isPremium), ...premium]) {
+    merged.set(server.id ?? `${server.country}|${server.name}`, server);
+  }
+  return [...merged.values()];
+};
+
 const MAX_NAME_LENGTH = 70;
 
 const LEADING_EMOJI = /^(?:[\u{1F1E6}-\u{1F1FF}]{2}|[\p{Emoji_Presentation}\p{Extended_Pictographic}])\s*/u;

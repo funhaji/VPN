@@ -37,6 +37,7 @@ const schema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("issue"), days: z.number().int().min(1).max(3650), devices: z.number().int().min(1).max(100), bytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER) }),
   z.object({ action: z.literal("server"), name: z.string().trim().min(1).max(70), country: z.string().trim().min(1).max(80), node: z.string().regex(/^[\w.-]{1,128}$/), rawConfig: z.string().min(2).max(262144) }),
   z.object({ action: z.literal("revoke"), id: z.string().uuid() }),
+  z.object({ action: z.literal("unrevoke"), id: z.string().uuid() }),
   z.object({ action: z.literal("toggle-server"), id: z.string().uuid(), enabled: z.boolean() }),
   z.object({ action: z.literal("unblock-device"), deviceHash: z.string().regex(/^[A-Za-z0-9_-]{43}$/) }),
 ]);
@@ -58,6 +59,12 @@ export async function POST(request: NextRequest) {
     if (input.action === "revoke") await premiumDb().begin(async tx => {
       await tx`UPDATE premium_subscriptions SET revoked_at = NOW() WHERE id = ${input.id}`;
       await tx`INSERT INTO premium_security_logs(subscription_id, event, detail) VALUES(${input.id}, 'admin_revoked', 'Revoked from the admin panel')`;
+    });
+    if (input.action === "unrevoke") await premiumDb().begin(async tx => {
+      const [subscription] = await tx`UPDATE premium_subscriptions SET revoked_at = NULL WHERE id = ${input.id} RETURNING id`;
+      if (!subscription) throw new PremiumError("Subscription not found", 404);
+      await tx`INSERT INTO premium_security_logs(subscription_id, event, detail)
+        VALUES(${input.id}, 'admin_unrevoked', 'Revocation removed from the admin panel; expiry, usage and device blocks unchanged')`;
     });
     return Response.json({ ok: true }, { headers });
   } catch (error) {
