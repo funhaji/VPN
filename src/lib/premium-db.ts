@@ -27,6 +27,13 @@ export async function ensurePremiumSchema() {
       device_hash TEXT PRIMARY KEY, public_key TEXT NOT NULL, platform TEXT NOT NULL,
       blocked_at TIMESTAMPTZ, trial_claimed_at TIMESTAMPTZ,
       active_subscription UUID REFERENCES premium_subscriptions(id), created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`;
+    // Retain hashed primary keys so existing trials and subscriptions remain bound.
+    // The authenticated native ID is also kept for parity with Active Users.
+    await sql`ALTER TABLE premium_devices ADD COLUMN IF NOT EXISTS device_id TEXT`;
+    await sql`CREATE TABLE IF NOT EXISTS premium_access_blocks (
+      kind TEXT NOT NULL CHECK(kind IN ('ip','device')), subject_hash TEXT NOT NULL,
+      device_hash TEXT, device_id TEXT, reason TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY(kind, subject_hash))`;
     await sql`CREATE TABLE IF NOT EXISTS premium_redemptions (
       subscription_id UUID REFERENCES premium_subscriptions(id), device_hash TEXT REFERENCES premium_devices(device_hash),
       redeemed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY(subscription_id, device_hash))`;

@@ -56,7 +56,7 @@ const ALIASES: Record<string, DownloadId> = {
 };
 
 export const resolveDownloadId = (platform: string): DownloadId | null =>
-  ALIASES[platform.trim().toLowerCase()] ?? null;
+  Object.hasOwn(ALIASES, platform.trim().toLowerCase()) ? ALIASES[platform.trim().toLowerCase()] : null;
 
 const b64url = (buf: Buffer) =>
   buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -81,7 +81,10 @@ export function createSignedDownloadUrl(platform: string): SignedDownload {
     return { ok: false, status: 503, error: "Downloads are temporarily unavailable" };
   }
 
-  const ttl = Math.max(60, Number(process.env.DOWNLOAD_LINK_TTL_SECONDS) || 6 * 60 * 60);
+  const configuredTtl = Number(process.env.DOWNLOAD_LINK_TTL_SECONDS);
+  // Redirects are cached for 300 seconds. Even the shortest link must outlive
+  // that cache, including a browser receiving it at the end of its CDN lifetime.
+  const ttl = Number.isFinite(configuredTtl) && configuredTtl > 0 ? Math.max(360, configuredTtl) : 6 * 60 * 60;
   // Round expiry to 5-minute buckets so the redirect can be CDN-cached briefly
   // (fewer Vercel function invocations) while each link still expires.
   const bucket = 300;

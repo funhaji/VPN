@@ -62,8 +62,13 @@ function goHome(env, status = 302) {
 }
 
 let filesCache;
+let filesCacheSource;
 function getFiles(env) {
-  if (!filesCache) filesCache = JSON.parse(env.FILES || "{}");
+  const source = env.FILES || "{}";
+  if (!filesCache || filesCacheSource !== source) {
+    filesCache = JSON.parse(source);
+    filesCacheSource = source;
+  }
   return filesCache;
 }
 
@@ -201,13 +206,16 @@ export default {
       return goHome(env);
     }
 
-    const file = getFiles(env)[id];
+    const files = getFiles(env);
+    const file = Object.hasOwn(files, id) ? files[id] : null;
     if (!file) return text(404, "Not found");
 
     const range = request.headers.get("range");
     const cache = caches.default;
-    // Cache key is per-file (not per-token) so every user shares one cached copy.
-    const cacheKey = new Request(`https://download-cache.internal/${id}/${encodeURIComponent(file.filename)}`, {
+    // Share across tokens, but never serve the previous release after its source
+    // changes while the public filename stays the same.
+    const revision = await hmac(env.SIGNING_SECRET, JSON.stringify(file.source));
+    const cacheKey = new Request(`https://download-cache.internal/${id}/${revision}/${encodeURIComponent(file.filename)}`, {
       headers: range ? { Range: range } : {},
     });
 

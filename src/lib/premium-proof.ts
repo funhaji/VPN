@@ -90,6 +90,7 @@ export async function authenticatePremium(request: Request, body: string, option
   // Recheck after concurrent enrollment: INSERT ON CONFLICT must not authorize a different key.
   const [pinned] = await sql`SELECT * FROM premium_devices WHERE device_hash = ${deviceHash}`;
   if (pinned.public_key !== canonicalKey || pinned.blocked_at) throw new PremiumError("Device identity rejected", 403, "identity_rejected");
+  await sql`UPDATE premium_devices SET device_id = ${device} WHERE device_hash = ${deviceHash}`;
   await sql`DELETE FROM premium_nonces WHERE expires_at < NOW()`;
   return { deviceHash, platform };
 }

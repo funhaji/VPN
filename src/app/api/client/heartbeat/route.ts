@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { recordClientHeartbeat } from "@/lib/db";
+import { queryRead, recordClientHeartbeat } from "@/lib/db";
 import { limitRequest } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
@@ -29,6 +29,7 @@ export async function POST(request: NextRequest) {
       appVersion?: string;
       osVersion?: string;
       model?: string;
+      confirmRegistration?: boolean;
     };
 
     if (!body || typeof body !== "object") {
@@ -50,9 +51,13 @@ export async function POST(request: NextRequest) {
       model: typeof body.model === "string" ? body.model : "",
     });
 
+    if (body.confirmRegistration === true) {
+      const [registered] = await queryRead`SELECT 1 FROM client_devices WHERE device_id = ${deviceId} AND platform = ${platform} LIMIT 1`;
+      if (!registered) return NextResponse.json({ error: "Device registration unavailable" }, { status: 503, headers: corsHeaders });
+    }
     return NextResponse.json({ ok: true }, { headers: corsHeaders });
   } catch (err) {
     console.warn("Heartbeat skipped due to database status:", err instanceof Error ? err.message : String(err));
-    return NextResponse.json({ ok: true }, { headers: corsHeaders });
+    return NextResponse.json({ error: "Device registration unavailable" }, { status: 503, headers: corsHeaders });
   }
 }

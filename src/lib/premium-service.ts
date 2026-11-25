@@ -27,7 +27,8 @@ export async function unblockDevice(deviceHash: string) {
   const sql = premiumDb();
   return sql.begin(async tx => {
     const [device] = await tx`SELECT * FROM premium_devices WHERE device_hash = ${deviceHash} FOR UPDATE`;
-    if (!device) throw new PremiumError("Device not found", 404);
+    await tx`DELETE FROM premium_access_blocks WHERE device_hash = ${deviceHash}`;
+    if (!device) return { ok: true, restored: false };
     await tx`UPDATE premium_devices SET blocked_at = NULL WHERE device_hash = ${deviceHash}`;
     let subscriptionId = device.active_subscription as string | null;
     if (!subscriptionId) {

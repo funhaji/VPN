@@ -16,8 +16,9 @@ export async function GET(request: NextRequest) {
       getCachedAppVersions(),
       getCachedLocationStats().catch(() => null),
     ]);
-    const locations = stats && stats.locationCount > 0 ? stats.locationCount : 62;
-    const servers = stats && stats.enabledServers > 0 ? stats.enabledServers : 96;
+    // A published empty catalog is a real zero, not a failed stats lookup.
+    const locations = stats?.locationCount ?? 0;
+    const servers = stats?.enabledServers ?? 0;
 
     memo = {
       origin,
