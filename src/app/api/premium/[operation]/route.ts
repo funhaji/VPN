@@ -66,7 +66,9 @@ export async function POST(request: NextRequest, context: { params: Promise<{ op
     }
     throw new PremiumError("Not found", 404);
   } catch (error) {
-    if (error instanceof PremiumError && ["bad_payload", "bad_proof", "device_changed", "device_blocked", "replayed", "bad_protocol", "identity_rejected"].includes(error.code)) {
+    // device_changed and identity_rejected are signing-key mismatches (overlapping
+    // startup enrollment, or a reinstall). Reject them without a device/IP ban.
+    if (error instanceof PremiumError && ["bad_payload", "bad_proof", "device_blocked", "replayed", "bad_protocol"].includes(error.code)) {
       try { await blockPremiumRequest(request, `Invalid premium authentication: ${error.code}`); }
       catch { return Response.json({ error: "Premium service unavailable" }, { status: 503, headers }); }
     }
