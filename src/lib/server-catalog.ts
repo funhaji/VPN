@@ -958,7 +958,7 @@ const buildOutboundFromXrayJson = (
   return null;
 };
 
-const buildRuntimeProfile = (server: ServerRecord, rawConfig: string): JsonObject => {
+export const buildRuntimeProfile = (server: Pick<ServerRecord, "protocol" | "options">, rawConfig: string): JsonObject => {
   if (server.protocol.toLowerCase().startsWith("jumpjump:") || /"provider"\s*:\s*"jumpjump"/.test(rawConfig)) {
     return jumpJumpProfile(JSON.parse(rawConfig));
   }

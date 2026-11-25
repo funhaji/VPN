@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { authenticatePremium, digest, premiumRateLimit, PremiumError } from "@/lib/premium-proof";
 import { ensurePremiumSchema, premiumDb } from "@/lib/premium-db";
-import { premiumAccount, premiumLease, premiumPreviews, recoverPremium, redeemPremium } from "@/lib/premium-service";
+import { premiumAccount, premiumLease, premiumPreviews, recoverPremium, redeemPremium, reportPremiumUsage } from "@/lib/premium-service";
 import { BodyLimitError, readBoundedBody } from "@/lib/bounded-body";
 import { blockPremiumRequest, enforcePremiumAccess, premiumSourceIp } from "@/lib/premium-access";
 
@@ -35,6 +35,10 @@ export async function POST(request: NextRequest, context: { params: Promise<{ op
     try { data = JSON.parse(body); } catch { throw new PremiumError("Invalid JSON", 400, "bad_payload"); }
     if (!data || typeof data !== "object" || Array.isArray(data)) throw new PremiumError("Invalid body", 400, "bad_payload");
     if (operation === "account") return Response.json(await premiumAccount(deviceHash), { headers });
+    if (operation === "usage") {
+      if (typeof data.sessionId !== "string" || !/^[a-f0-9-]{36}$/.test(data.sessionId) || !Number.isSafeInteger(data.totalBytes) || data.totalBytes < 0) throw new PremiumError("Invalid usage report", 400, "invalid_usage");
+      return Response.json(await reportPremiumUsage(deviceHash, data.sessionId, data.totalBytes), { headers });
+    }
     if (operation === "previews") {
       await premiumRateLimit(`previews:${deviceHash}`, 30);
       return Response.json(await premiumPreviews(deviceHash), { headers });

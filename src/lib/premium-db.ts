@@ -48,7 +48,11 @@ export async function ensurePremiumSchema() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`;
     await sql`CREATE TABLE IF NOT EXISTS premium_security_logs (
       id BIGSERIAL PRIMARY KEY, device_hash TEXT, subscription_id UUID, event TEXT NOT NULL,
-      detail TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`;
+       detail TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`;
+    await sql`CREATE TABLE IF NOT EXISTS premium_usage_sessions (
+      id UUID PRIMARY KEY, device_hash TEXT NOT NULL, subscription_id UUID NOT NULL REFERENCES premium_subscriptions(id),
+      reported_bytes BIGINT NOT NULL DEFAULT 0 CHECK(reported_bytes >= 0), server_id UUID NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`;
   })().catch(error => { ready = undefined; throw error; });
   await ready;
 }

@@ -7,7 +7,7 @@ type Server = { id: string; name: string; country: string; controller_node: stri
 type Log = { id: string; device_hash: string | null; device_id: string | null; subscription_id: string | null; event: string; detail: string; created_at: string };
 type BlockedDevice = { device_hash: string; device_id: string | null; platform: string | null; blocked_at: string };
 export function PremiumPanel() {
-  const [data, setData] = useState<{ subscriptions: Subscription[]; servers: Server[]; logs: Log[]; devices: BlockedDevice[]; controllerConfigured: boolean }>();
+  const [data, setData] = useState<{ subscriptions: Subscription[]; servers: Server[]; logs: Log[]; devices: BlockedDevice[] }>();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -27,7 +27,6 @@ export function PremiumPanel() {
   const applyPlan = (p: Plan) => { setPlan(p.label); setDays(p.days); setDevices(p.devices); setGb(p.gb); };
   const [name, setName] = useState("");
   const [country, setCountry] = useState("DE");
-  const [node, setNode] = useState("");
   const [config, setConfig] = useState("");
   const load = useCallback(async () => {
     setLoading(true);
@@ -65,7 +64,7 @@ export function PremiumPanel() {
     {notice && <p role="status" className="rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-3 text-sm text-emerald-200">{notice}</p>}
     {data && <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">{[["Subscriptions", data.subscriptions.length], ["Revoked", data.subscriptions.filter(sub => sub.revoked_at).length], ["Enabled servers", data.servers.filter(server => server.enabled).length], ["Blocked devices", data.devices.length]].map(([label, count]) => <div key={label} className={card}><p className="text-xs font-medium uppercase tracking-wider text-slate-400">{label}</p><p className="text-2xl font-semibold text-slate-100">{count}</p></div>)}</div>}
     {error && <p role="alert" className="text-rose-300">{error}</p>}
-    {data && !data.controllerConfigured && <p className="rounded-xl border border-amber-400/30 p-3 text-amber-200">VPN-node enforcement is not configured. Previews and key activation work, but premium credentials will not be released until a trusted controller is deployed.</p>}
+    <p className="rounded-xl border border-amber-400/30 p-3 text-amber-200">Imported provider configs are delivered only to active subscribers. No node controller is required. Updated Android apps deduct app-reported traffic; authoritative billing requires provider integration. Revoking an app subscription cannot disable copied provider credentials.</p>
     {issued && <div className="rounded-xl border border-emerald-400/30 bg-emerald-400/5 p-4"><strong>Save this key now — shown only once</strong><p className="break-all font-mono my-3 select-all">{issued}</p><div className="flex flex-wrap gap-2"><button className={primary} onClick={() => { void navigator.clipboard.writeText(issued).then(() => setNotice("Key copied."), () => setError("Clipboard unavailable. Select and copy the key manually.")); }}>Copy key</button><button className={secondary} onClick={() => setIssued("")}>Dismiss key</button></div></div>}
     <form className="rounded-2xl border border-white/10 p-4 space-y-3" onSubmit={e => { e.preventDefault(); void action({ action: "issue", days, devices, bytes: Math.round(gb * 1073741824) }); }}>
       <h3 className="font-semibold">Create subscription key</h3>
@@ -87,9 +86,9 @@ export function PremiumPanel() {
         <label>Total traffic (GiB)<input className={input} type="number" min="0.01" step="0.01" required value={gb} onChange={e => setGb(Number(e.target.value))} /></label>
       </div><p className="text-xs text-slate-400">The clock starts on first redemption. Redeemed device slots cannot be reset by logging out.</p><button disabled={busy} className={primary}>{busy ? "Saving…" : "Create key"}</button>
     </form>
-    <form className="rounded-2xl border border-white/10 p-4 space-y-3" onSubmit={e => { e.preventDefault(); void action({ action: "server", name, country, node, rawConfig: config }); }}>
-      <h3 className="font-semibold">Add private premium server</h3><div className="grid sm:grid-cols-3 gap-3"><label>Display name<input className={input} required maxLength={70} value={name} onChange={e => setName(e.target.value)} /></label><label>Country<input className={input} required maxLength={80} value={country} onChange={e => setCountry(e.target.value)} /></label><label>Controller node ID<input className={input} required value={node} onChange={e => setNode(e.target.value)} /></label></div>
-      <label className="block">Private profile template<textarea className={`${input} min-h-32 font-mono`} required value={config} onChange={e => setConfig(e.target.value)} placeholder="Node controller profile template — encrypted at rest, never published to the free catalog" /></label><button disabled={busy} className={primary}>Add premium server</button>
+    <form className="rounded-2xl border border-white/10 p-4 space-y-3" onSubmit={e => { e.preventDefault(); void action({ action: "server", name, country, rawConfig: config }); }}>
+      <h3 className="font-semibold">Add private premium server</h3><div className="grid sm:grid-cols-2 gap-3"><label>Display name<input className={input} required maxLength={70} value={name} onChange={e => setName(e.target.value)} /></label><label>Country<input className={input} required maxLength={80} value={country} onChange={e => setCountry(e.target.value)} /></label></div>
+      <label className="block">Private provider config<textarea className={`${input} min-h-32 font-mono`} required value={config} onChange={e => setConfig(e.target.value)} placeholder="Imported share link or JSON profile — encrypted at rest, never published to the free catalog" /></label><button disabled={busy} className={primary}>Add premium server</button>
     </form>
     <div className={card}><h3 className="font-semibold">Premium servers</h3>{data?.servers.map(server => <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/10 pt-3" key={server.id}><span className="min-w-0 break-words">{server.name} · {server.country}<small className="block text-slate-400">{server.controller_node} · {server.enabled ? "Enabled" : "Disabled"}</small></span><button className={server.enabled ? secondary : primary} disabled={busy} onClick={() => void action({ action: "toggle-server", id: server.id, enabled: !server.enabled })}>{server.enabled ? "Disable" : "Enable"}</button></div>)}{data && !data.servers.length && <p className="text-sm text-slate-400">No premium servers yet. Add one above or use Premium only in the server editor.</p>}</div>
     <div className={card}>

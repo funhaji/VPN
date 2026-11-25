@@ -2,7 +2,8 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { premiumDb, ensurePremiumSchema } from "@/lib/premium-db";
 import { digest, PremiumError } from "@/lib/premium-proof";
 import { decryptConfig, encryptConfig } from "@/lib/crypto";
-import { readBoundedBody } from "@/lib/bounded-body";
+import { detectProfileMetadata } from "@/lib/profile-import";
+import { buildRuntimeProfile } from "@/lib/server-catalog";
 
 export async function premiumAccount(deviceHash: string) {
   const sql = premiumDb();
@@ -11,12 +12,15 @@ export async function premiumAccount(deviceHash: string) {
     (SELECT COUNT(*)::int FROM premium_redemptions r WHERE r.subscription_id = s.id) AS devices
     FROM premium_subscriptions s WHERE id = ${device.active_subscription}` : [];
   const active = Boolean(sub && !device.blocked_at && !sub.revoked_at && sub.expires_at && new Date(sub.expires_at).getTime() > Date.now() && BigInt(sub.used_bytes) < BigInt(sub.traffic_limit));
+  const visible = active ? sub : null;
   return {
     active, trialAvailable: !device?.trial_claimed_at, blocked: Boolean(device?.blocked_at),
-    reference: sub?.reference ?? null, kind: sub?.kind ?? null, totalDays: sub?.days ?? 0,
-    activatedAt: sub?.activated_at ?? null, expiresAt: sub?.expires_at ?? null,
-    trafficLimit: Number(sub?.traffic_limit ?? 0), usedBytes: Number(sub?.used_bytes ?? 0),
-    deviceLimit: sub?.device_limit ?? 0, devices: sub?.devices ?? 0,
+    revoked: Boolean(sub?.revoked_at),
+    exhausted: Boolean(sub && BigInt(sub.used_bytes) >= BigInt(sub.traffic_limit)),
+    reference: visible?.reference ?? null, kind: visible?.kind ?? null, totalDays: visible?.days ?? 0,
+    activatedAt: visible?.activated_at ?? null, expiresAt: visible?.expires_at ?? null,
+    trafficLimit: Number(visible?.traffic_limit ?? 0), usedBytes: Number(visible?.used_bytes ?? 0),
+    deviceLimit: visible?.device_limit ?? 0, devices: visible?.devices ?? 0,
     supportUrl: "https://t.me/AstroVPN_Help",
   };
 }
@@ -142,42 +146,66 @@ export async function premiumPreviews(deviceHash: string) {
   };
 }
 
-// A node controller, not a client-supplied byte counter, is the traffic authority.
-// Its lease endpoint must verify this subscription against the same authoritative DB.
+// Imported provider credentials are gated by entitlement here, not provisioned on
+// nodes we control. Expiry bounds app-side reuse; it cannot expire the provider's
+// underlying credentials or authoritatively meter traffic on third-party nodes.
 export async function premiumLease(deviceHash: string, serverId: string) {
   const sql = premiumDb();
   const account = await premiumAccount(deviceHash);
   if (!account.active) throw new PremiumError("Premium expired or exhausted. Contact @AstroVPN_Help with your subscription reference.", 403);
-  const controller = process.env.PREMIUM_CONTROLLER_URL;
-  const token = process.env.PREMIUM_CONTROLLER_TOKEN;
-  if (!controller || !token || new URL(controller).protocol !== "https:") throw new PremiumError("Premium node enforcement is not configured. Contact @AstroVPN_Help.", 503);
   const [device] = await sql`SELECT active_subscription FROM premium_devices WHERE device_hash = ${deviceHash} AND blocked_at IS NULL`;
   const [server] = await sql`SELECT * FROM premium_servers WHERE id = ${serverId} AND enabled = TRUE`;
-  if (!server || !device) throw new PremiumError("Server unavailable", 404);
-  const response = await fetch(new URL("/v1/leases", controller), {
-    method: "POST", redirect: "error", cache: "no-store", signal: AbortSignal.timeout(10_000),
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ deviceHash, subscriptionId: device.active_subscription, serverId, node: server.controller_node,
-      template: decryptConfig(JSON.parse(server.config_json)), maxLeaseSeconds: 60 }),
-  });
-  if (!response.ok) throw new PremiumError("Premium node refused the connection", 503);
-  let lease;
-  try { lease = JSON.parse(await readBoundedBody(response, 524_288)); }
-  catch { throw new PremiumError("Invalid premium node response", 503); }
-  const until = new Date(lease?.expiresAt).getTime();
-  if (!lease || typeof lease.id !== "string" || lease.id.length < 1 || lease.id.length > 128 ||
-    typeof lease.rawConfig !== "string" || lease.rawConfig.length < 2 ||
-    !lease.runtimeProfile?.outbound || typeof lease.runtimeProfile.outbound !== "object" || Array.isArray(lease.runtimeProfile.outbound) ||
-    lease.runtimeProfile.supported !== true || !["xray-core", "sing-box", "xray-jumpjump"].includes(lease.runtimeProfile.engine) ||
-    !Number.isFinite(until) || until <= Date.now() || until > Math.min(Date.now() + 60_000, new Date(account.expiresAt).getTime())) throw new PremiumError("Invalid premium node lease", 503);
-  // Recheck after provisioning to close revoke/expiry races before releasing credentials.
+  if (!server || !device?.active_subscription) throw new PremiumError("Server unavailable", 404);
+  const options = { mux: false, fragment: false, sniffing: true, allowInsecure: false, extra: {} };
+  let rawConfig: string;
+  let runtimeProfile: Record<string, unknown>;
+  try {
+    const profile = detectProfileMetadata(decryptConfig(JSON.parse(server.config_json)));
+    rawConfig = profile.rawConfig;
+    runtimeProfile = buildRuntimeProfile({ protocol: profile.protocol, options }, rawConfig);
+  } catch {
+    throw new PremiumError("Premium server profile is invalid. Contact @AstroVPN_Help.", 503, "invalid_profile");
+  }
+  if (runtimeProfile.supported !== true || !runtimeProfile.outbound || typeof runtimeProfile.outbound !== "object" ||
+    Array.isArray(runtimeProfile.outbound) || !["xray", "xray-core", "sing-box", "xray-jumpjump"].includes(String(runtimeProfile.engine))) {
+    throw new PremiumError("This premium server profile is not supported by the premium runtime. Contact @AstroVPN_Help.", 422, "unsupported_profile");
+  }
+  // Recheck after profile preparation to close revoke/expiry races before releasing credentials.
   const current = await premiumAccount(deviceHash);
   const [binding] = await sql`SELECT active_subscription FROM premium_devices WHERE device_hash = ${deviceHash} AND blocked_at IS NULL`;
   if (!current.active || binding?.active_subscription !== device.active_subscription || current.reference !== account.reference) throw new PremiumError("Premium no longer active", 403);
   const [enabled] = await sql`SELECT id FROM premium_servers WHERE id = ${serverId} AND enabled = TRUE`;
   if (!enabled) throw new PremiumError("Server unavailable", 403);
-  return { id: lease.id, expiresAt: lease.expiresAt, rawConfig: lease.rawConfig, runtimeProfile: lease.runtimeProfile,
-    options: { mux: false, fragment: false, sniffing: true, allowInsecure: false, extra: {} } };
+  const until = Math.min(Date.now() + 60_000, new Date(current.expiresAt).getTime());
+  if (!Number.isFinite(until) || until <= Date.now()) throw new PremiumError("Premium no longer active", 403);
+  const id = randomUUID();
+  await sql`INSERT INTO premium_usage_sessions(id, device_hash, subscription_id, server_id) VALUES(${id}, ${deviceHash}, ${device.active_subscription}, ${serverId})`;
+  return { id, expiresAt: new Date(until).toISOString(), rawConfig, runtimeProfile, options,
+    remainingBytes: Math.max(0, current.trafficLimit - current.usedBytes) };
+}
+
+// Cumulative app-reported tunnel bytes, NOT provider-authoritative billing.
+// Per-session high-water marks make retries idempotent; the subscription row
+// serializes concurrent devices so increments cannot overwrite each other.
+export async function reportPremiumUsage(deviceHash: string, sessionId: string, totalBytes: number) {
+  if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(sessionId) || !Number.isSafeInteger(totalBytes) || totalBytes < 0) throw new PremiumError("Invalid usage report", 400, "invalid_usage");
+  const sql = premiumDb();
+  await sql.begin(async tx => {
+    const [session] = await tx`SELECT * FROM premium_usage_sessions WHERE id = ${sessionId} AND device_hash = ${deviceHash} FOR UPDATE`;
+    if (!session) throw new PremiumError("Unknown premium usage session", 404, "unknown_session");
+    const delta = BigInt(totalBytes) > BigInt(session.reported_bytes) ? BigInt(totalBytes) - BigInt(session.reported_bytes) : BigInt(0);
+    await tx`UPDATE premium_subscriptions SET used_bytes = LEAST(traffic_limit, used_bytes + ${delta.toString()}::bigint),
+      expires_at = CASE WHEN used_bytes + ${delta.toString()}::bigint >= traffic_limit THEN LEAST(expires_at, NOW()) ELSE expires_at END
+      WHERE id = ${session.subscription_id}`;
+    await tx`UPDATE premium_usage_sessions SET reported_bytes = GREATEST(reported_bytes, ${totalBytes}) WHERE id = ${sessionId}`;
+  });
+  const account = await premiumAccount(deviceHash);
+  const [binding] = await sql`SELECT active_subscription FROM premium_devices WHERE device_hash = ${deviceHash} AND blocked_at IS NULL`;
+  const [session] = await sql`SELECT subscription_id, server_id FROM premium_usage_sessions WHERE id = ${sessionId} AND device_hash = ${deviceHash}`;
+  const [server] = await sql`SELECT id FROM premium_servers WHERE id = ${session.server_id} AND enabled = TRUE`;
+  const active = account.active && binding?.active_subscription === session?.subscription_id && Boolean(server);
+  return { account, expiresAt: active ? new Date(Math.min(Date.now() + 60_000, new Date(account.expiresAt).getTime())).toISOString() : null,
+    remainingBytes: active ? Math.max(0, account.trafficLimit - account.usedBytes) : 0 };
 }
 
 export async function issuePremium(days: number, devices: number, bytes: number) {

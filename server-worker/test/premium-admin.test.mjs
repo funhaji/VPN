@@ -52,3 +52,27 @@ test("unrevoking a missing subscription returns 404 without an audit insert", as
   await assert.rejects(unrevoke(async () => { calls++; return []; }, { id: "missing" }, PremiumError), error => error.status === 404);
   assert.equal(calls, 1);
 });
+
+const service = await readFile(new URL("../../src/lib/premium-service.ts", import.meta.url), "utf8");
+const accountBody = service.match(/export async function premiumAccount\(deviceHash: string\) \{([\s\S]*?)\n\}/)?.[1];
+assert.ok(accountBody);
+const accountFor = new (Object.getPrototypeOf(async function () {}).constructor)("premiumDb", "deviceHash", accountBody);
+test("revoked subscriptions report Free state without stale quotas, slots or reference", async () => {
+  const sub = { reference: "SUB-test", kind: "paid", days: 30, activated_at: new Date(), expires_at: new Date(Date.now() + 86400000),
+    revoked_at: new Date(), traffic_limit: "10000", used_bytes: "1234", device_limit: 2, devices: 1 };
+  const snapshot = async () => {
+    let calls = 0;
+    return accountFor(() => async () => ++calls === 1 ? [{ active_subscription: "sub", trial_claimed_at: new Date() }] : [sub], "device");
+  };
+  const revoked = await snapshot();
+  assert.equal(revoked.active, false);
+  assert.equal(revoked.revoked, true);
+  for (const field of ["reference", "kind", "expiresAt", "activatedAt"]) assert.equal(revoked[field], null);
+  for (const field of ["totalDays", "trafficLimit", "usedBytes", "deviceLimit", "devices"]) assert.equal(revoked[field], 0);
+  sub.revoked_at = null;
+  const restored = await snapshot();
+  assert.equal(restored.active, true);
+  assert.equal(restored.revoked, false);
+  assert.equal(restored.reference, "SUB-test");
+  assert.equal(restored.usedBytes, 1234);
+});

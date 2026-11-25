@@ -30,12 +30,12 @@ export async function GET(request: NextRequest) {
         GROUP BY b.device_hash
       ) blocked ORDER BY blocked_at DESC LIMIT 100`,
     ]);
-    return Response.json({ subscriptions, servers, logs, devices, controllerConfigured: Boolean(process.env.PREMIUM_CONTROLLER_URL && process.env.PREMIUM_CONTROLLER_TOKEN) }, { headers });
+    return Response.json({ subscriptions, servers, logs, devices, credentialMode: "imported" }, { headers });
   } catch { return Response.json({ error: "Premium database unavailable. Connect the main Neon database (NEON_DATABASE_URL) in Vercel env vars, or set PREMIUM_DATABASE_URL." }, { status: 503, headers }); }
 }
 const schema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("issue"), days: z.number().int().min(1).max(3650), devices: z.number().int().min(1).max(100), bytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER) }),
-  z.object({ action: z.literal("server"), name: z.string().trim().min(1).max(70), country: z.string().trim().min(1).max(80), node: z.string().regex(/^[\w.-]{1,128}$/), rawConfig: z.string().min(2).max(262144) }),
+  z.object({ action: z.literal("server"), name: z.string().trim().min(1).max(70), country: z.string().trim().min(1).max(80), node: z.string().regex(/^[\w.-]{1,128}$/).default("imported"), rawConfig: z.string().min(2).max(262144) }),
   z.object({ action: z.literal("revoke"), id: z.string().uuid() }),
   z.object({ action: z.literal("unrevoke"), id: z.string().uuid() }),
   z.object({ action: z.literal("toggle-server"), id: z.string().uuid(), enabled: z.boolean() }),
