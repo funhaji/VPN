@@ -12,10 +12,12 @@ class PremiumError extends Error { constructor(message, status) { super(message)
 function harness() {
   let used = 0n;
   const marks = new Map([[id, 0n], [id.replace("abc", "abd"), 0n]]);
+  const sessionDevices = new Map([[id, "device"], [id.replace("abc", "abd"), "device"]]);
   let tail = Promise.resolve();
   const db = async (strings, ...args) => {
     const q = strings.join("?");
-    if (q.includes("FOR UPDATE")) return args[1] === "device" && marks.has(args[0]) ? [{ subscription_id: "sub", reported_bytes: marks.get(args[0]) }] : [];
+    if (q.includes("premium_usage_sessions") && q.includes("FOR UPDATE")) return marks.has(args[0]) && sessionDevices.get(args[0]) === args[1] ? [{ subscription_id: "sub", reported_bytes: marks.get(args[0]), server_id: "server" }] : [];
+    if (q.includes("premium_devices") && q.includes("FOR UPDATE")) return [{ active_subscription: "sub" }];
     if (q.includes("UPDATE premium_subscriptions")) { used = used + BigInt(args[0]); if (used > 1000n) used = 1000n; return []; }
     if (q.includes("UPDATE premium_usage_sessions")) { marks.set(args[1], marks.get(args[1]) > BigInt(args[0]) ? marks.get(args[1]) : BigInt(args[0])); return []; }
     if (q.includes("premium_devices")) return [{ active_subscription: "sub" }];
@@ -25,6 +27,7 @@ function harness() {
   };
   db.begin = fn => { const next = tail.then(() => fn(db)); tail = next.catch(() => {}); return next; };
   return {
+    bind: (session, device) => sessionDevices.set(session, device),
     report: (total, session = id, device = "device") => run(() => db, async () => ({ active: used < 1000n, trafficLimit: 1000, usedBytes: Number(used), expiresAt: new Date(Date.now() + 3600000).toISOString() }), PremiumError, device, session, total),
     get used() { return used; },
   };
@@ -36,9 +39,11 @@ test("cumulative usage retries and out-of-order reports never double-charge", as
 });
 test("concurrent accounting sessions aggregate and exhausted quota denies renewal", async () => {
   const h = harness();
-  await Promise.all([h.report(400), h.report(400, id.replace("abc", "abd"))]);
+  h.bind(id, "device-a");
+  h.bind(id.replace("abc", "abd"), "device-b");
+  await Promise.all([h.report(400, id, "device-a"), h.report(400, id.replace("abc", "abd"), "device-b")]);
   assert.equal(h.used, 800n);
-  const receipt = await h.report(900);
+  const receipt = await h.report(900, id, "device-a");
   assert.equal(h.used, 1000n);
   assert.equal(receipt.remainingBytes, 0);
   assert.equal(receipt.expiresAt, null);
