@@ -50,6 +50,17 @@ test("the published (V2) catalog excludes premium servers so legacy clients cann
   assert.match(publication, /listServers\(true,\s*true\)/, "publication catalog must use the premium-filtered server list");
 });
 
+test("a signing-key mismatch is rejected without a permanent device or IP block", async () => {
+  const route = await readFile(new URL("../../src/app/api/premium/[operation]/route.ts", import.meta.url), "utf8");
+  const gate = route.match(/if \(error instanceof PremiumError && \[([\s\S]*?)\]\.includes\(error\.code\)\)/);
+  assert.ok(gate, "punitive premium error codes must be listed explicitly");
+  assert.doesNotMatch(gate[1], /device_changed|identity_rejected/);
+  for (const code of ["bad_proof", "device_blocked", "replayed", "bad_protocol"]) assert.match(gate[1], new RegExp(code));
+  const proof = await readFile(new URL("../../src/lib/premium-proof.ts", import.meta.url), "utf8");
+  assert.match(proof, /if \(pinned\.public_key !== canonicalKey\) throw new PremiumError\("Device identity rejected"/);
+  assert.ok(proof.indexOf('throw new PremiumError("Device identity rejected"') < proof.indexOf("if (pinned.blocked_at)"));
+});
+
 test("the premium proof covers device identity only, never the app version (premium previews regression)", async () => {
   const { readFile } = await import("node:fs/promises");
   const source = await readFile(new URL("../../src/lib/premium-proof.ts", import.meta.url), "utf8");

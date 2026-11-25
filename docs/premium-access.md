@@ -10,8 +10,10 @@ Public catalogs, downloads, and heartbeat registration are not IP-blocked by it.
 - Credential (`lease`) requests require an active subscription bound to that device.
   Raw subscription keys are supplied only to `redeem`, not on every request.
 - Valid free users can request names-only previews and activate an eligible trial.
-- Invalid identity, missing required fields, bad proofs, and credential requests
-  without entitlement persist IP/device blocks. OPTIONS preflights are exempt.
+- Missing required fields, bad proofs, replays, protocol violations, and
+  credential requests without entitlement persist IP/device blocks.
+  A signing-key mismatch (`device_changed`, `identity_rejected`) is rejected
+  and does not ban the device or its IP. OPTIONS preflights are exempt.
 - Database failures deny access without recording a new ban.
 
 ## Source IP

@@ -88,8 +88,11 @@ export async function authenticatePremium(request: Request, body: string, option
   }
   await sql`INSERT INTO premium_devices(device_hash, public_key, platform) VALUES(${deviceHash}, ${canonicalKey}, ${platform}) ON CONFLICT DO NOTHING`;
   // Recheck after concurrent enrollment: INSERT ON CONFLICT must not authorize a different key.
+  // A key mismatch is rejected without a device or IP ban. A block that landed
+  // during enrollment still uses the punitive device_blocked code.
   const [pinned] = await sql`SELECT * FROM premium_devices WHERE device_hash = ${deviceHash}`;
-  if (pinned.public_key !== canonicalKey || pinned.blocked_at) throw new PremiumError("Device identity rejected", 403, "identity_rejected");
+  if (pinned.public_key !== canonicalKey) throw new PremiumError("Device identity rejected", 403, "identity_rejected");
+  if (pinned.blocked_at) throw new PremiumError("Device blocked. DM @AstroVPN_Help and send your subscription key privately. Never post it publicly.", 403, "device_blocked");
   await sql`UPDATE premium_devices SET device_id = ${device} WHERE device_hash = ${deviceHash}`;
   await sql`DELETE FROM premium_nonces WHERE expires_at < NOW()`;
   return { deviceHash, platform };
