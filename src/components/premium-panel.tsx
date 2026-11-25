@@ -2,12 +2,14 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-type Subscription = { id: string; reference: string; kind: string; days: number; devices: number; device_limit: number; traffic_limit: string; used_bytes: string; expires_at: string | null; revoked_at: string | null };
+type Subscription = { id: string; reference: string; kind: string; days: number; devices: number; device_limit: number; traffic_limit: string; used_bytes: string; activated_at: string | null; expires_at: string | null; revoked_at: string | null };
 type Server = { id: string; name: string; country: string; controller_node: string; enabled: boolean };
 type Log = { id: string; device_hash: string | null; device_id: string | null; subscription_id: string | null; event: string; detail: string; created_at: string };
 type BlockedDevice = { device_hash: string; device_id: string | null; platform: string | null; blocked_at: string };
+type EnrolledDevice = { device_hash: string; device_id: string | null; platform: string | null; blocked_at: string | null; trial_claimed_at: string | null; active_reference: string | null };
+type DeviceBinding = { subscription_id: string; device_hash: string; device_id: string | null; platform: string; blocked_at: string | null; redeemed_at: string };
 export function PremiumPanel() {
-  const [data, setData] = useState<{ subscriptions: Subscription[]; servers: Server[]; logs: Log[]; devices: BlockedDevice[] }>();
+  const [data, setData] = useState<{ subscriptions: Subscription[]; servers: Server[]; logs: Log[]; devices: BlockedDevice[]; enrolledDevices: EnrolledDevice[]; bindings: DeviceBinding[] }>();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -28,6 +30,12 @@ export function PremiumPanel() {
   const [name, setName] = useState("");
   const [country, setCountry] = useState("DE");
   const [config, setConfig] = useState("");
+  const [editingId, setEditingId] = useState("");
+  const [editDays, setEditDays] = useState(30);
+  const [editDevices, setEditDevices] = useState(1);
+  const [editTrafficGiB, setEditTrafficGiB] = useState(30);
+  const [editUsedGiB, setEditUsedGiB] = useState(0);
+  const [editExpiry, setEditExpiry] = useState("");
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -58,6 +66,12 @@ export function PremiumPanel() {
   const primary = `${button} border-cyan-400/30 bg-cyan-400/15 text-cyan-200 hover:bg-cyan-400/25`;
   const danger = `${button} border-rose-400/30 bg-rose-400/10 text-rose-200 hover:bg-rose-400/20`;
   const card = "rounded-2xl border border-white/10 bg-zinc-950/40 p-4 sm:p-5 space-y-4";
+  const startEditing = (sub: Subscription) => {
+    setEditingId(sub.id); setEditDays(sub.days); setEditDevices(sub.device_limit);
+    setEditTrafficGiB(Number(sub.traffic_limit) / 1073741824); setEditUsedGiB(Number(sub.used_bytes) / 1073741824);
+    const expiry = sub.expires_at ? new Date(sub.expires_at) : null;
+    setEditExpiry(expiry ? new Date(expiry.getTime() - expiry.getTimezoneOffset() * 60_000).toISOString().slice(0, 16) : "");
+  };
   const visibleSubscriptions = data?.subscriptions.filter(sub => `${sub.reference} ${sub.kind}`.toLowerCase().includes(search.toLowerCase().trim()));
   return <section className="space-y-5 min-w-0">
     <header className="flex flex-wrap items-center justify-between gap-4"><div><h2 className="text-xl font-semibold">Premium control</h2><p className="text-sm text-slate-400">Keys, private servers and security events. Quotas are shared across the key’s devices.</p></div><button className={secondary} disabled={loading || busy} onClick={() => void load()}>{loading ? "Refreshing…" : "Refresh"}</button></header>
@@ -98,17 +112,41 @@ export function PremiumPanel() {
         const expired = Boolean(sub.expires_at && new Date(sub.expires_at).getTime() <= Date.now());
         const exhausted = Number(sub.used_bytes) >= Number(sub.traffic_limit);
         const status = sub.revoked_at ? "Revoked" : expired ? "Expired" : exhausted ? "Traffic exhausted" : sub.expires_at ? "Active" : "Awaiting redemption";
+        const assigned = data?.bindings.filter(binding => binding.subscription_id === sub.id) ?? [];
         return <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/10 pt-4" key={sub.id}>
           <div className="min-w-0 space-y-2"><div className="flex flex-wrap items-center gap-2"><strong className="break-all font-mono">{sub.reference}</strong><span className={`rounded-full border px-2.5 py-1 text-xs ${status === "Active" ? "border-emerald-400/25 bg-emerald-400/10 text-emerald-200" : "border-white/15 bg-white/5 text-slate-300"}`}>{status}</span></div><p className="text-sm text-slate-400">{sub.kind} · {sub.days} days · {sub.devices}/{sub.device_limit} devices · {(Number(sub.used_bytes) / 1073741824).toFixed(2)}/{(Number(sub.traffic_limit) / 1073741824).toFixed(2)} GiB</p><p className="text-xs text-slate-400">{sub.expires_at ? `Expires ${new Date(sub.expires_at).toLocaleString()}` : "Clock starts on first redemption"}</p></div>
+          <button className={secondary} disabled={busy} onClick={() => startEditing(sub)}>Edit</button>
+          <button className={secondary} disabled={busy} onClick={() => { if (confirm(`Rotate ${sub.reference}? The old key stops working; the replacement is shown once.`)) void action({ action: "rotate-key", id: sub.id }); }}>Rotate key</button>
           <button className={sub.revoked_at ? primary : danger} disabled={busy} onClick={() => {
             const operation = sub.revoked_at ? "unrevoke" : "revoke";
             if (confirm(sub.revoked_at ? `Unrevoke ${sub.reference}? Expiry, traffic usage and device blocks will not change.` : `Revoke ${sub.reference}?`)) void action({ action: operation, id: sub.id });
           }}>{sub.revoked_at ? "Unrevoke" : "Revoke"}</button>
+          {editingId === sub.id && <form className="w-full basis-full rounded-xl border border-white/10 bg-black/20 p-3 space-y-3" onSubmit={e => {
+            e.preventDefault();
+            const trafficLimit = Math.round(editTrafficGiB * 1073741824);
+            const usedBytes = Math.round(editUsedGiB * 1073741824);
+            if (usedBytes > trafficLimit) { setError("Used traffic cannot exceed the traffic limit."); return; }
+            void action({ action: "edit-key", id: sub.id, days: editDays, devices: editDevices, trafficLimit, usedBytes,
+              expiresAt: editExpiry ? new Date(editExpiry).toISOString() : null });
+            setEditingId("");
+          }}>
+            <h4 className="font-medium">Edit {sub.reference}</h4>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+              <label>Plan days<input className={input} type="number" min="1" max="3650" required value={editDays} onChange={e => setEditDays(Number(e.target.value))} /></label>
+              <label>Device limit<input className={input} type="number" min="1" max="100" required value={editDevices} onChange={e => setEditDevices(Number(e.target.value))} /></label>
+              <label>Traffic limit (GiB)<input className={input} type="number" min="0.01" step="any" required value={editTrafficGiB} onChange={e => setEditTrafficGiB(Number(e.target.value))} /></label>
+              <label>Traffic used (GiB)<input className={input} type="number" min="0" step="any" required value={editUsedGiB} onChange={e => setEditUsedGiB(Number(e.target.value))} /></label>
+              <label>Expires at<input className={input} type="datetime-local" value={editExpiry} onChange={e => setEditExpiry(e.target.value)} /></label>
+            </div>
+            <div className="flex flex-wrap gap-2"><button disabled={busy} className={primary}>Save changes</button><button type="button" disabled={busy} className={secondary} onClick={() => setEditUsedGiB(0)}>Set used traffic to 0</button><button type="button" className={secondary} onClick={() => setEditingId("")}>Cancel</button></div>
+          </form>}
+          {assigned.map(device => <div key={device.device_hash} className="w-full basis-full flex flex-wrap items-center justify-between gap-2 border-t border-white/10 pt-2 text-sm"><span className="break-all">{device.device_id || `Legacy hash: ${device.device_hash}`} Â· {device.platform}{device.blocked_at ? " Â· blocked" : ""}</span><button className={danger} disabled={busy} onClick={() => { if (confirm(`Remove ${device.device_id || "this device"} from ${sub.reference}?`)) void action({ action: "remove-device", id: sub.id, deviceHash: device.device_hash }); }}>Remove device</button></div>)}
         </div>;
       })}
       {data && !visibleSubscriptions?.length && <p className="text-sm text-slate-400">{search ? "No subscriptions match your search." : "No subscriptions yet. Create a key above."}</p>}
     </div>
     <div className={card}><h3 className="font-semibold">Blocked devices</h3><p className="text-xs text-slate-400">Devices blocked by the protocol guard. Unblocking clears the block and restores the subscription that was revoked with it.</p>{data?.devices.length ? data.devices.map(device => <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/10 pt-3" key={device.device_hash}><span className="min-w-0 break-all"><strong className="font-mono text-xs">{device.device_id || `Legacy hash: ${device.device_hash}`}</strong><small className="block text-slate-400">{device.platform || "unknown platform"} · blocked {new Date(device.blocked_at).toLocaleString()}</small></span><button className={primary} disabled={busy} onClick={() => { if (confirm(`Unblock device ${device.device_id || device.device_hash.slice(0, 12)} and restore its subscription?`)) void action({ action: "unblock-device", deviceHash: device.device_hash }); }}>Unblock</button></div>) : <p className="text-sm text-slate-400">{loading ? "Loading devices…" : "No blocked devices."}</p>}</div>
     <div className="rounded-2xl border border-white/10 p-4 space-y-3"><h3 className="font-semibold">Security audit · latest 200 events</h3><p className="text-xs text-slate-400">No subscription secrets, server credentials, browsing destinations or request bodies are logged.</p>{data?.logs.map(log => <article key={log.id} className="border-t border-white/10 pt-3 break-all"><strong>{log.event}</strong><time className="block text-xs text-slate-400">{new Date(log.created_at).toLocaleString()}</time><p className="text-sm">{log.detail}</p><p className="text-xs text-slate-400">Device: {log.device_id || (log.device_hash ? `Legacy hash: ${log.device_hash}` : "—")} · Subscription: {log.subscription_id || "—"}</p></article>)}</div>
+    <div className={card}><h3 className="font-semibold">Enrolled devices and trials</h3><p className="text-xs text-slate-400">Restore trial eligibility for a device. It can claim a trial again when it has no active subscription.</p>{data?.enrolledDevices.map(device => <div key={device.device_hash} className="flex flex-wrap items-center justify-between gap-3 border-t border-white/10 pt-3"><span className="min-w-0 break-all"><strong className="font-mono text-xs">{device.device_id || `Legacy hash: ${device.device_hash}`}</strong><small className="block text-slate-400">{device.platform || "unknown platform"} Â· {device.active_reference ? `Key ${device.active_reference}` : "No active key"} Â· {device.trial_claimed_at ? `Trial used ${new Date(device.trial_claimed_at).toLocaleDateString()}` : "Trial available"}{device.blocked_at ? " Â· blocked" : ""}</small></span>{device.trial_claimed_at && <button className={secondary} disabled={busy} onClick={() => { if (confirm(`Restore trial eligibility for ${device.device_id || "this device"}?`)) void action({ action: "reset-trial", deviceHash: device.device_hash }); }}>Allow trial again</button>}</div>)}{data && !data.enrolledDevices.length && <p className="text-sm text-slate-400">No enrolled devices yet.</p>}</div>
   </section>;
 }

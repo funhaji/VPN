@@ -11,10 +11,13 @@ export async function premiumAccount(deviceHash: string) {
   const [sub] = device?.active_subscription ? await sql`SELECT s.*,
     (SELECT COUNT(*)::int FROM premium_redemptions r WHERE r.subscription_id = s.id) AS devices
     FROM premium_subscriptions s WHERE id = ${device.active_subscription}` : [];
-  const active = Boolean(sub && !device.blocked_at && !sub.revoked_at && sub.expires_at && new Date(sub.expires_at).getTime() > Date.now() && BigInt(sub.used_bytes) < BigInt(sub.traffic_limit));
+  const serverNow = Date.now();
+  const expiresAtMs = sub?.expires_at ? new Date(sub.expires_at).getTime() : 0;
+  const active = Boolean(sub && !device.blocked_at && !sub.revoked_at && expiresAtMs > serverNow && BigInt(sub.used_bytes) < BigInt(sub.traffic_limit));
   const visible = active ? sub : null;
   return {
-    active, trialAvailable: !device?.trial_claimed_at, blocked: Boolean(device?.blocked_at),
+    active, remainingMs: active ? Math.max(0, expiresAtMs - serverNow) : 0,
+    trialAvailable: !device?.trial_claimed_at, blocked: Boolean(device?.blocked_at),
     revoked: Boolean(sub?.revoked_at),
     exhausted: Boolean(sub && BigInt(sub.used_bytes) >= BigInt(sub.traffic_limit)),
     reference: visible?.reference ?? null, kind: visible?.kind ?? null, totalDays: visible?.days ?? 0,
@@ -176,11 +179,17 @@ export async function premiumLease(deviceHash: string, serverId: string) {
   if (!current.active || binding?.active_subscription !== device.active_subscription || current.reference !== account.reference) throw new PremiumError("Premium no longer active", 403);
   const [enabled] = await sql`SELECT id FROM premium_servers WHERE id = ${serverId} AND enabled = TRUE`;
   if (!enabled) throw new PremiumError("Server unavailable", 403);
-  const until = Math.min(Date.now() + 60_000, new Date(current.expiresAt).getTime());
-  if (!Number.isFinite(until) || until <= Date.now()) throw new PremiumError("Premium no longer active", 403);
+  // Starting the native Android service can be delayed while the app returns
+  // from the background. Give a newly issued lease enough time to reach it.
+  const serverNow = Date.now();
+  const subscriptionRemainingMs = Math.max(0, new Date(current.expiresAt).getTime() - serverNow);
+  const leaseRemainingMs = Math.min(5 * 60_000, subscriptionRemainingMs);
+  const until = serverNow + leaseRemainingMs;
+  if (!Number.isFinite(until) || leaseRemainingMs <= 0) throw new PremiumError("Premium no longer active", 403);
   const id = randomUUID();
   await sql`INSERT INTO premium_usage_sessions(id, device_hash, subscription_id, server_id) VALUES(${id}, ${deviceHash}, ${device.active_subscription}, ${serverId})`;
-  return { id, expiresAt: new Date(until).toISOString(), rawConfig, runtimeProfile, options,
+  return { id, expiresAt: new Date(until).toISOString(), leaseRemainingMs, subscriptionExpiresAt: current.expiresAt,
+    subscriptionRemainingMs, rawConfig, runtimeProfile, options,
     remainingBytes: Math.max(0, current.trafficLimit - current.usedBytes) };
 }
 
@@ -190,9 +199,13 @@ export async function premiumLease(deviceHash: string, serverId: string) {
 export async function reportPremiumUsage(deviceHash: string, sessionId: string, totalBytes: number) {
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(sessionId) || !Number.isSafeInteger(totalBytes) || totalBytes < 0) throw new PremiumError("Invalid usage report", 400, "invalid_usage");
   const sql = premiumDb();
+  let sessionActive = false;
   await sql.begin(async tx => {
     const [session] = await tx`SELECT * FROM premium_usage_sessions WHERE id = ${sessionId} AND device_hash = ${deviceHash} FOR UPDATE`;
     if (!session) throw new PremiumError("Unknown premium usage session", 404, "unknown_session");
+    const [binding] = await tx`SELECT active_subscription FROM premium_devices WHERE device_hash = ${deviceHash} AND blocked_at IS NULL FOR UPDATE`;
+    sessionActive = binding?.active_subscription === session.subscription_id;
+    if (!sessionActive) return;
     const delta = BigInt(totalBytes) > BigInt(session.reported_bytes) ? BigInt(totalBytes) - BigInt(session.reported_bytes) : BigInt(0);
     await tx`UPDATE premium_subscriptions SET used_bytes = LEAST(traffic_limit, used_bytes + ${delta.toString()}::bigint),
       expires_at = CASE WHEN used_bytes + ${delta.toString()}::bigint >= traffic_limit THEN LEAST(expires_at, NOW()) ELSE expires_at END
@@ -203,8 +216,10 @@ export async function reportPremiumUsage(deviceHash: string, sessionId: string, 
   const [binding] = await sql`SELECT active_subscription FROM premium_devices WHERE device_hash = ${deviceHash} AND blocked_at IS NULL`;
   const [session] = await sql`SELECT subscription_id, server_id FROM premium_usage_sessions WHERE id = ${sessionId} AND device_hash = ${deviceHash}`;
   const [server] = await sql`SELECT id FROM premium_servers WHERE id = ${session.server_id} AND enabled = TRUE`;
-  const active = account.active && binding?.active_subscription === session?.subscription_id && Boolean(server);
-  return { account, expiresAt: active ? new Date(Math.min(Date.now() + 60_000, new Date(account.expiresAt).getTime())).toISOString() : null,
+  const active = sessionActive && account.active && binding?.active_subscription === session?.subscription_id && Boolean(server);
+  return { account, expiresAt: active ? new Date(Math.min(Date.now() + 20 * 60_000, new Date(account.expiresAt).getTime())).toISOString() : null,
+    subscriptionExpiresAt: active ? account.expiresAt : null,
+    subscriptionRemainingMs: active ? account.remainingMs : 0,
     remainingBytes: active ? Math.max(0, account.trafficLimit - account.usedBytes) : 0 };
 }
 
@@ -219,6 +234,57 @@ export async function issuePremium(days: number, devices: number, bytes: number)
       VALUES(${id}, 'admin_key_issued', 'Subscription key issued; key material is not recorded')`;
   });
   return { id, reference, key };
+}
+
+export async function editPremiumSubscription(input: {
+  id: string; days: number; devices: number; trafficLimit: number; usedBytes: number; expiresAt: string | null;
+}) {
+  const sql = premiumDb();
+  if (input.usedBytes > input.trafficLimit) throw new PremiumError("Used traffic cannot exceed the traffic limit", 400, "invalid_quota");
+  await sql.begin(async tx => {
+    const [updated] = await tx`UPDATE premium_subscriptions SET days = ${input.days}, device_limit = ${input.devices},
+      traffic_limit = ${input.trafficLimit}, used_bytes = ${input.usedBytes}, expires_at = ${input.expiresAt}
+      WHERE id = ${input.id} RETURNING id`;
+    if (!updated) throw new PremiumError("Subscription not found", 404);
+    await tx`INSERT INTO premium_security_logs(subscription_id, event, detail)
+      VALUES(${input.id}, 'admin_subscription_edited', ${`Plan, device limit, traffic allowance, usage and expiry edited from the admin panel`})`;
+  });
+  return { ok: true };
+}
+
+export async function rotatePremiumKey(id: string) {
+  const sql = premiumDb();
+  const key = `ASTRO-${randomBytes(24).toString("hex").toUpperCase()}`;
+  await sql.begin(async tx => {
+    const [updated] = await tx`UPDATE premium_subscriptions SET key_hash = ${digest(key)} WHERE id = ${id} RETURNING id`;
+    if (!updated) throw new PremiumError("Subscription not found", 404);
+    await tx`INSERT INTO premium_security_logs(subscription_id, event, detail)
+      VALUES(${id}, 'admin_key_rotated', 'Subscription key rotated; previous key invalidated and new key shown once')`;
+  });
+  return { ok: true, key };
+}
+
+export async function removePremiumDevice(id: string, deviceHash: string) {
+  const sql = premiumDb();
+  return sql.begin(async tx => {
+    const [removed] = await tx`DELETE FROM premium_redemptions WHERE subscription_id = ${id} AND device_hash = ${deviceHash} RETURNING subscription_id`;
+    if (!removed) throw new PremiumError("Device is not assigned to this subscription", 404);
+    await tx`UPDATE premium_devices SET active_subscription = NULL WHERE device_hash = ${deviceHash} AND active_subscription = ${id}`;
+    await tx`INSERT INTO premium_security_logs(device_hash, subscription_id, event, detail)
+      VALUES(${deviceHash}, ${id}, 'admin_device_removed', 'Device removed from this subscription in the admin panel')`;
+    return { ok: true };
+  });
+}
+
+export async function resetDeviceTrial(deviceHash: string) {
+  const sql = premiumDb();
+  return sql.begin(async tx => {
+    const [device] = await tx`UPDATE premium_devices SET trial_claimed_at = NULL WHERE device_hash = ${deviceHash} RETURNING device_hash`;
+    if (!device) throw new PremiumError("Device not found", 404);
+    await tx`INSERT INTO premium_security_logs(device_hash, event, detail)
+      VALUES(${deviceHash}, 'admin_trial_reset', 'Trial eligibility restored from the admin panel')`;
+    return { ok: true };
+  });
 }
 
 export async function savePremiumServer(input: { id?: string; name: string; country: string; node: string; rawConfig: string }) {

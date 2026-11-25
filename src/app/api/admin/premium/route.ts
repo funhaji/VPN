@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { isAuthorized, limitRequest } from "@/lib/auth";
 import { ensurePremiumSchema, premiumDb } from "@/lib/premium-db";
-import { issuePremium, savePremiumServer, unblockDevice } from "@/lib/premium-service";
+import { editPremiumSubscription, issuePremium, removePremiumDevice, resetDeviceTrial, rotatePremiumKey, savePremiumServer, unblockDevice } from "@/lib/premium-service";
 import { PremiumError } from "@/lib/premium-proof";
 import { z } from "zod";
 import { BodyLimitError, readBoundedBody } from "@/lib/bounded-body";
@@ -15,7 +15,7 @@ export async function GET(request: NextRequest) {
   try {
     await ensurePremiumSchema();
     const sql = premiumDb();
-    const [subscriptions, servers, logs, devices] = await Promise.all([
+    const [subscriptions, servers, logs, devices, enrolledDevices, bindings] = await Promise.all([
       sql`SELECT id, reference, kind, days, device_limit, traffic_limit, used_bytes, activated_at, expires_at, revoked_at,
         (SELECT COUNT(*)::int FROM premium_redemptions WHERE subscription_id = s.id) AS devices FROM premium_subscriptions s ORDER BY created_at DESC LIMIT 200`,
       sql`SELECT id, name, country, controller_node, enabled FROM premium_servers ORDER BY name`,
@@ -29,8 +29,15 @@ export async function GET(request: NextRequest) {
           AND NOT EXISTS (SELECT 1 FROM premium_devices d WHERE d.device_hash = b.device_hash AND d.blocked_at IS NOT NULL)
         GROUP BY b.device_hash
       ) blocked ORDER BY blocked_at DESC LIMIT 100`,
+      sql`SELECT d.device_hash, d.device_id, d.platform, d.blocked_at, d.trial_claimed_at,
+        s.reference AS active_reference FROM premium_devices d
+        LEFT JOIN premium_subscriptions s ON s.id = d.active_subscription
+        ORDER BY d.created_at DESC LIMIT 500`,
+      sql`SELECT r.subscription_id, r.device_hash, d.device_id, d.platform, d.blocked_at, r.redeemed_at
+        FROM premium_redemptions r JOIN premium_devices d ON d.device_hash = r.device_hash
+        ORDER BY r.redeemed_at DESC LIMIT 1000`,
     ]);
-    return Response.json({ subscriptions, servers, logs, devices, credentialMode: "imported" }, { headers });
+    return Response.json({ subscriptions, servers, logs, devices, enrolledDevices, bindings, credentialMode: "imported" }, { headers });
   } catch { return Response.json({ error: "Premium database unavailable. Connect the main Neon database (NEON_DATABASE_URL) in Vercel env vars, or set PREMIUM_DATABASE_URL." }, { status: 503, headers }); }
 }
 const schema = z.discriminatedUnion("action", [
@@ -38,6 +45,10 @@ const schema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("server"), name: z.string().trim().min(1).max(70), country: z.string().trim().min(1).max(80), node: z.string().regex(/^[\w.-]{1,128}$/).default("imported"), rawConfig: z.string().min(2).max(262144) }),
   z.object({ action: z.literal("revoke"), id: z.string().uuid() }),
   z.object({ action: z.literal("unrevoke"), id: z.string().uuid() }),
+  z.object({ action: z.literal("edit-key"), id: z.string().uuid(), days: z.number().int().min(1).max(3650), devices: z.number().int().min(1).max(100), trafficLimit: z.number().int().positive().max(Number.MAX_SAFE_INTEGER), usedBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), expiresAt: z.string().datetime().nullable() }),
+  z.object({ action: z.literal("rotate-key"), id: z.string().uuid() }),
+  z.object({ action: z.literal("remove-device"), id: z.string().uuid(), deviceHash: z.string().regex(/^[A-Za-z0-9_-]{43}$/) }),
+  z.object({ action: z.literal("reset-trial"), deviceHash: z.string().regex(/^[A-Za-z0-9_-]{43}$/) }),
   z.object({ action: z.literal("toggle-server"), id: z.string().uuid(), enabled: z.boolean() }),
   z.object({ action: z.literal("unblock-device"), deviceHash: z.string().regex(/^[A-Za-z0-9_-]{43}$/) }),
 ]);
@@ -50,6 +61,10 @@ export async function POST(request: NextRequest) {
     const input = data.data;
     if (input.action === "issue") return Response.json(await issuePremium(input.days, input.devices, input.bytes), { headers });
     if (input.action === "unblock-device") return Response.json(await unblockDevice(input.deviceHash), { headers });
+    if (input.action === "edit-key") return Response.json(await editPremiumSubscription(input), { headers });
+    if (input.action === "rotate-key") return Response.json(await rotatePremiumKey(input.id), { headers });
+    if (input.action === "remove-device") return Response.json(await removePremiumDevice(input.id, input.deviceHash), { headers });
+    if (input.action === "reset-trial") return Response.json(await resetDeviceTrial(input.deviceHash), { headers });
     if (input.action === "server") await savePremiumServer(input);
     if (input.action === "toggle-server") await premiumDb().begin(async tx => {
       await tx`UPDATE premium_servers SET enabled = ${input.enabled} WHERE id = ${input.id}`;
