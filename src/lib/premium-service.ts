@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import type { TransactionSql } from "postgres";
 import { premiumDb, ensurePremiumSchema } from "@/lib/premium-db";
 import { digest, PremiumError } from "@/lib/premium-proof";
 import { decryptConfig, encryptConfig } from "@/lib/crypto";
@@ -11,13 +12,19 @@ export async function premiumAccount(deviceHash: string) {
   const [sub] = device?.active_subscription ? await sql`SELECT s.*,
     (SELECT COUNT(*)::int FROM premium_redemptions r WHERE r.subscription_id = s.id) AS devices
     FROM premium_subscriptions s WHERE id = ${device.active_subscription}` : [];
+  // Links, not the historical claim timestamp, determine eligibility. Include
+  // expired/revoked trials and a surviving active pointer as well as redemptions.
+  const [linkedTrial] = await sql`SELECT s.id FROM premium_subscriptions s WHERE s.kind = 'trial'
+    AND (s.id = ${device?.active_subscription ?? null} OR EXISTS (
+      SELECT 1 FROM premium_redemptions r WHERE r.subscription_id = s.id AND r.device_hash = ${deviceHash}
+    )) LIMIT 1`;
   const serverNow = Date.now();
   const expiresAtMs = sub?.expires_at ? new Date(sub.expires_at).getTime() : 0;
   const active = Boolean(sub && !device.blocked_at && !sub.revoked_at && expiresAtMs > serverNow && BigInt(sub.used_bytes) < BigInt(sub.traffic_limit));
   const visible = active ? sub : null;
   return {
     active, remainingMs: active ? Math.max(0, expiresAtMs - serverNow) : 0,
-    trialAvailable: !device?.trial_claimed_at, blocked: Boolean(device?.blocked_at),
+    trialAvailable: !device?.blocked_at && !active && !linkedTrial, blocked: Boolean(device?.blocked_at),
     revoked: Boolean(sub?.revoked_at),
     exhausted: Boolean(sub && BigInt(sub.used_bytes) >= BigInt(sub.traffic_limit)),
     reference: visible?.reference ?? null, kind: visible?.kind ?? null, totalDays: visible?.days ?? 0,
@@ -54,6 +61,25 @@ export async function unblockDevice(deviceHash: string) {
   });
 }
 
+// Preserve even a legacy pointer-only trial before a non-admin operation changes
+// the current plan. Logout, recovery and paid redemption must never unlink trials.
+async function preserveTrialLink(tx: TransactionSql, deviceHash: string, subscriptionId: string | null) {
+  if (!subscriptionId) return;
+  await tx`INSERT INTO premium_redemptions(subscription_id, device_hash)
+    SELECT id, ${deviceHash} FROM premium_subscriptions WHERE id = ${subscriptionId} AND kind = 'trial'
+    ON CONFLICT (subscription_id, device_hash) DO NOTHING`;
+}
+
+export async function logoutPremium(deviceHash: string) {
+  const sql = premiumDb();
+  await sql.begin(async tx => {
+    const [device] = await tx`SELECT * FROM premium_devices WHERE device_hash = ${deviceHash} FOR UPDATE`;
+    await preserveTrialLink(tx, deviceHash, device?.active_subscription ?? null);
+    await tx`UPDATE premium_devices SET active_subscription = NULL WHERE device_hash = ${deviceHash}`;
+  });
+  return { ok: true };
+}
+
 export async function redeemPremium(deviceHash: string, key: string, trial: boolean) {
   const sql = premiumDb();
   await sql.begin(async tx => {
@@ -66,7 +92,13 @@ export async function redeemPremium(deviceHash: string, key: string, trial: bool
     }
     let sub;
     if (trial) {
-      if (device.trial_claimed_at) throw new PremiumError("This device has already used its one-time trial", 409);
+      // The device row lock serializes concurrent claims and admin removals.
+      // Do not filter by expiry: a device linked to any trial cannot claim again.
+      const [linkedTrial] = await tx`SELECT s.id FROM premium_subscriptions s WHERE s.kind = 'trial'
+        AND (s.id = ${device.active_subscription ?? null} OR EXISTS (
+          SELECT 1 FROM premium_redemptions r WHERE r.subscription_id = s.id AND r.device_hash = ${deviceHash}
+        )) LIMIT 1`;
+      if (linkedTrial) throw new PremiumError("This device is already linked to a trial subscription", 409);
       const id = randomUUID();
       [sub] = await tx`INSERT INTO premium_subscriptions(id, key_hash, reference, kind, days, device_limit, traffic_limit, activated_at, expires_at)
         VALUES(${id}, ${digest(randomBytes(32).toString("hex"))}, ${`TRIAL-${randomBytes(6).toString("hex").toUpperCase()}`}, 'trial', 1, 1, 1073741824, NOW(), NOW() + INTERVAL '1 day') RETURNING *`;
@@ -83,6 +115,7 @@ export async function redeemPremium(deviceHash: string, key: string, trial: bool
       await tx`INSERT INTO premium_redemptions(subscription_id, device_hash) VALUES(${sub.id}, ${deviceHash})`;
     }
     await tx`UPDATE premium_subscriptions SET activated_at = COALESCE(activated_at, NOW()), expires_at = COALESCE(expires_at, NOW() + days * INTERVAL '1 day') WHERE id = ${sub.id}`;
+    await preserveTrialLink(tx, deviceHash, device.active_subscription ?? null);
     await tx`UPDATE premium_devices SET active_subscription = ${sub.id} WHERE device_hash = ${deviceHash}`;
     await tx`INSERT INTO premium_security_logs(device_hash, subscription_id, event, detail) VALUES(${deviceHash}, ${sub.id}, ${trial ? "trial_activated" : "key_redeemed"}, 'Entitlement activated; no key or configuration recorded')`;
   });
@@ -107,6 +140,7 @@ export async function recoverPremium(deviceHash: string) {
       WHERE r.device_hash = ${deviceHash} AND s.revoked_at IS NULL AND s.expires_at > NOW() AND s.used_bytes < s.traffic_limit
       ORDER BY s.expires_at DESC LIMIT 1`;
     if (!candidate) throw new PremiumError("No active subscription found on this device ID", 404);
+    await preserveTrialLink(tx, deviceHash, device.active_subscription ?? null);
     await tx`UPDATE premium_devices SET active_subscription = ${candidate.id} WHERE device_hash = ${deviceHash}`;
     await tx`INSERT INTO premium_security_logs(device_hash, subscription_id, event, detail)
       VALUES(${deviceHash}, ${candidate.id}, 'subscription_recovered', 'Subscription re-bound from this device ID redemption history')`;
@@ -267,8 +301,9 @@ export async function rotatePremiumKey(id: string) {
 export async function removePremiumDevice(id: string, deviceHash: string) {
   const sql = premiumDb();
   return sql.begin(async tx => {
+    const [device] = await tx`SELECT * FROM premium_devices WHERE device_hash = ${deviceHash} FOR UPDATE`;
     const [removed] = await tx`DELETE FROM premium_redemptions WHERE subscription_id = ${id} AND device_hash = ${deviceHash} RETURNING subscription_id`;
-    if (!removed) throw new PremiumError("Device is not assigned to this subscription", 404);
+    if (!removed && device?.active_subscription !== id) throw new PremiumError("Device is not assigned to this subscription", 404);
     await tx`UPDATE premium_devices SET active_subscription = NULL WHERE device_hash = ${deviceHash} AND active_subscription = ${id}`;
     await tx`INSERT INTO premium_security_logs(device_hash, subscription_id, event, detail)
       VALUES(${deviceHash}, ${id}, 'admin_device_removed', 'Device removed from this subscription in the admin panel')`;
@@ -277,14 +312,10 @@ export async function removePremiumDevice(id: string, deviceHash: string) {
 }
 
 export async function resetDeviceTrial(deviceHash: string) {
-  const sql = premiumDb();
-  return sql.begin(async tx => {
-    const [device] = await tx`UPDATE premium_devices SET trial_claimed_at = NULL WHERE device_hash = ${deviceHash} RETURNING device_hash`;
-    if (!device) throw new PremiumError("Device not found", 404);
-    await tx`INSERT INTO premium_security_logs(device_hash, event, detail)
-      VALUES(${deviceHash}, 'admin_trial_reset', 'Trial eligibility restored from the admin panel')`;
-    return { ok: true };
-  });
+  // Backward-compatible response for old admin clients; never erase history or links.
+  const account = await premiumAccount(deviceHash);
+  return { ok: true, trialAvailable: account.trialAvailable,
+    message: "Trial eligibility follows subscription links. Use Remove device on each linked trial to restore eligibility." };
 }
 
 export async function savePremiumServer(input: { id?: string; name: string; country: string; node: string; rawConfig: string }) {

@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { authenticatePremium, digest, premiumRateLimit, PremiumError } from "@/lib/premium-proof";
-import { ensurePremiumSchema, premiumDb } from "@/lib/premium-db";
-import { premiumAccount, premiumLease, premiumPreviews, recoverPremium, redeemPremium, reportPremiumUsage } from "@/lib/premium-service";
+import { ensurePremiumSchema } from "@/lib/premium-db";
+import { logoutPremium, premiumAccount, premiumLease, premiumPreviews, recoverPremium, redeemPremium, reportPremiumUsage } from "@/lib/premium-service";
 import { BodyLimitError, readBoundedBody } from "@/lib/bounded-body";
 import { blockPremiumRequest, enforcePremiumAccess, premiumSourceIp } from "@/lib/premium-access";
 
@@ -61,8 +61,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ op
       return Response.json(await recoverPremium(deviceHash), { headers });
     }
     if (operation === "logout") {
-      await premiumDb()`UPDATE premium_devices SET active_subscription = NULL WHERE device_hash = ${deviceHash}`;
-      return Response.json({ ok: true }, { headers });
+      return Response.json(await logoutPremium(deviceHash), { headers });
     }
     throw new PremiumError("Not found", 404);
   } catch (error) {

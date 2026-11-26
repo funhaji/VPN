@@ -118,8 +118,10 @@ test("One-trial race conditions prevent double-claiming", async () => {
     return db.transaction(async tx => {
       const [dev] = await tx.query("premium_devices", d => d.device_hash === deviceHash);
       if (!dev) throw new Error("Device not found");
-      if (dev.trial_claimed_at) {
-        throw new Error("This device has already used its one-time trial");
+      const linked = db.tables.premium_subscriptions.some(s => s.kind === "trial" &&
+        (s.id === dev.active_subscription || db.tables.premium_redemptions.some(r => r.subscription_id === s.id && r.device_hash === deviceHash)));
+      if (linked) {
+        throw new Error("This device is already linked to a trial");
       }
 
       dev.trial_claimed_at = new Date().toISOString();
@@ -132,6 +134,7 @@ test("One-trial race conditions prevent double-claiming", async () => {
         used_bytes: 0,
       });
       dev.active_subscription = trialSubId;
+      await tx.insert("premium_redemptions", { subscription_id: trialSubId, device_hash: deviceHash });
       return { trialSubId };
     });
   };
@@ -144,7 +147,7 @@ test("One-trial race conditions prevent double-claiming", async () => {
 
   assert.equal(claimed.length, 1, "Only one trial claim should succeed");
   assert.equal(denied.length, 2, "Subsequent concurrent claims must be rejected");
-  denied.forEach(d => assert.match(d.reason.message, /already used its one-time trial/));
+  denied.forEach(d => assert.match(d.reason.message, /already linked to a trial/));
 });
 
 test("Replayed requests with duplicate nonces are rejected", async () => {

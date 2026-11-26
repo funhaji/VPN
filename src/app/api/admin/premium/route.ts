@@ -30,12 +30,20 @@ export async function GET(request: NextRequest) {
         GROUP BY b.device_hash
       ) blocked ORDER BY blocked_at DESC LIMIT 100`,
       sql`SELECT d.device_hash, d.device_id, d.platform, d.blocked_at, d.trial_claimed_at,
-        s.reference AS active_reference FROM premium_devices d
+        s.reference AS active_reference,
+        EXISTS (SELECT 1 FROM premium_subscriptions t WHERE t.kind = 'trial' AND
+          (t.id = d.active_subscription OR EXISTS (SELECT 1 FROM premium_redemptions r
+            WHERE r.subscription_id = t.id AND r.device_hash = d.device_hash))) AS linked_trial
+        FROM premium_devices d
         LEFT JOIN premium_subscriptions s ON s.id = d.active_subscription
         ORDER BY d.created_at DESC LIMIT 500`,
       sql`SELECT r.subscription_id, r.device_hash, d.device_id, d.platform, d.blocked_at, r.redeemed_at
         FROM premium_redemptions r JOIN premium_devices d ON d.device_hash = r.device_hash
-        ORDER BY r.redeemed_at DESC LIMIT 1000`,
+        UNION ALL
+        SELECT d.active_subscription AS subscription_id, d.device_hash, d.device_id, d.platform, d.blocked_at, d.created_at AS redeemed_at
+        FROM premium_devices d WHERE d.active_subscription IS NOT NULL AND NOT EXISTS
+          (SELECT 1 FROM premium_redemptions r WHERE r.subscription_id = d.active_subscription AND r.device_hash = d.device_hash)
+        ORDER BY redeemed_at DESC LIMIT 1000`,
     ]);
     return Response.json({ subscriptions, servers, logs, devices, enrolledDevices, bindings, credentialMode: "imported" }, { headers });
   } catch { return Response.json({ error: "Premium database unavailable. Connect the main Neon database (NEON_DATABASE_URL) in Vercel env vars, or set PREMIUM_DATABASE_URL." }, { status: 503, headers }); }

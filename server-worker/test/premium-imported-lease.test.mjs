@@ -47,7 +47,8 @@ test("imported provider lease needs no controller and converts share links into 
   assert.equal(lease.runtimeProfile.outbound.server, "provider.example");
   assert.equal(lease.runtimeProfile.outbound.uuid, "12345678-1234-1234-1234-123456789abc");
   assert.ok(Date.parse(lease.expiresAt) > before);
-  assert.ok(Date.parse(lease.expiresAt) <= Date.now() + 60_000);
+  // Imported credentials have a five-minute app lease, bounded by the plan.
+  assert.ok(Date.parse(lease.expiresAt) <= Date.now() + 5 * 60_000);
   assert.doesNotMatch(service, /PREMIUM_CONTROLLER_|\/v1\/leases/);
 });
 test("imported sing-box JSON retains provider credentials in the authorized lease", async () => {
