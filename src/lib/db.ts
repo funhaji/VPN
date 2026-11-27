@@ -30,10 +30,7 @@ const schemaReady: Record<DbProvider, boolean> = {
 };
 
 let legacyMigrationChecked = false;
-let readCounter = 0;
 let catalogCacheVersion = 0;
-let autoSyncRunning = false;
-let reconcileTimer: NodeJS.Timeout | null = null;
 
 const heartbeatDebounce = new Map<string, { timestamp: number; appVersion: string }>();
 
@@ -342,20 +339,23 @@ export const queryRead = async <T = unknown>(
   }
 };
 
-export const scheduleServerReconciliation = (): void => {
-  if (reconcileTimer) return;
-  reconcileTimer = setTimeout(() => {
-    reconcileTimer = null;
-    if (!autoSyncRunning && isProviderHealthy("neon") && !isProviderQuotaLimited("neon")) {
-      autoSyncRunning = true;
-      reconcileServersToNeon()
-        .catch((e) => console.warn("[Background Sync] Server reconciliation failed:", e))
-        .finally(() => {
-          autoSyncRunning = false;
-        });
-    }
-  }, 4000);
+// Workload split, not round-robin replication: high-volume Active Users traffic
+// belongs to Supabase; premium security remains on its existing single authority
+// (Neon by default). Never fall back to an out-of-date device replica: an absent
+// registration is security-sensitive and could otherwise produce a false ban.
+const deviceProvider = (): DbProvider => {
+  const configured = getConfiguredProviders();
+  const provider = configured.includes("supabase") ? "supabase" : configured[0];
+  if (!provider) throw new Error("No device database configured");
+  return provider;
 };
+
+export const queryDeviceRead = <T = unknown>(
+  strings: TemplateStringsArray,
+  ...values: unknown[]
+): Promise<T[]> => executeOnProvider<T>(deviceProvider(), strings, values);
+
+const queryDeviceWrite = queryDeviceRead;
 
 export const queryWrite = <T = unknown>(
   strings: TemplateStringsArray,
@@ -400,7 +400,6 @@ const writeToProviders = async <T = unknown>(
 
   let successResult: T[] | null = null;
   const errors: string[] = [];
-  let neonFailed = false;
 
   results.forEach((res, idx) => {
     const provider = targets[idx];
@@ -408,19 +407,14 @@ const writeToProviders = async <T = unknown>(
       if (!successResult) successResult = res.value;
     } else {
       markProviderError(provider, res.reason);
-      if (provider === "neon") {
-        neonFailed = true;
-      }
       errors.push(`${provider}: ${res.reason instanceof Error ? res.reason.message : String(res.reason)}`);
     }
   });
 
   if (successResult !== null) {
     if (invalidate) invalidateServerCatalogCache();
-    // If Supabase succeeded but Neon failed, schedule automatic reconciliation so Neon catches up
-    if (neonFailed && targets.includes("supabase")) {
-      scheduleServerReconciliation();
-    }
+    // Do not turn a failed telemetry/settings write into a full catalog rewrite.
+    // Report replica failures; repair through the explicit admin sync operation.
     return successResult;
   }
 
@@ -1162,7 +1156,7 @@ export const recordClientHeartbeat = async (payload: HeartbeatPayload): Promise<
   }
 
   try {
-    await queryWriteNoInvalidate`
+    await queryDeviceWrite`
       INSERT INTO client_devices (device_id, platform, app_version, os_version, model, first_seen, last_seen)
       VALUES (${deviceId}, ${platform}, ${appVersion}, ${osVersion}, ${model}, NOW(), NOW())
       ON CONFLICT (device_id) DO UPDATE SET
@@ -1175,6 +1169,7 @@ export const recordClientHeartbeat = async (payload: HeartbeatPayload): Promise<
          OR client_devices.app_version <> EXCLUDED.app_version;
     `;
   } catch (err) {
+    heartbeatDebounce.delete(deviceId);
     console.warn("[Heartbeat] Skipped non-critical write:", err instanceof Error ? err.message : String(err));
   }
 };
@@ -1244,7 +1239,7 @@ export const getClientAnalytics = async (options: ClientAnalyticsOptions = {}): 
 
   // Independent queries run concurrently instead of back to back.
   const [platformRows, versionRows, deviceRows, matchRows] = await Promise.all([
-    queryRead`
+    queryDeviceRead`
       SELECT
         platform,
         COUNT(*)::int as total,
@@ -1254,7 +1249,7 @@ export const getClientAnalytics = async (options: ClientAnalyticsOptions = {}): 
       FROM client_devices
       GROUP BY platform;
     ` as Promise<Array<{ platform: string; total: number; active_24h: number; active_7d: number; active_30d: number }>>,
-    queryRead`
+    queryDeviceRead`
       SELECT platform, app_version, COUNT(*)::int as count
       FROM client_devices
       WHERE last_seen >= NOW() - INTERVAL '30 days'
@@ -1263,7 +1258,7 @@ export const getClientAnalytics = async (options: ClientAnalyticsOptions = {}): 
     ` as Promise<Array<{ platform: string; app_version: string; count: number }>>,
     options.summaryOnly
       ? Promise.resolve([] as DeviceRow[])
-      : (queryRead`
+      : (queryDeviceRead`
           SELECT device_id, platform, app_version, os_version, model, first_seen, last_seen
           FROM client_devices
           WHERE (${platform}::text IS NULL OR LOWER(platform) = ${platform}::text)
@@ -1277,7 +1272,7 @@ export const getClientAnalytics = async (options: ClientAnalyticsOptions = {}): 
         ` as Promise<DeviceRow[]>),
     options.summaryOnly || (!platform && !pattern)
       ? Promise.resolve(null)
-      : (queryRead`
+      : (queryDeviceRead`
           SELECT COUNT(*)::int as count
           FROM client_devices
           WHERE (${platform}::text IS NULL OR LOWER(platform) = ${platform}::text)
@@ -1337,7 +1332,9 @@ export const getClientAnalytics = async (options: ClientAnalyticsOptions = {}): 
 export const deleteClientDevice = async (deviceId: string): Promise<void> => {
   const cleanId = (deviceId || "").trim().slice(0, 128);
   if (!cleanId) return;
-  await queryWrite`DELETE FROM client_devices WHERE device_id = ${cleanId}`;
+  // Also remove an old mirrored registration, so a later explicit migration
+  // cannot resurrect a deleted device.
+  await queryWriteNoInvalidate`DELETE FROM client_devices WHERE device_id = ${cleanId}`;
 };
 
 export const reconcileServersToNeon = async (): Promise<{ serversCloned: number }> => {
@@ -1443,34 +1440,8 @@ export const getDatabaseStatus = async (): Promise<Record<DbProvider, DatabasePr
 
   await Promise.allSettled([checkProvider("neon"), checkProvider("supabase")]);
 
-  // Automatic Server Sync / Drift Reconciliation:
-  // Supabase is the primary canonical database.
-  // If both databases are configured and healthy, and Neon's server count or maxUpdated differs from Supabase:
-  // Automatically clone Supabase servers to Neon (wipe Neon, insert all Supabase servers).
-  if (
-    !autoSyncRunning &&
-    status.supabase.configured &&
-    status.neon.configured &&
-    status.supabase.healthy &&
-    status.neon.healthy &&
-    status.supabase.serverCount !== null &&
-    status.neon.serverCount !== null &&
-    (status.neon.serverCount !== status.supabase.serverCount ||
-      status.neon.maxUpdated !== status.supabase.maxUpdated)
-  ) {
-    autoSyncRunning = true;
-    reconcileServersToNeon()
-      .then((res) => {
-        status.neon.serverCount = res.serversCloned;
-        status.neon.maxUpdated = status.supabase.maxUpdated;
-      })
-      .catch((err) => {
-        console.warn("[Auto-Sync] Server reconciliation failed:", err);
-      })
-      .finally(() => {
-        autoSyncRunning = false;
-      });
-  }
+  // Diagnostics are read-only. Repairs belong to the explicit admin sync action,
+  // never an ordinary dashboard GET (or a monitoring probe).
 
   return status;
 };

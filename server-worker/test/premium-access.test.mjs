@@ -15,13 +15,13 @@ globalThis.__premiumAccessTest = {
     if (sql.includes("INSERT INTO premium_security_logs")) state.logs.push(values);
     return [];
   }, { begin: async fn => fn(globalThis.__premiumAccessTest.premiumDb()) }),
-  queryRead: async () => { if (state.unavailable) throw new Error("database unavailable"); return state.registered ? [{}] : []; },
+  queryDeviceRead: async () => { if (state.unavailable) throw new Error("database unavailable"); return state.registered ? [{}] : []; },
 };
 let source = await readFile(new URL("../../src/lib/premium-access.ts", import.meta.url), "utf8");
 source = source.replace(/import \{ digest, PremiumError, PREMIUM_MARKER \} from "@\/lib\/premium-proof";/,
   'const { digest, PremiumError } = globalThis.__premiumAccessTest; const PREMIUM_MARKER = "astro-premium-v1";')
   .replace(/import \{ premiumDb \} from "@\/lib\/premium-db";/, 'const { premiumDb } = globalThis.__premiumAccessTest;')
-  .replace(/import \{ queryRead \} from "@\/lib\/db";/, 'const { queryRead } = globalThis.__premiumAccessTest;');
+  .replace(/import \{ queryDeviceRead \} from "@\/lib\/db";/, 'const { queryDeviceRead } = globalThis.__premiumAccessTest;');
 const { stripTypeScriptTypes } = await import("node:module");
 const guard = await import(`data:text/javascript;base64,${Buffer.from(stripTypeScriptTypes(source)).toString("base64")}`);
 const headers = () => ({ "x-astro-device": "and_0123456789abcdef", "x-astro-platform": "android", "x-astro-premium": "astro-premium-v1",

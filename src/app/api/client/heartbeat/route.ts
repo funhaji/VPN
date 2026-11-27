@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { queryRead, recordClientHeartbeat } from "@/lib/db";
+import { queryDeviceRead, recordClientHeartbeat } from "@/lib/db";
 import { limitRequest } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
@@ -52,7 +52,7 @@ export async function POST(request: NextRequest) {
     });
 
     if (body.confirmRegistration === true) {
-      const [registered] = await queryRead`SELECT 1 FROM client_devices WHERE device_id = ${deviceId} AND platform = ${platform} LIMIT 1`;
+      const [registered] = await queryDeviceRead`SELECT 1 FROM client_devices WHERE device_id = ${deviceId} AND platform = ${platform} LIMIT 1`;
       if (!registered) return NextResponse.json({ error: "Device registration unavailable" }, { status: 503, headers: corsHeaders });
     }
     return NextResponse.json({ ok: true }, { headers: corsHeaders });

@@ -1,7 +1,7 @@
 import { isIP } from "node:net";
 import { digest, PremiumError, PREMIUM_MARKER } from "@/lib/premium-proof";
 import { premiumDb } from "@/lib/premium-db";
-import { queryRead } from "@/lib/db";
+import { queryDeviceRead } from "@/lib/db";
 
 // Application-level denylist: affects premium routes only, not public APIs.
 export function premiumSourceIp(request: Request): string | null {
@@ -51,7 +51,7 @@ export async function enforcePremiumAccess(request: Request) {
   else {
     // Use the same database/read path as Active Users, even when premium has a
     // separate DB. Database failures propagate as 503, never create bans.
-    const [registered] = await queryRead`SELECT 1 FROM client_devices WHERE device_id = ${device} AND platform = ${platform} LIMIT 1`;
+    const [registered] = await queryDeviceRead`SELECT 1 FROM client_devices WHERE device_id = ${device} AND platform = ${platform} LIMIT 1`;
     if (!registered) reason = "Premium device ID not registered in Active Users";
   }
   if (reason) {
