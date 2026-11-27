@@ -53,29 +53,15 @@ export async function authenticatePremium(request: Request, body: string, option
   } catch { throw new PremiumError("Invalid device proof", 401, "bad_proof"); }
   // Only enrolled identities with the pinned key may trigger a punitive action.
   const [existing] = await sql`SELECT * FROM premium_devices WHERE device_hash = ${deviceHash}`;
-  if (existing && existing.public_key !== canonicalKey) {
-    // Recovery: a reinstalled app keeps its device ID but regenerates its signing key.
-    // Re-pin the key only when an active subscription is bound to this device identity.
-    let recovered = false;
-    if (options?.recover && !existing.blocked_at) {
-      const [bound] = await sql`SELECT 1 FROM premium_redemptions r JOIN premium_subscriptions s ON s.id = r.subscription_id
-        WHERE r.device_hash = ${deviceHash} AND s.revoked_at IS NULL AND s.expires_at > NOW() AND s.used_bytes < s.traffic_limit`;
-      if (bound) {
-        await sql`UPDATE premium_devices SET public_key = ${canonicalKey} WHERE device_hash = ${deviceHash}`;
-        await sql`INSERT INTO premium_security_logs(device_hash, event, detail)
-          VALUES(${deviceHash}, 'device_identity_recovered', 'Signing key re-pinned after reinstall; active subscription verified on this device ID')`;
-        recovered = true;
-      }
-    }
-    if (!recovered) throw new PremiumError("Device identity changed. DM @AstroVPN_Help and send your subscription key privately. Never post it publicly.", 403, "device_changed");
-  }
+  const keyChanged = existing && existing.public_key !== canonicalKey;
+  if (keyChanged && !options?.recover) throw new PremiumError("Device signing key changed. Recover this device to continue.", 403, "device_changed");
   if (existing?.blocked_at) throw new PremiumError("Device blocked. DM @AstroVPN_Help and send your subscription key privately. Never post it publicly.", 403, "device_blocked");
   await premiumRateLimit(`device:${deviceHash}`, 90);
   // Reject captured proofs before any punitive side effects.
   const inserted = await sql`INSERT INTO premium_nonces(device_hash, nonce, expires_at) VALUES(${deviceHash}, ${nonce}, NOW() + INTERVAL '2 minutes') ON CONFLICT DO NOTHING RETURNING nonce`;
   if (!inserted.length) throw new PremiumError("Replayed request", 409, "replayed");
   if (marker !== PREMIUM_MARKER || !["android", "windows"].includes(platform)) {
-    if (existing) {
+    if (existing && !keyChanged) {
       await sql.begin(async tx => {
         const [current] = await tx`SELECT active_subscription FROM premium_devices WHERE device_hash = ${deviceHash} FOR UPDATE`;
         await tx`UPDATE premium_devices SET blocked_at = NOW() WHERE device_hash = ${deviceHash}`;
@@ -85,6 +71,22 @@ export async function authenticatePremium(request: Request, body: string, option
       });
     }
     throw new PremiumError("Invalid client protocol. DM @AstroVPN_Help and send your subscription key privately. Never post it publicly.", 403, "bad_protocol");
+  }
+  if (keyChanged) {
+    // Android ID survives reinstall/data clearing, but the local signing key does
+    // not. Use the existing device-ID recovery policy for free/expired accounts
+    // too. Never replace the device row: blocks, usage and trial links must stay.
+    // Proof, nonce, rate limit and protocol checks above must precede mutation.
+    await sql.begin(async tx => {
+      const [current] = await tx`SELECT * FROM premium_devices WHERE device_hash = ${deviceHash} FOR UPDATE`;
+      if (current?.blocked_at) throw new PremiumError("Device blocked. Contact @AstroVPN_Help.", 403, "device_blocked");
+      if (!current || (current.public_key !== existing.public_key && current.public_key !== canonicalKey)) {
+        throw new PremiumError("Device recovery changed concurrently. Try again.", 409, "identity_rejected");
+      }
+      await tx`UPDATE premium_devices SET public_key = ${canonicalKey} WHERE device_hash = ${deviceHash}`;
+      await tx`INSERT INTO premium_security_logs(device_hash, event, detail)
+        VALUES(${deviceHash}, 'device_identity_recovered', 'Signing key re-pinned after reinstall; device history preserved')`;
+    });
   }
   await sql`INSERT INTO premium_devices(device_hash, public_key, platform) VALUES(${deviceHash}, ${canonicalKey}, ${platform}) ON CONFLICT DO NOTHING`;
   // Recheck after concurrent enrollment: INSERT ON CONFLICT must not authorize a different key.
