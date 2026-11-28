@@ -11,6 +11,7 @@ import { DbSyncModal } from "@/components/db-sync-modal";
 import { BulkReplaceModal } from "@/components/bulk-replace-modal";
 import { AccessPolicyPanel } from "@/components/access-policy-panel";
 import { PremiumPanel } from "@/components/premium-panel";
+import { JumpJumpPanel } from "@/components/jumpjump-panel";
 import { COUNTRIES, flagFromCountryCode, getCountryMeta, normalizeLocationCode } from "@/lib/countries";
 import { createAutoNamer, namingServersForTier, planLocationRename, type NamingServer, type RenamePlan } from "@/lib/server-naming";
 
@@ -3008,7 +3009,7 @@ export function AdminDashboard() {
             ) : tab === "users" ? (
               <ActiveUsersPanel api={api} setMsg={setMsg} />
             ) : tab === "premium" ? <PremiumPanel /> : tab === "safety" ? (
-              <AccessPolicyPanel api={api} busy={busy} setBusy={setBusy} setMsg={setMsg} />
+              <><JumpJumpPanel /><AccessPolicyPanel api={api} busy={busy} setBusy={setBusy} setMsg={setMsg} /></>
             ) : tab !== "bulk" ? (
               <div className="rounded-2xl border border-zinc-900 bg-zinc-950/70 p-4">
                 <div className="grid gap-4 md:grid-cols-2">

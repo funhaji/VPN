@@ -3,6 +3,7 @@ import { decryptConfig } from "@/lib/crypto";
 import { unstable_cache } from "next/cache";
 import { getCatalogCacheVersion, getLastUsedProvider, listServers, PUBLIC_DATA_TAG } from "@/lib/db";
 import { jumpJumpProfile } from "@/lib/jumpjump";
+import { jumpJumpEnabled, jumpJumpSnapshot, nameJumpJumpServers, isJumpJumpServer } from "@/lib/jumpjump-settings";
 import { parseWireGuardConf } from "@/lib/profile-import";
 import type { ProtocolOptions, ServerRecord } from "@/types/server";
 import { getAccessPolicy } from "@/lib/access-policy";
@@ -1222,7 +1223,8 @@ type CatalogEntry = {
 async function buildCatalog(): Promise<{ servers: CatalogEntry[]; provider: string; generation: string }> {
   const stored = await listServers(false);
   // Premium-only servers are served through the premium lease flow, never the free catalog.
-  const servers = stored.filter(server => server.isEnabled && !server.isPremium);
+  const includeJumpJump = await jumpJumpEnabled();
+  const servers = stored.filter(server => server.isEnabled && !server.isPremium && (includeJumpJump || !server.protocol.startsWith("jumpjump:")));
   const catalogServers: CatalogEntry[] = [];
 
   for (const server of servers) {
@@ -1256,7 +1258,13 @@ async function buildCatalog(): Promise<{ servers: CatalogEntry[]; provider: stri
     }
   }
 
-  return { servers: catalogServers, provider: getLastUsedProvider() || "supabase", generation: catalogGeneration(stored) };
+  if (includeJumpJump) {
+    const snapshot = await jumpJumpSnapshot();
+    catalogServers.push(...snapshot.servers.map(entry => ({ ...entry, host: null, port: null, rawConfig: "",
+      options: { mux: false, fragment: false, sniffing: true, allowInsecure: false, extra: {} }, updatedAt: snapshot.fetchedAt! })));
+  }
+  const names = new Map(nameJumpJumpServers(catalogServers.filter(isJumpJumpServer), catalogServers.filter(server => !isJumpJumpServer(server))).map(server => [server.id, server.name]));
+  return { servers: catalogServers.map(server => ({ ...server, name: names.get(server.id) ?? server.name })), provider: getLastUsedProvider() || "supabase", generation: catalogGeneration(stored) };
 }
 
 // Shared across ALL function instances (Vercel Data Cache), so the decrypt
@@ -1272,7 +1280,8 @@ export async function compilePublicationCatalog(authorizeEmpty = false) {
   // Premium servers must never reach the published catalog: older app
   // versions consume it with no premium logic and would expose them for free.
   const source = await listServers(true, true);
-  const servers = source.map(server => {
+  const includeJumpJump = await jumpJumpEnabled();
+  const servers = source.filter(server => includeJumpJump || !server.protocol.startsWith("jumpjump:")).map(server => {
     const rawConfig = decryptConfig(server.encryptedConfig);
     return {
       id: server.id,
@@ -1286,6 +1295,13 @@ export async function compilePublicationCatalog(authorizeEmpty = false) {
       runtimeProfile: buildRuntimeProfile(server, rawConfig),
     };
   });
+  if (includeJumpJump) {
+    const snapshot = await jumpJumpSnapshot();
+    servers.push(...snapshot.servers.map(entry => ({ ...entry,
+      options: { mux: false, fragment: false, sniffing: true, allowInsecure: false, extra: {} }, notice: undefined, updatedAt: snapshot.fetchedAt! })));
+  }
+  const names = new Map(nameJumpJumpServers(servers.filter(isJumpJumpServer), servers.filter(server => !isJumpJumpServer(server))).map(server => [server.id, server.name]));
+  for (const server of servers) server.name = names.get(server.id) ?? server.name;
   if (servers.some(server => server.runtimeProfile.supported !== true)) throw new Error("Fix unsupported enabled profiles before publishing");
   if (servers.length === 0 && !authorizeEmpty) throw new Error("Empty catalog is not authorized");
   if (servers.length > 0 && authorizeEmpty) throw new Error("Cannot authorize removal while enabled servers exist");
@@ -1300,6 +1316,7 @@ const filterByProtocol = (catalog: CatalogEntry[], requestedProtocol: string): C
     if (requestedProtocol === "v2ray") {
       return (
         p.startsWith("v2ray") ||
+        p.startsWith("jumpjump:") ||
         p.startsWith("vless") ||
         p.startsWith("vmess") ||
         p.startsWith("trojan") ||
@@ -1325,7 +1342,7 @@ const CATALOG_PROTOCOLS = new Set(["all", "v2ray", "openvpn", "wireguard", "wg",
   "vless", "vmess", "trojan", "ss", "shadowsocks", "hysteria", "hysteria2", "tuic", "l2tp", "socks", "socks5"]);
 
 // Per-instance cache of the final encrypted response (per protocol filter).
-const encryptedCache = new Map<string, { version: number; payload: unknown; provider: string; expiresAt: number; removalGeneration?: string }>();
+const encryptedCache = new Map<string, { version: number; payload: unknown; provider: string; expiresAt: number; removalGeneration?: string; jumpJump: boolean }>();
 
 const CACHE_HEADERS = {
   "Cache-Control": "private, no-store, max-age=0",
@@ -1340,8 +1357,9 @@ export async function GET(request: NextRequest) {
   // Check before normal AND stale catalog caches. Policy failures must not leak
   // a cached real catalog after an administrator has disabled legacy access.
   let policy;
+  let includeJumpJump: boolean;
   try {
-    policy = await getAccessPolicy();
+    [policy, includeJumpJump] = await Promise.all([getAccessPolicy(), jumpJumpEnabled()]);
   } catch {
     return NextResponse.json({ error: "Access policy unavailable" }, { status: 503, headers: CACHE_HEADERS });
   }
@@ -1358,7 +1376,7 @@ export async function GET(request: NextRequest) {
   // so cache-busters are now ignored.
   const hit = encryptedCache.get(requestedProtocol);
   const removalGeneration = policy.allServersRemoved ? policy.removalGeneration : undefined;
-  if (hit && hit.version === version && hit.expiresAt > now && hit.removalGeneration === removalGeneration) {
+  if (hit && hit.jumpJump === includeJumpJump && hit.version === version && hit.expiresAt > now && hit.removalGeneration === removalGeneration) {
     return NextResponse.json(hit.payload, {
       headers: { ...CACHE_HEADERS, "x-database-provider": hit.provider },
     });
@@ -1367,14 +1385,17 @@ export async function GET(request: NextRequest) {
   try {
     const { servers, provider, generation } = await getSharedCatalog();
     const { encryptCatalogPayload } = await import("@/lib/client-catalog");
-    const payload = encryptCatalogPayload({ servers: filterByProtocol(servers, requestedProtocol),
-      allServersRemoved: servers.length === 0 && removalGeneration !== undefined && removalGeneration === generation });
+    // Enforce the live provider switch even if another instance still has a
+    // shared compiled catalog cached. Empty disable is intentional removal.
+    const visible = servers.filter(server => includeJumpJump || !isJumpJumpServer(server));
+    const payload = encryptCatalogPayload({ servers: filterByProtocol(visible, requestedProtocol),
+      allServersRemoved: visible.length === 0 && (!includeJumpJump || (removalGeneration !== undefined && removalGeneration === generation)) });
 
-    encryptedCache.set(requestedProtocol, { version, payload, provider, expiresAt: now + 30_000, removalGeneration });
+    encryptedCache.set(requestedProtocol, { version, payload, provider, expiresAt: now + 30_000, removalGeneration, jumpJump: includeJumpJump });
     return NextResponse.json(payload, { headers: { ...CACHE_HEADERS, "x-database-provider": provider } });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to build server catalog";
-    if (hit && hit.removalGeneration === removalGeneration && !hit.removalGeneration) {
+    if (hit && hit.jumpJump === includeJumpJump && hit.removalGeneration === removalGeneration && !hit.removalGeneration) {
       console.warn("[API/servers] Serving cached catalog due to DB error:", message);
       return NextResponse.json(hit.payload, {
         headers: { ...CACHE_HEADERS, "x-database-provider": hit.provider || "cache" },
